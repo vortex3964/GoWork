@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 
@@ -36,13 +37,26 @@ func main()  {
 		os.Exit(1)
 	}
 	
-	response , err := model.Generate("hello how are you")
+	scanner := bufio.NewScanner(os.Stdin)
+	run := true
 
-	if err != nil {
-		fmt.Println("Something went wrong",err)
-		os.Exit(1)
+	for run {
+    	fmt.Print("prompt: ")
+    	scanner.Scan()
+    	prompt := scanner.Text()
+		
+		if prompt == "end" {
+			break
+		}
+
+    	response, err := model.Generate(prompt)
+
+    	if err != nil {
+        	fmt.Println("error:", err)
+        	continue
+    	}
+
+    	fmt.Println(response)
 	}
-
-	fmt.Println(response)
 
 }

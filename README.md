@@ -38,3 +38,14 @@ supported ai : gemini for now (and will stay like that untill were ready to tack
 - edit file
 - prompt
 - etch
+
+## common errors to check for api providers
+invalid request
+Auth err
+Not found
+request too large (maybe)
+Api error
+Out of tokens
+rate limit
+Overload
+
