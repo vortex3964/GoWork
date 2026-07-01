@@ -8,6 +8,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"GoWork/providers"
+	"GoWork/tools"
 )
 
 func main()  {
@@ -20,14 +21,19 @@ func main()  {
 		fmt.Println("Something went wrong couldnt locate .env file ",err)
 		os.Exit(1)
 	}
-
+	
 	var api_key string = os.Getenv("API_KEY")
+
+	//test tool
+	fmt.Println(tools.List_directory("."))
+
 
 	if api_key == ""{
 		fmt.Println("api key is empty")
 		os.Exit(1)
 	}
 
+	//test api key
 	fmt.Println(api_key)
 
 	model , err := providers.Select_provider("gemini-3.5-flash",api_key)

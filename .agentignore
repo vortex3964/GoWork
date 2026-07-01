@@ -1,0 +1,6 @@
+# .agentignore
+out/
+testdata/
+*.xlsx
+secrets/
+.git
