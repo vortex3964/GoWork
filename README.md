@@ -14,12 +14,14 @@ it will support multiple ai providers via api keys but the focus will be support
 
 and it will be able to run commands for you (you will also be able to edit them) but only if you let it do so
 
-features will include
+features will include:
+
 change history (like gits only here you will be able to go back a change even if you didnt commit the changes)\
 robust tui focused on being functional and minimal (bubble tea)\
 generating deleting files and helping with git commits\
 easter eggs will be included  do (just some fun things)\
-some basic commands like /help , /model  they will start with /
+some basic commands like /help , /model  they will start with /\
+also a way to see token consumption
 
 ## files that i want to support for sure with skills
 excel sheets\
