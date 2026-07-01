@@ -1,3 +1,5 @@
+//DESC: code for using gemini models
+
 package providers
 
 import (
@@ -19,15 +21,33 @@ func newGemini(model string , api_key string) *geminiProvider {
 
 // implementations of the interface
 
-func (g *geminiProvider) Generate(userPrompt string) (string, error) {
-	reqBody := map[string]interface{}{
-		"contents": []map[string]interface{}{
-			{
-				"parts": []map[string]string{
-					{"text": userPrompt},
-				},
+func (g *geminiProvider) Generate(userPrompt string ,context []Message) (string, error) {
+	
+	contents := make([]map[string]interface{},0,len(context)+1)
+
+	for _, msg := range context {
+		role := msg.Role
+		if role == "assistant" {
+			role = "model" // gemini uses "model" not "assistant"
+		}
+		contents = append(contents, map[string]interface{}{
+			"role": role,
+			"parts": []map[string]string{
+				{"text": msg.Content},
 			},
+		})
+	}
+
+	// append the new user prompt at the end
+	contents = append(contents, map[string]interface{}{
+		"role": "user",
+		"parts": []map[string]string{
+			{"text": userPrompt},
 		},
+	})
+
+	reqBody := map[string]interface{}{
+		"contents": contents,
 	}
 
 	jsonData, err := json.Marshal(reqBody)
