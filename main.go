@@ -40,6 +40,8 @@ func main()  {
 	scanner := bufio.NewScanner(os.Stdin)
 	run := true
 
+	var context []providers.Message;
+
 	for run {
     	fmt.Print("prompt: ")
     	scanner.Scan()
@@ -48,8 +50,10 @@ func main()  {
 		if prompt == "end" {
 			break
 		}
-
-    	response, err := model.Generate(prompt)
+		
+		context = append(context , providers.Message{Role:"user" , Content: prompt})
+    	response, err := model.Generate(prompt , context)
+		context = append(context , providers.Message{Role:"assistant",Content: response})
 
     	if err != nil {
         	fmt.Println("error:", err)
