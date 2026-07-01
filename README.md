@@ -30,7 +30,7 @@ python for writting docs\
 python code structure (maybe)
 
 
-packages : bubbletea
+packages : bubbletea , go-gitignore , godotenv
 
 supported ai : gemini for now (and will stay like that untill were ready to tackle supporting multiple ai providers)
 
@@ -80,7 +80,7 @@ edit_file(path, old_str, new_str) - targeted find and replace, errors if old_str
 create_file(path, content?) - creates a new file, errors if it already exists.\
 delete_file(path) - deletes a file.\
 move_file(src, dst) - moves or renames a file.\
-list_directory(path, recursive?) - lists files and folders, recursive flag for full project tree.\
+@ list_directory(path, recursive?) - lists files and folders, recursive flag for full project tree.\
 search_files(path, pattern) - grep across files, returns file path and line number for each match.
 get_file_info(path , subpath) - get usefull info about the file 
 
@@ -101,3 +101,5 @@ read_memory(key) - reads a value from the memory store by key. The agent calls t
 write_memory(key, value) - writes a value to the memory store. The agent calls this at the end of a session to save things worth remembering.\
 list_skills() - returns all available skill files so the agent can pick which ones are relevant for the current task.\
 create_skill(name, content) - lets the agent write a new skill when it discovers a pattern worth noting (this may not be included)
+
+21 more tools remain
