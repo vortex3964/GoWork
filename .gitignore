@@ -34,3 +34,5 @@ go.work.sum
 GoWork
 out/
 bin/
+
+context.txt

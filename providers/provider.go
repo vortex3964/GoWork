@@ -16,6 +16,8 @@ package providers
 
 import (
 	"fmt"
+	"os"
+	"strings"
 )
 
 //used to model the messages in the context window may change in the future
@@ -27,16 +29,25 @@ type Message struct{
 
 //NOTE: since ai is stateless and we send all the context everytime then
 //just pass it by reference in the Generate function
-type provider interface{
+type Provider interface{
 	Generate(userPrompt string , context []Message) (string , error)
 }
 
 //selects an ai provider (model) and returns it to the main loop
 // curently only works for gemini
-func Select_provider(model string , api_key string) (provider , error){
+func Select_provider(model string , api_key string) (Provider , error){
 	if api_key == ""{
 		return nil , fmt.Errorf("Empty api key")
 	}
 
 	return newGemini(model,api_key) , nil
+}
+
+func ExportContext(context []Message) error {
+	var sb strings.Builder
+	for _, msg := range context {
+		sb.WriteString(fmt.Sprintf("[%s]\n%s\n\n", strings.ToUpper(msg.Role), msg.Content))
+	}
+
+	return os.WriteFile("context.txt", []byte(sb.String()), 0644)
 }
