@@ -10,6 +10,8 @@ import (
 	ignore "github.com/sabhiram/go-gitignore"
 )
 
+// add to imports: "strings", "time"
+
 func load_ignores(root string) []*ignore.GitIgnore {
 	var ignores []*ignore.GitIgnore
 
