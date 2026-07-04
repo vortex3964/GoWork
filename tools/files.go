@@ -10,7 +10,33 @@ import (
 	ignore "github.com/sabhiram/go-gitignore"
 )
 
-// add to imports: "strings", "time"
+var ProjectRoot string
+
+func is_sub_dir(dir string) bool {
+	if ProjectRoot == ""{
+		return false
+	}
+
+	rootAbs , err := filepath.Abs(ProjectRoot)
+	
+	if err != nil {
+		return false
+	}
+
+	targetAbs , err := filepath.Abs(dir)
+
+	if err != nil {
+		return false
+	}
+	
+	rel , err := filepath.Rel(rootAbs , targetAbs)
+
+	if err != nil {
+		return false
+	}
+
+	return !strings.HasPrefix(rel,"..") && rel != ".."
+}
 
 func load_ignores(root string) []*ignore.GitIgnore {
 	var ignores []*ignore.GitIgnore
@@ -38,7 +64,7 @@ func is_ignored(ignores []*ignore.GitIgnore, rel string) bool {
 }
 
 func list_dir(root, path string, depth int, ignores []*ignore.GitIgnore) string {
-    contents, err := os.ReadDir(path)
+	contents, err := os.ReadDir(path)
     
 	if err != nil {
         return err.Error()
@@ -66,7 +92,13 @@ func list_dir(root, path string, depth int, ignores []*ignore.GitIgnore) string 
 }
 
 func List_directory(path string) string {
-    abs_path, err := filepath.Abs(path)
+    
+	//Guard so that the ai cant ever access any dir outside of the working one
+	if !is_sub_dir(path){
+		return "error : path is outside of the projects root"
+	}
+
+	abs_path, err := filepath.Abs(path)
     if err != nil {
         return err.Error()
     }
