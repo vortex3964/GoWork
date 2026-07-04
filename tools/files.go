@@ -126,3 +126,17 @@ func Create_file(path string, filename string, content string) string {
 	}
 	return "successfully created file at " + fullPath
 }
+
+func delete_file(path string , filename string) string {
+	fullPath := filepath.Join(ProjectRoot, path, filename)
+	
+	if !is_sub_dir(fullPath) {
+		return "error: cannot delete file outside of working dir"
+	}
+
+	if err := os.Remove(filepath.Join(fullPath)); err != nil {
+		return "error deleting file: "+ err.Error()
+	}
+
+	return "successfully deleted the file"
+}
