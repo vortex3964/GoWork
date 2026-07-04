@@ -112,23 +112,17 @@ func List_directory(path string) string {
 
 //create a file with a Name
 func Create_file(path string, filename string, content string) string {
-	fullPath := filepath.Join(path, filename)
-
+	fullPath := filepath.Join(ProjectRoot, path, filename)
 	if !is_sub_dir(fullPath) {
 		return "error: cannot create file, path is outside of the projects root"
 	}
-
-	fullPath = filepath.Join(ProjectRoot , fullPath)
-
 	//Create any missing directories
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 		return "error creating directories: " + err.Error()
 	}
-
 	err := os.WriteFile(fullPath, []byte(content), 0644)
 	if err != nil {
 		return "error writing file: " + err.Error()
 	}
-
 	return "successfully created file at " + fullPath
 }
