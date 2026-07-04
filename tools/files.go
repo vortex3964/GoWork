@@ -5,6 +5,7 @@ package tools
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	ignore "github.com/sabhiram/go-gitignore"
@@ -154,4 +155,47 @@ func Delete_file(path string , filename string) string {
 	}
 
 	return "successfully deleted the file"+extra
+}
+
+// Get_files_info lists the immediate (non-recursive) contents of a directory,
+// including size/type, while respecting .gitignore / .agentignore.
+func Get_files_info(path string) string {
+	fullPath := filepath.Join(ProjectRoot, path)
+	if !is_sub_dir(fullPath) {
+		return "error: cannot access path outside of the projects root"
+	}
+ 
+	entries, err := os.ReadDir(fullPath)
+	if err != nil {
+		return "error reading directory: " + err.Error()
+	}
+ 
+	ignores := load_ignores(ProjectRoot)
+ 
+	var resp string
+	for _, entry := range entries {
+		rel, err := filepath.Rel(ProjectRoot, filepath.Join(fullPath, entry.Name()))
+		if err != nil {
+			continue
+		}
+		if is_ignored(ignores, rel) {
+			continue
+		}
+ 
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+ 
+		if entry.IsDir() {
+			resp += entry.Name() + "/: dir\n"
+		} else {
+			resp += entry.Name() + ": file, " + strconv.FormatInt(info.Size() , 10) +" bytes\n"
+		}
+	}
+ 
+	if resp == "" {
+		return "directory is empty (or all contents are ignored)"
+	}
+	return resp
 }
