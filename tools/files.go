@@ -127,6 +127,7 @@ func Create_file(path string, filename string, content string) string {
 	return "successfully created file at " + fullPath
 }
 
+//delets a file and if the parent dir is empty (imideate parent only) it deletes the dir too
 func Delete_file(path string , filename string) string {
 	fullPath := filepath.Join(ProjectRoot, path, filename)
 	
@@ -137,6 +138,20 @@ func Delete_file(path string , filename string) string {
 	if err := os.Remove(filepath.Join(fullPath)); err != nil {
 		return "error deleting file: "+ err.Error()
 	}
+	
+	dir := filepath.Dir(fullPath)
+	extra := ""
+	
+	rootAbs , err := filepath.Abs(ProjectRoot)
 
-	return "successfully deleted the file"
+	if err == nil {
+		if dirAbs, err := filepath.Abs(dir); err == nil && dirAbs != rootAbs {
+			if entries, err := os.ReadDir(dir); err == nil && len(entries) == 0 {
+				os.Remove(dir)
+				extra = " also deleted directory "+dir
+			}
+		}
+	}
+
+	return "successfully deleted the file"+extra
 }
