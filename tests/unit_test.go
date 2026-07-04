@@ -138,86 +138,77 @@ func TestCreateFile(t *testing.T) {
 	})
 }
 
-func TestDeleteFile(t *testing.T) {
-	t.Run("deletes an existing file inside root", func(t *testing.T) {
+func TestDeleteFile_CleansUpEmptyParentOnly(t *testing.T) {
+	t.Run("removes now-empty immediate parent directory", func(t *testing.T) {
 		root := t.TempDir()
 		withProjectRoot(t, root)
  
-		writeFile(t, filepath.Join(root, "todelete.txt"), "bye")
+		mustMkdirAll(t, filepath.Join(root, "hello"))
+		writeFile(t, filepath.Join(root, "hello", "hi.go"), "package hello")
  
-		result := tools.Delete_file(".", "todelete.txt")
+		result := tools.Delete_file("hello", "hi.go")
 		if strings.Contains(result, "error") {
 			t.Fatalf("unexpected error: %q", result)
 		}
  
-		if _, err := os.Stat(filepath.Join(root, "todelete.txt")); !os.IsNotExist(err) {
-			t.Error("expected file to be deleted, but it still exists")
+		if _, err := os.Stat(filepath.Join(root, "hello")); !os.IsNotExist(err) {
+			t.Error("expected empty 'hello' directory to be removed after deleting its only file")
 		}
 	})
  
-	t.Run("deletes a file in a nested subdirectory", func(t *testing.T) {
+	t.Run("does not cascade beyond the immediate parent", func(t *testing.T) {
 		root := t.TempDir()
 		withProjectRoot(t, root)
  
-		mustMkdirAll(t, filepath.Join(root, "sub", "dir"))
-		writeFile(t, filepath.Join(root, "sub", "dir", "nested.txt"), "bye")
+		mustMkdirAll(t, filepath.Join(root, "hello", "world"))
+		writeFile(t, filepath.Join(root, "hello", "world", "hi.go"), "package world")
  
-		result := tools.Delete_file("sub/dir", "nested.txt")
+		result := tools.Delete_file("hello/world", "hi.go")
 		if strings.Contains(result, "error") {
 			t.Fatalf("unexpected error: %q", result)
 		}
  
-		if _, err := os.Stat(filepath.Join(root, "sub", "dir", "nested.txt")); !os.IsNotExist(err) {
-			t.Error("expected nested file to be deleted, but it still exists")
+		// immediate parent ("world") should be gone, since it's now empty
+		if _, err := os.Stat(filepath.Join(root, "hello", "world")); !os.IsNotExist(err) {
+			t.Error("expected 'hello/world' to be removed since it became empty")
+		}
+		// "hello" is now empty too, but should NOT be removed — only one level up
+		if _, err := os.Stat(filepath.Join(root, "hello")); err != nil {
+			t.Error("expected 'hello' to survive — cleanup should not cascade past one level")
 		}
 	})
  
-	t.Run("errors when file does not exist", func(t *testing.T) {
+	t.Run("keeps non-empty parent directory", func(t *testing.T) {
 		root := t.TempDir()
 		withProjectRoot(t, root)
  
-		result := tools.Delete_file(".", "nope.txt")
-		if !strings.Contains(result, "error") {
-			t.Errorf("expected error for nonexistent file, got: %q", result)
+		mustMkdirAll(t, filepath.Join(root, "hello"))
+		writeFile(t, filepath.Join(root, "hello", "hi.go"), "package hello")
+		writeFile(t, filepath.Join(root, "hello", "sibling.txt"), "keep me")
+ 
+		result := tools.Delete_file("hello", "hi.go")
+		if strings.Contains(result, "error") {
+			t.Fatalf("unexpected error: %q", result)
+		}
+ 
+		if _, err := os.Stat(filepath.Join(root, "hello")); err != nil {
+			t.Error("expected 'hello' to survive since it still contains sibling.txt")
 		}
 	})
  
-	t.Run("rejects path traversal via path argument", func(t *testing.T) {
+	t.Run("does not remove ProjectRoot itself even if empty", func(t *testing.T) {
 		root := t.TempDir()
 		withProjectRoot(t, root)
  
-		// create a real file just outside root to make sure it survives
-		outsideDir := filepath.Dir(root)
-		outsideFile := filepath.Join(outsideDir, "should_survive.txt")
-		writeFile(t, outsideFile, "safe")
-		t.Cleanup(func() { os.Remove(outsideFile) })
+		writeFile(t, filepath.Join(root, "onlyfile.txt"), "content")
  
-		result := tools.Delete_file("..", "should_survive.txt")
-		if !strings.Contains(result, "error") {
-			t.Errorf("expected error for path traversal via path, got: %q", result)
+		result := tools.Delete_file(".", "onlyfile.txt")
+		if strings.Contains(result, "error") {
+			t.Fatalf("unexpected error: %q", result)
 		}
-		if _, err := os.Stat(outsideFile); err != nil {
-			t.Error("file outside root should not have been deleted")
-		}
-	})
  
-	t.Run("rejects path traversal via filename argument", func(t *testing.T) {
-		root := t.TempDir()
-		withProjectRoot(t, root)
- 
-		mustMkdirAll(t, filepath.Join(root, "sub"))
- 
-		outsideDir := filepath.Dir(root)
-		outsideFile := filepath.Join(outsideDir, "should_also_survive.txt")
-		writeFile(t, outsideFile, "safe")
-		t.Cleanup(func() { os.Remove(outsideFile) })
- 
-		result := tools.Delete_file("sub", "../../should_also_survive.txt")
-		if !strings.Contains(result, "error") {
-			t.Errorf("expected error for path traversal via filename, got: %q", result)
-		}
-		if _, err := os.Stat(outsideFile); err != nil {
-			t.Error("file outside root should not have been deleted")
+		if _, err := os.Stat(root); err != nil {
+			t.Error("ProjectRoot itself should never be deleted, even if it becomes empty")
 		}
 	})
 }

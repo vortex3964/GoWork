@@ -102,4 +102,7 @@ write_memory(key, value) - writes a value to the memory store. The agent calls t
 list_skills() - returns all available skill files so the agent can pick which ones are relevant for the current task.\
 create_skill(name, content) - lets the agent write a new skill when it discovers a pattern worth noting (this may not be included)
 
+### Optional
+(maybe a search web url for better handling of online docs? )
+
 19 more tools remain
