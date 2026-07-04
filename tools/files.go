@@ -127,7 +127,7 @@ func Create_file(path string, filename string, content string) string {
 	return "successfully created file at " + fullPath
 }
 
-func delete_file(path string , filename string) string {
+func Delete_file(path string , filename string) string {
 	fullPath := filepath.Join(ProjectRoot, path, filename)
 	
 	if !is_sub_dir(fullPath) {
