@@ -213,6 +213,86 @@ func TestDeleteFile_CleansUpEmptyParentOnly(t *testing.T) {
 	})
 }
 
+func TestGetFilesInfo(t *testing.T) {
+	t.Run("lists files and directories with type and size", func(t *testing.T) {
+		root := t.TempDir()
+		withProjectRoot(t, root)
+ 
+		writeFile(t, filepath.Join(root, "a.txt"), "hello world")
+		mustMkdirAll(t, filepath.Join(root, "sub"))
+ 
+		result := tools.Get_files_info(".")
+ 
+		if !strings.Contains(result, "a.txt: file, 11 bytes") {
+			t.Errorf("expected a.txt entry with correct size, got: %q", result)
+		}
+		if !strings.Contains(result, "sub/: dir") {
+			t.Errorf("expected sub/ entry marked as dir, got: %q", result)
+		}
+	})
+ 
+	t.Run("does not recurse into subdirectories", func(t *testing.T) {
+		root := t.TempDir()
+		withProjectRoot(t, root)
+ 
+		mustMkdirAll(t, filepath.Join(root, "sub"))
+		writeFile(t, filepath.Join(root, "sub", "nested.txt"), "content")
+ 
+		result := tools.Get_files_info(".")
+		if strings.Contains(result, "nested.txt") {
+			t.Errorf("expected nested.txt to be excluded since it's not in the immediate directory, got: %q", result)
+		}
+	})
+ 
+	t.Run("respects gitignore", func(t *testing.T) {
+		root := t.TempDir()
+		withProjectRoot(t, root)
+ 
+		writeFile(t, filepath.Join(root, "keep.txt"), "keep me")
+		writeFile(t, filepath.Join(root, "ignored.log"), "noise")
+		writeFile(t, filepath.Join(root, ".gitignore"), "*.log\n")
+ 
+		result := tools.Get_files_info(".")
+		if !strings.Contains(result, "keep.txt") {
+			t.Errorf("expected keep.txt to be listed, got: %q", result)
+		}
+		if strings.Contains(result, "ignored.log") {
+			t.Errorf("expected ignored.log to be excluded, got: %q", result)
+		}
+	})
+ 
+	t.Run("rejects path outside project root", func(t *testing.T) {
+		root := t.TempDir()
+		withProjectRoot(t, root)
+ 
+		outside := filepath.Dir(root)
+		result := tools.Get_files_info(outside)
+		if !strings.Contains(result, "error") {
+			t.Errorf("expected error for out-of-root path, got: %q", result)
+		}
+	})
+ 
+	t.Run("errors on nonexistent directory", func(t *testing.T) {
+		root := t.TempDir()
+		withProjectRoot(t, root)
+ 
+		result := tools.Get_files_info("does-not-exist")
+		if !strings.Contains(result, "error") {
+			t.Errorf("expected error for nonexistent directory, got: %q", result)
+		}
+	})
+ 
+	t.Run("reports when directory is empty", func(t *testing.T) {
+		root := t.TempDir()
+		withProjectRoot(t, root)
+ 
+		result := tools.Get_files_info(".")
+		if !strings.Contains(result, "empty") {
+			t.Errorf("expected empty-directory message, got: %q", result)
+		}
+	})
+}
+
 // --- test helpers ---
 
 func writeFile(t *testing.T, path, content string) {

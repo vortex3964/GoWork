@@ -75,19 +75,17 @@ probably should also write descriptions so that i dont forget what they do exact
 
 ### File system
 read_file(path, start_line?, end_line?) - reads a file, optional line range for large files so you don't blow the context window reading a 2000 line Typst doc.\
-write_file(path, content, overwrite?) - writes a full file, errors if it already exists unless overwrite is explicitly true.\
-edit_file(path, old_str, new_str) - targeted find and replace, errors if old_str matches zero or more than one place.\
+write_file(path, old_str, new_str) - targeted find and replace, errors if old_str matches zero or more than one place.\
+search_files(path, pattern) - grep across files, returns file path and line number for each match.
 @ create_file(path, content?) - creates a new file, errors if it already exists.\
 @ delete_file(path) - deletes a file.\
-move_file(src, dst) - moves or renames a file.\
 @ list_directory(path, recursive?) - lists files and folders, recursive flag for full project tree.\
-search_files(path, pattern) - grep across files, returns file path and line number for each match.
-get_file_info(path , subpath) - get usefull info about the file 
+@ get_file_info(path , subpath) - get usefull info about the file 
 
 ### Execution — coding (probably)
 run_command(command, working_dir?, timeout?) - runs any shell command, returns stdout, stderr, and exit code.\
 get_diagnostics(path) - returns compiler or linter errors for a file without running the program. For Go this wraps go vet.\
-compile_typst(path) - wraps typst compile but returns errors in a clean structured way.
+compile(path , args) - wraps typst compile but returns errors in a clean structured way.
 
 ### for excel
 read_excel(path, sheet?) - reads a sheet and returns it as a grid the agent can reason about. Defaults to first sheet if none specified.\
@@ -105,4 +103,4 @@ create_skill(name, content) - lets the agent write a new skill when it discovers
 ### Optional
 (maybe a search web url for better handling of online docs? )
 
-19 more tools remain
+16 more tools remain
