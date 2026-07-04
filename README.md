@@ -77,7 +77,7 @@ probably should also write descriptions so that i dont forget what they do exact
 read_file(path, start_line?, end_line?) - reads a file, optional line range for large files so you don't blow the context window reading a 2000 line Typst doc.\
 write_file(path, content, overwrite?) - writes a full file, errors if it already exists unless overwrite is explicitly true.\
 edit_file(path, old_str, new_str) - targeted find and replace, errors if old_str matches zero or more than one place.\
-create_file(path, content?) - creates a new file, errors if it already exists.\
+@ create_file(path, content?) - creates a new file, errors if it already exists.\
 delete_file(path) - deletes a file.\
 move_file(src, dst) - moves or renames a file.\
 @ list_directory(path, recursive?) - lists files and folders, recursive flag for full project tree.\
@@ -102,4 +102,4 @@ write_memory(key, value) - writes a value to the memory store. The agent calls t
 list_skills() - returns all available skill files so the agent can pick which ones are relevant for the current task.\
 create_skill(name, content) - lets the agent write a new skill when it discovers a pattern worth noting (this may not be included)
 
-21 more tools remain
+20 more tools remain
