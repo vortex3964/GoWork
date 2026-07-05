@@ -6,6 +6,7 @@ build:
 
 run:
 	go run .
-
+test:
+	go test -v ./...
 clean:
 	rm -rf out
