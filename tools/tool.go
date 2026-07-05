@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"os"
 	"path/filepath"
 	ignore "github.com/sabhiram/go-gitignore"
 )
@@ -102,5 +104,31 @@ func IsIgnored(ignores []*ignore.GitIgnore, rel string) bool {
 		}
 	}
 	return false
+}
+
+// MkdirAllInRoot creates dir and all necessary parent directories within
+// root, sandboxed the same way every other operation through root is
+// symlink escapes and ".." traversal are rejected by the OS itself.
+func MkdirAllInRoot(root *os.Root, dir string) error {
+	if filepath.IsAbs(dir) {
+		return fmt.Errorf("absolute paths are not allowed: %s", dir)
+	}
+
+	dir = filepath.Clean(dir)
+	if dir == "." || dir == "" {
+		return nil
+	}
+
+	var cur string
+	for _, part := range strings.Split(dir, string(filepath.Separator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		cur = filepath.Join(cur, part)
+		if err := root.Mkdir(cur, 0755); err != nil && !os.IsExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
