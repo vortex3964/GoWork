@@ -13,7 +13,6 @@ import (
 	"github.com/joho/godotenv"
 
 	"GoWork/providers"
-	"GoWork/tools"
 )
 
 // to catch errors in case the api call for the ai fails
@@ -186,15 +185,6 @@ func main() {
 		fmt.Println("API_KEY is empty")
 		os.Exit(1)
 	}
-
-	cwd , err := os.Getwd()
-	if err != nil {
-		fmt.Println("couldnt get working directory:",err)
-		os.Exit(1)
-	}
-	
-	//IMPORTANT: we set the variable in tools to our project root to guard againt ai accessing dirs it shouldnt
-	tools.ProjectRoot = cwd
 
 	provider, err := providers.Select_provider("gemini-3.5-flash", apiKey)
 
