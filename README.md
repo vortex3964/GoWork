@@ -35,14 +35,11 @@ packages : bubbletea , go-gitignore , godotenv
 supported ai : gemini for now (and will stay like that untill were ready to tackle supporting multiple ai providers)
 
 ## TODO
-- tui
-- read file
-- get file
-- edit file
-- prompt
-- add a mechanism so that context persists between sessions
-- cleanup the readme
-- etch
+- design the tui in papper
+- actually create a tui
+- list the tuis features
+- extend providers to include more (local models plus open ai gemini etch.)
+- complete tools used
 
 ## common errors to check for api providers
 invalid request\
@@ -68,10 +65,9 @@ things to consider :
 maybe there should be a way for the user to prompt the ai to correct things 
 while the changes havent been finalised (will inspect and consider if this is in this projects scope)
 
-## probably usefull function tools ill need
+## Tools the agent has
 
-probably should also write descriptions so that i dont forget what they do exactly when its time to write the system prompt\
-@ is used to mark that a tool has been made.
+These are the tools the agent has access to when making tool calls
 
 ### File system
 read_file(path, start_line?, end_line?) - reads a file, optional line range for large files so you don't blow the context window reading a 2000 line Typst doc.\
@@ -100,7 +96,6 @@ write_memory(key, value) - writes a value to the memory store. The agent calls t
 list_skills() - returns all available skill files so the agent can pick which ones are relevant for the current task.\
 create_skill(name, content) - lets the agent write a new skill when it discovers a pattern worth noting (this may not be included)
 
-### Optional
-(maybe a search web url for better handling of online docs? )
+### WebSearch
+SearchWebUrl(url) - used to search the url for docs etch or things not in training data
 
-16 more tools remain
