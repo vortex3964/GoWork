@@ -1,3 +1,6 @@
+//DESC: the interface every tool must follow
+// plus things multiple tools would like to have access to
+
 package tools
 
 import (
@@ -9,6 +12,8 @@ import (
 	"path/filepath"
 	ignore "github.com/sabhiram/go-gitignore"
 )
+
+//TODO: add a handler for read file states (so we know if and how mutch of the file is in context before writting to it)
 
 //NOTE: Schema represents a JSON schema describing a tool's input, sent to the LLM so it knows what arguments to provide and in what shape.
 type Schema map[string]any
