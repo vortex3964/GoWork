@@ -21,7 +21,7 @@ robust tui focused on being functional and minimal (bubble tea)\
 generating deleting files and helping with git commits\
 easter eggs will be included  do (just some fun things)\
 some basic commands like /help , /model  they will start with /\
-also a way to see token consumption
+also a way to see token consumption (maybe a token managment tab with stats)
 
 ## files that i want to support for sure with skills
 excel sheets\
@@ -40,6 +40,8 @@ supported ai : gemini for now (and will stay like that untill were ready to tack
 - list the tuis features
 - extend providers to include more (local models plus open ai gemini etch.)
 - complete tools used
+- context handling
+- states for the tui and read etch.
 
 ## common errors to check for api providers
 invalid request\
