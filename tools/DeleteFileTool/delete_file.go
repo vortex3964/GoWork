@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 
 	"GoWork/tools"
@@ -18,21 +17,10 @@ type Input struct {
 	Path string `json:"path"`
 }
 
-type Tool struct {
-	root *os.Root
-}
+type Tool struct {}
 
-func New(projectRoot string) (*Tool, error) {
-	abs, err := filepath.Abs(projectRoot)
-	if err != nil {
-		return nil, fmt.Errorf("resolving project root: %w", err)
-	}
-	root, err := os.OpenRoot(abs)
-	if err != nil {
-		return nil, fmt.Errorf("opening project root: %w", err)
-	}
-	return &Tool{root: root}, nil
-}
+//NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface 
+func New() tools.AgentTool { return &Tool{} }
 
 func (t *Tool) Name() string { return "delete_file" }
 
@@ -55,7 +43,7 @@ func (t *Tool) InputSchema() tools.Schema {
 
 func (t *Tool) Kind() tools.Kind { return tools.KindDelete }
 
-func (t *Tool) Run(ctx context.Context, rawInput json.RawMessage) (tools.ToolResult, error) {
+func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs ,rawInput json.RawMessage) (tools.ToolResult, error) {
 	var input Input
 	if err := json.Unmarshal(rawInput, &input); err != nil {
 		return tools.ToolResult{}, fmt.Errorf("delete_file: invalid input: %w", err)
@@ -64,7 +52,7 @@ func (t *Tool) Run(ctx context.Context, rawInput json.RawMessage) (tools.ToolRes
 		return tools.Errf("path is required"), nil
 	}
 
-	if err := t.root.Remove(input.Path); err != nil {
+	if err := args.Root.Remove(input.Path); err != nil {
 		return tools.Errf("error deleting file: %s", err), nil
 	}
 
@@ -72,8 +60,8 @@ func (t *Tool) Run(ctx context.Context, rawInput json.RawMessage) (tools.ToolRes
 	extra := ""
 	// parent == "." means the file was at the project root itself; never attempt to remove the root.
 	if parent != "." {
-		if entries, err := fs.ReadDir(t.root.FS(), parent); err == nil && len(entries) == 0 {
-			if err := t.root.Remove(parent); err == nil {
+		if entries, err := fs.ReadDir(args.Root.FS(), parent); err == nil && len(entries) == 0 {
+			if err := args.Root.Remove(parent); err == nil {
 				extra = " also deleted directory " + parent
 			}
 		}
