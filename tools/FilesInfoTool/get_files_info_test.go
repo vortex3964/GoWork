@@ -8,19 +8,30 @@ import (
 	"strings"
 	"testing"
 
+	"GoWork/tools"
 	fileinfo "GoWork/tools/FilesInfoTool"
 )
 
-func newTool(t *testing.T, root string) *fileinfo.Tool {
-	t.Helper()
-	tool, err := fileinfo.New(root)
-	if err != nil {
-		t.Fatalf("failed to construct tool: %v", err)
-	}
-	return tool
+type testTool struct {
+	tools.AgentTool
+	args tools.DispatchArgs
 }
 
-func runTool(t *testing.T, tool *fileinfo.Tool, path string) (string, bool) {
+func (tt testTool) Run(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
+	return tt.AgentTool.Run(ctx, tt.args, input)
+}
+
+func newTool(t *testing.T, root string) testTool {
+	t.Helper()
+	tool := fileinfo.New()
+	args, err := tools.InitDispatchArgs(root)
+	if err != nil {
+		t.Fatalf("failed to init dispatch args: %v", err)
+	}
+	return testTool{AgentTool: tool, args: args}
+}
+
+func runTool(t *testing.T, tool testTool, path string) (string, bool) {
 	t.Helper()
 	input, err := json.Marshal(fileinfo.Input{Path: path})
 	if err != nil {

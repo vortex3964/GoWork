@@ -8,16 +8,27 @@ import (
 	"strings"
 	"testing"
 
+	"GoWork/tools"
 	writefiletool "GoWork/tools/WriteFileTool" )
 
-func setupTool(t *testing.T) (*writefiletool.Tool, string) {
+type testTool struct {
+	tools.AgentTool
+	args tools.DispatchArgs
+}
+
+func (tt testTool) Run(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
+	return tt.AgentTool.Run(ctx, tt.args, input)
+}
+
+func setupTool(t *testing.T) (testTool, string) {
 	t.Helper()
 	dir := t.TempDir()
-	tool, err := writefiletool.New(dir)
+	tool := writefiletool.New()
+	args, err := tools.InitDispatchArgs(dir)
 	if err != nil {
-		t.Fatalf("New() failed: %v", err)
+		t.Fatalf("failed to init dispatch args: %v", err)
 	}
-	return tool, dir
+	return testTool{AgentTool: tool, args: args}, dir
 }
 
 func writeTestFile(t *testing.T, dir, name, content string) string {
@@ -185,11 +196,6 @@ func TestRun_PathOutsideRoot_IsRejected(t *testing.T) {
 		New:      "leaked",
 	})
 
-	// NOTE: os.Root rejecting a traversal typically surfaces as a Go `error`
-	// from the underlying Open/OpenFile call (a PathError), not a model-level
-	// ToolResult — this is arguably a code-level/security failure rather than
-	// something the model should just "try again" on. Adjust this assertion
-	// once you decide how Run translates that error.
 	result, runErr := tool.Run(context.Background(), input)
 	if runErr == nil && !result.IsError {
 		t.Fatalf("expected path traversal to be rejected via error or IsError, got success")
@@ -203,8 +209,6 @@ func TestRun_PathOutsideRoot_IsRejected(t *testing.T) {
 }
 
 func TestRun_OldEqualsNew_NoOp(t *testing.T) {
-	// TODO: decide the actual policy (success no-op vs IsError rejection)
-	// and tighten this assertion once decided.
 	tool, dir := setupTool(t)
 	writeTestFile(t, dir, "same.go", "package main\n")
 
@@ -234,4 +238,3 @@ func TestInputSchema_HasRequiredFields(t *testing.T) {
 		t.Errorf("schema is missing required fields: %v", want)
 	}
 }
-

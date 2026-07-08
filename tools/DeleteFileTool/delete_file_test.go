@@ -6,22 +6,33 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	deletefile "GoWork/tools/DeleteFileTool"
+	
+	"GoWork/tools"
+	deletefiletool "GoWork/tools/DeleteFileTool"
 )
 
-func newTool(t *testing.T, root string) *deletefile.Tool {
-	t.Helper()
-	tool, err := deletefile.New(root)
-	if err != nil {
-		t.Fatalf("failed to construct tool: %v", err)
-	}
-	return tool
+type testTool struct {
+	tools.AgentTool
+	args tools.DispatchArgs
 }
 
-func run(t *testing.T, tool *deletefile.Tool, path string) (string, bool) {
+func (tt testTool) Run(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
+	return tt.AgentTool.Run(ctx, tt.args, input)
+}
+
+func newTool(t *testing.T, root string) testTool {
 	t.Helper()
-	input, err := json.Marshal(deletefile.Input{Path: path})
+	tool := deletefiletool.New()
+	args, err := tools.InitDispatchArgs(root)
+	if err != nil {
+		t.Fatalf("failed to init dispatch args: %v", err)
+	}
+	return testTool{AgentTool: tool, args: args}
+}
+
+func runTool(t *testing.T, tool testTool, path string) (string, bool) {
+	t.Helper()
+	input, err := json.Marshal(struct{ Path string `json:"path"` }{Path: path})
 	if err != nil {
 		t.Fatalf("failed to marshal input: %v", err)
 	}
@@ -31,7 +42,6 @@ func run(t *testing.T, tool *deletefile.Tool, path string) (string, bool) {
 	}
 	return result.Content, result.IsError
 }
-
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
@@ -53,7 +63,7 @@ func TestDeleteFile(t *testing.T) {
 		writeFile(t, filepath.Join(root, "hello", "hi.go"), "package hello")
 
 		tool := newTool(t, root)
-		_, isErr := run(t, tool, "hello/hi.go")
+		_, isErr := runTool(t, tool, "hello/hi.go")
 		if isErr {
 			t.Fatalf("unexpected error result")
 		}
@@ -69,7 +79,7 @@ func TestDeleteFile(t *testing.T) {
 		writeFile(t, filepath.Join(root, "hello", "world", "hi.go"), "package world")
 
 		tool := newTool(t, root)
-		_, isErr := run(t, tool, "hello/world/hi.go")
+		_, isErr := runTool(t, tool, "hello/world/hi.go")
 		if isErr {
 			t.Fatalf("unexpected error result")
 		}
@@ -89,7 +99,7 @@ func TestDeleteFile(t *testing.T) {
 		writeFile(t, filepath.Join(root, "hello", "sibling.txt"), "keep me")
 
 		tool := newTool(t, root)
-		_, isErr := run(t, tool, "hello/hi.go")
+		_, isErr := runTool(t, tool, "hello/hi.go")
 		if isErr {
 			t.Fatalf("unexpected error result")
 		}
@@ -104,7 +114,7 @@ func TestDeleteFile(t *testing.T) {
 		writeFile(t, filepath.Join(root, "onlyfile.txt"), "content")
 
 		tool := newTool(t, root)
-		_, isErr := run(t, tool, "onlyfile.txt")
+		_, isErr := runTool(t, tool, "onlyfile.txt")
 		if isErr {
 			t.Fatalf("unexpected error result")
 		}
@@ -118,7 +128,7 @@ func TestDeleteFile(t *testing.T) {
 		root := t.TempDir()
 		tool := newTool(t, root)
 
-		_, isErr := run(t, tool, "does-not-exist.txt")
+		_, isErr := runTool(t, tool, "does-not-exist.txt")
 		if !isErr {
 			t.Error("expected an error result for a nonexistent file")
 		}
@@ -128,7 +138,7 @@ func TestDeleteFile(t *testing.T) {
 		root := t.TempDir()
 		tool := newTool(t, root)
 
-		_, isErr := run(t, tool, "")
+		_, isErr := runTool(t, tool, "")
 		if !isErr {
 			t.Error("expected an error result for an empty path")
 		}
@@ -145,7 +155,7 @@ func TestDeleteFile(t *testing.T) {
 		}
 
 		tool := newTool(t, root)
-		_, isErr := run(t, tool, filepath.Join(rel, "victim.txt"))
+		_, isErr := runTool(t, tool, filepath.Join(rel, "victim.txt"))
 		if !isErr {
 			t.Error("expected an error result for a path traversal attempt")
 		}
@@ -164,7 +174,7 @@ func TestDeleteFile(t *testing.T) {
 		}
 
 		tool := newTool(t, root)
-		_, isErr := run(t, tool, "escape/victim.txt")
+		_, isErr := runTool(t, tool, "escape/victim.txt")
 		if !isErr {
 			t.Error("expected an error when deleting through a symlink pointing outside root")
 		}
