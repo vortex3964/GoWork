@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 275" width="680" height="275">
+  <style>text { font-family: SFMono-Regular, Menlo, Consolas, 'Liberation Mono', 'DejaVu Sans Mono', monospace; font-size: 18px; font-weight: bold; }</style>
+  <rect x="16" y="16" width="648" height="243" rx="15" ry="15" fill="none" stroke="#458393" stroke-width="3"/>
+  <text x="16" y="59" xml:space="preserve"><tspan fill="#458393">                                                          </tspan></text>
+  <text x="16" y="83" xml:space="preserve"><tspan fill="#458393">   ██████╗  ██████╗ </tspan><tspan fill="#FFF3C8">██╗    ██╗ ██████╗ ██████╗ ██╗  ██╗</tspan><tspan fill="#458393">   </tspan></text>
+  <text x="16" y="107" xml:space="preserve"><tspan fill="#458393">  ██╔════╝ ██╔═══██╗</tspan><tspan fill="#FFF3C8">██║    ██║██╔═══██╗██╔══██╗██║ ██╔╝</tspan><tspan fill="#458393">   </tspan></text>
+  <text x="16" y="131" xml:space="preserve"><tspan fill="#458393">  ██║  ███╗██║   ██║</tspan><tspan fill="#FFF3C8">██║ █╗ ██║██║   ██║██████╔╝█████╔╝ </tspan><tspan fill="#458393">   </tspan></text>
+  <text x="16" y="156" xml:space="preserve"><tspan fill="#458393">  ██║   ██║██║   ██║</tspan><tspan fill="#FFF3C8">██║███╗██║██║   ██║██╔══██╗██╔═██╗ </tspan><tspan fill="#458393">   </tspan></text>
+  <text x="16" y="180" xml:space="preserve"><tspan fill="#458393">  ╚██████╔╝╚██████╔╝</tspan><tspan fill="#FFF3C8">╚███╔███╔╝╚██████╔╝██║  ██║██║  ██╗</tspan><tspan fill="#458393">   </tspan></text>
+  <text x="16" y="204" xml:space="preserve"><tspan fill="#458393">   ╚═════╝  ╚═════╝ </tspan><tspan fill="#FFF3C8"> ╚══╝╚══╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝</tspan><tspan fill="#458393">   </tspan></text>
+  <text x="16" y="229" xml:space="preserve"><tspan fill="#458393">                                                          </tspan></text>
+</svg>

@@ -1,18 +1,22 @@
 # GoWork
-ai agent cli tool for work 
+ai agent cli tool for work
+
+![project logo](logo/logo.svg)
 
 ## scope
 
-this ai agent tool will focus on editing text files like coding agents
-also it will edit excell and other common files mostly code but not only that
+this ai agent tool will focus on editing text files like coding agents\
+also it will edit excell and other common files mostly code  and be able to write docs for reports or read mes 
 
-it will support skills and will allow the user to load skills create his own etch.
+but also
+
+it will support skills and will allow the user to load skills  (dont know if he will be able to create his own the scope is a little big already ).
 
 basic functionality will include context manipulation (user can also do it by hand they will be able to see witch files are in the context)
 
 it will support multiple ai providers via api keys but the focus will be supporting local ai for free on your pc (you will have a list with the local models to select whatever you want)
 
-and it will be able to run commands for you (you will also be able to edit them) but only if you let it do so
+and it will be able to run commands for you (you will also be able to edit them) but only if you let it do so (accept and reject states for the tui)
 
 features will include:
 
@@ -42,6 +46,8 @@ supported ai : gemini for now (and will stay like that untill were ready to tack
 - complete tools used
 - context handling
 - states for the tui and read etch.
+- designing skills
+- actually test tool calls with the llm
 
 ## common errors to check for api providers
 invalid request\
@@ -74,11 +80,13 @@ These are the tools the agent has access to when making tool calls
 ### File system
 read_file(path, start_line?, end_line?) - reads a file, optional line range for large files so you don't blow the context window reading a 2000 line Typst doc.\
 write_file(path, old_str, new_str) - targeted find and replace, errors if old_str matches zero or more than one place.\
+edit_file(path , newContent , linenums) - replace text with percision\
 search_files(path, pattern) - grep across files, returns file path and line number for each match.
-@ create_file(path, content?) - creates a new file, errors if it already exists.\
-@ delete_file(path) - deletes a file.\
-@ list_directory(path, recursive?) - lists files and folders, recursive flag for full project tree.\
-@ get_file_info(path , subpath) - get usefull info about the file 
+create_file(path, content?) - creates a new file, errors if it already exists.\
+move_file(srcpath , dstpath) - moves a file from one dir to another (it can also rename it)\
+delete_file(path) - deletes a file.\
+list_directory(path, recursive?) - lists files and folders, recursive flag for full project tree.\
+get_file_info(path , subpath) - get usefull info about the file 
 
 ### Execution — coding (probably)
 run_command(command, working_dir?, timeout?) - runs any shell command, returns stdout, stderr, and exit code.\
@@ -96,10 +104,20 @@ create_excel_sheet(path, sheet_name) - adds a new sheet to an existing workbook.
 read_memory(key) - reads a value from the memory store by key. The agent calls this at the start of a session to reload what it knows about the project.\
 write_memory(key, value) - writes a value to the memory store. The agent calls this at the end of a session to save things worth remembering.\
 list_skills() - returns all available skill files so the agent can pick which ones are relevant for the current task.\
-create_skill(name, content) - lets the agent write a new skill when it discovers a pattern worth noting (this may not be included)
 
 ### WebSearch
 SearchWebUrl(url) - used to search the url for docs etch or things not in training data
+
+### pdf read
+ReadPdf - used to parse a pdf for an assigment 
+
+## Instalation
+
+COMING SOON
+
+## Running GoWork
+
+ALSO COMMING SOON
 
 ## run test
 
@@ -107,3 +125,4 @@ use this to run all the tests for every tool
 ```
 make test 
 ```
+
