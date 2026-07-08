@@ -6,22 +6,36 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	movefile "GoWork/tools/MoveFileTool"
+	
+	"GoWork/tools"
+	movefiletool "GoWork/tools/MoveFileTool"
 )
 
-func newTool(t *testing.T, root string) *movefile.Tool {
-	t.Helper()
-	tool, err := movefile.New(root)
-	if err != nil {
-		t.Fatalf("failed to construct tool: %v", err)
-	}
-	return tool
+type testTool struct {
+	tools.AgentTool
+	args tools.DispatchArgs
 }
 
-func run(t *testing.T, tool *movefile.Tool, src, dest string) (string, bool) {
+func (tt testTool) Run(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
+	return tt.AgentTool.Run(ctx, tt.args, input)
+}
+
+func newTool(t *testing.T, root string) testTool {
 	t.Helper()
-	input, err := json.Marshal(movefile.Input{SourcePath: src, DestinationPath: dest})
+	tool := movefiletool.New()
+	args, err := tools.InitDispatchArgs(root)
+	if err != nil {
+		t.Fatalf("failed to init dispatch args: %v", err)
+	}
+	return testTool{AgentTool: tool, args: args}
+}
+
+func runTool(t *testing.T, tool testTool, source, dest string) (string, bool) {
+	t.Helper()
+	input, err := json.Marshal(struct {
+		SourcePath      string `json:"source_path"`
+		DestinationPath string `json:"destination_path"`
+	}{SourcePath: source, DestinationPath: dest})
 	if err != nil {
 		t.Fatalf("failed to marshal input: %v", err)
 	}
@@ -53,7 +67,7 @@ func TestMoveFile(t *testing.T) {
 		writeFile(t, filepath.Join(root, "src", "foo.txt"), "hello")
 
 		tool := newTool(t, root)
-		_, isErr := run(t, tool, "src/foo.txt", "dest/nested/foo.txt")
+		_, isErr := runTool(t, tool, "src/foo.txt", "dest/nested/foo.txt")
 		if isErr {
 			t.Fatalf("unexpected error result")
 		}
@@ -76,7 +90,7 @@ func TestMoveFile(t *testing.T) {
 		writeFile(t, filepath.Join(root, "hello", "hi.go"), "package hello")
 
 		tool := newTool(t, root)
-		_, isErr := run(t, tool, "hello/hi.go", "hello/renamed.go")
+		_, isErr := runTool(t, tool, "hello/hi.go", "hello/renamed.go")
 		if isErr {
 			t.Fatalf("unexpected error result")
 		}
@@ -103,7 +117,7 @@ func TestMoveFile(t *testing.T) {
 		writeFile(t, filepath.Join(root, "dest.txt"), "old content")
 
 		tool := newTool(t, root)
-		_, isErr := run(t, tool, "source.txt", "dest.txt")
+		_, isErr := runTool(t, tool, "source.txt", "dest.txt")
 		if isErr {
 			t.Fatalf("unexpected error result")
 		}
@@ -123,7 +137,7 @@ func TestMoveFile(t *testing.T) {
 		writeFile(t, filepath.Join(root, "hello", "hi.go"), "package hello")
 
 		tool := newTool(t, root)
-		_, isErr := run(t, tool, "hello/hi.go", "moved.go")
+		_, isErr := runTool(t, tool, "hello/hi.go", "moved.go")
 		if isErr {
 			t.Fatalf("unexpected error result")
 		}
@@ -139,7 +153,7 @@ func TestMoveFile(t *testing.T) {
 		writeFile(t, filepath.Join(root, "hello", "world", "hi.go"), "package world")
 
 		tool := newTool(t, root)
-		_, isErr := run(t, tool, "hello/world/hi.go", "moved.go")
+		_, isErr := runTool(t, tool, "hello/world/hi.go", "moved.go")
 		if isErr {
 			t.Fatalf("unexpected error result")
 		}
@@ -159,7 +173,7 @@ func TestMoveFile(t *testing.T) {
 		writeFile(t, filepath.Join(root, "hello", "sibling.txt"), "keep me")
 
 		tool := newTool(t, root)
-		_, isErr := run(t, tool, "hello/hi.go", "moved.go")
+		_, isErr := runTool(t, tool, "hello/hi.go", "moved.go")
 		if isErr {
 			t.Fatalf("unexpected error result")
 		}
@@ -174,7 +188,7 @@ func TestMoveFile(t *testing.T) {
 		writeFile(t, filepath.Join(root, "onlyfile.txt"), "content")
 
 		tool := newTool(t, root)
-		_, isErr := run(t, tool, "onlyfile.txt", "moved/onlyfile.txt")
+		_, isErr := runTool(t, tool, "onlyfile.txt", "moved/onlyfile.txt")
 		if isErr {
 			t.Fatalf("unexpected error result")
 		}
@@ -188,7 +202,7 @@ func TestMoveFile(t *testing.T) {
 		root := t.TempDir()
 		tool := newTool(t, root)
 
-		_, isErr := run(t, tool, "does-not-exist.txt", "dest.txt")
+		_, isErr := runTool(t, tool, "does-not-exist.txt", "dest.txt")
 		if !isErr {
 			t.Error("expected an error result for a nonexistent source file")
 		}
@@ -201,7 +215,7 @@ func TestMoveFile(t *testing.T) {
 		root := t.TempDir()
 		tool := newTool(t, root)
 
-		_, isErr := run(t, tool, "", "dest.txt")
+		_, isErr := runTool(t, tool, "", "dest.txt")
 		if !isErr {
 			t.Error("expected an error result for an empty source_path")
 		}
@@ -212,7 +226,7 @@ func TestMoveFile(t *testing.T) {
 		writeFile(t, filepath.Join(root, "source.txt"), "content")
 		tool := newTool(t, root)
 
-		_, isErr := run(t, tool, "source.txt", "")
+		_, isErr := runTool(t, tool, "source.txt", "")
 		if !isErr {
 			t.Error("expected an error result for an empty destination_path")
 		}
@@ -222,7 +236,7 @@ func TestMoveFile(t *testing.T) {
 		root := t.TempDir()
 		tool := newTool(t, root)
 
-		_, isErr := run(t, tool, ".", "dest.txt")
+		_, isErr := runTool(t, tool, ".", "dest.txt")
 		if !isErr {
 			t.Error("expected an error result when source_path is the project root")
 		}
@@ -233,7 +247,7 @@ func TestMoveFile(t *testing.T) {
 		writeFile(t, filepath.Join(root, "source.txt"), "content")
 		tool := newTool(t, root)
 
-		_, isErr := run(t, tool, "source.txt", ".")
+		_, isErr := runTool(t, tool, "source.txt", ".")
 		if !isErr {
 			t.Error("expected an error result when destination_path is the project root")
 		}
@@ -244,7 +258,7 @@ func TestMoveFile(t *testing.T) {
 		writeFile(t, filepath.Join(root, "source.txt"), "content")
 		tool := newTool(t, root)
 
-		_, isErr := run(t, tool, "source.txt", "./source.txt")
+		_, isErr := runTool(t, tool, "source.txt", "./source.txt")
 		if !isErr {
 			t.Error("expected an error result when source and destination resolve to the same path")
 		}
@@ -261,7 +275,7 @@ func TestMoveFile(t *testing.T) {
 		}
 
 		tool := newTool(t, root)
-		_, isErr := run(t, tool, filepath.Join(rel, "victim.txt"), "dest.txt")
+		_, isErr := runTool(t, tool, filepath.Join(rel, "victim.txt"), "dest.txt")
 		if !isErr {
 			t.Error("expected an error result for a source path traversal attempt")
 		}
@@ -281,7 +295,7 @@ func TestMoveFile(t *testing.T) {
 		}
 
 		tool := newTool(t, root)
-		_, isErr := run(t, tool, "source.txt", filepath.Join(rel, "evil.txt"))
+		_, isErr := runTool(t, tool, "source.txt", filepath.Join(rel, "evil.txt"))
 		if !isErr {
 			t.Error("expected an error result for a destination path traversal attempt")
 		}
@@ -297,7 +311,7 @@ func TestMoveFile(t *testing.T) {
 		root := t.TempDir()
 		tool := newTool(t, root)
 
-		_, isErr := run(t, tool, "/etc/passwd", "dest.txt")
+		_, isErr := runTool(t, tool, "/etc/passwd", "dest.txt")
 		if !isErr {
 			t.Error("expected an error result for an absolute source path")
 		}
@@ -308,7 +322,7 @@ func TestMoveFile(t *testing.T) {
 		writeFile(t, filepath.Join(root, "source.txt"), "content")
 		tool := newTool(t, root)
 
-		_, isErr := run(t, tool, "source.txt", "/etc/evil.txt")
+		_, isErr := runTool(t, tool, "source.txt", "/etc/evil.txt")
 		if !isErr {
 			t.Error("expected an error result for an absolute destination path")
 		}
@@ -327,7 +341,7 @@ func TestMoveFile(t *testing.T) {
 		}
 
 		tool := newTool(t, root)
-		_, isErr := run(t, tool, "escape/victim.txt", "dest.txt")
+		_, isErr := runTool(t, tool, "escape/victim.txt", "dest.txt")
 		if !isErr {
 			t.Error("expected an error when reading a source file through a symlink pointing outside root")
 		}
@@ -346,7 +360,7 @@ func TestMoveFile(t *testing.T) {
 		}
 
 		tool := newTool(t, root)
-		_, isErr := run(t, tool, "source.txt", "escape/evil.txt")
+		_, isErr := runTool(t, tool, "source.txt", "escape/evil.txt")
 		if !isErr {
 			t.Error("expected an error when writing a destination file through a symlink pointing outside root")
 		}

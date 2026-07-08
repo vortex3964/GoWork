@@ -101,3 +101,9 @@ create_skill(name, content) - lets the agent write a new skill when it discovers
 ### WebSearch
 SearchWebUrl(url) - used to search the url for docs etch or things not in training data
 
+## run test
+
+use this to run all the tests for every tool
+```
+make test 
+```

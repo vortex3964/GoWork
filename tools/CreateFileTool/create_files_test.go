@@ -7,26 +7,32 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
+	
+	"GoWork/tools"
 	createfile "GoWork/tools/CreateFileTool"
 )
 
-func newTool(t *testing.T, root string) *createfile.Tool {
+func newTool(t *testing.T, root string) tools.AgentTool {
 	t.Helper()
-	tool, err := createfile.New(root)
-	if err != nil {
-		t.Fatalf("failed to construct tool: %v", err)
-	}
+	tool := createfile.New()
 	return tool
 }
 
-func run(t *testing.T, tool *createfile.Tool, path, content string) (string, bool) {
+func run(t *testing.T, tool tools.AgentTool, root string, path, content string) (string, bool) {
 	t.Helper()
 	input, err := json.Marshal(createfile.Input{Path: path, Content: content})
 	if err != nil {
 		t.Fatalf("failed to marshal input: %v", err)
 	}
-	result, err := tool.Run(context.Background(), input)
+	
+	// Initialize dispatch args so we can pass it to tool.Run
+	args, err := tools.InitDispatchArgs(root)
+	if err != nil {
+		t.Fatalf("failed to init dispatch args: %v", err)
+	}
+	defer args.Root.Close() // Prevent leaking the os.Root file descriptor
+
+	result, err := tool.Run(context.Background(), args, input)
 	if err != nil {
 		t.Fatalf("unexpected Go error (not a ToolResult failure): %v", err)
 	}
@@ -38,7 +44,7 @@ func TestCreateFile(t *testing.T) {
 		root := t.TempDir()
 		tool := newTool(t, root)
 
-		_, isErr := run(t, tool, "hello.txt", "hello world")
+		_, isErr := run(t, tool, root, "hello.txt", "hello world")
 		if isErr {
 			t.Fatalf("unexpected error result")
 		}
@@ -56,7 +62,7 @@ func TestCreateFile(t *testing.T) {
 		root := t.TempDir()
 		tool := newTool(t, root)
 
-		_, isErr := run(t, tool, "nested/deep/dir/file.txt", "content")
+		_, isErr := run(t, tool, root, "nested/deep/dir/file.txt", "content")
 		if isErr {
 			t.Fatalf("unexpected error result")
 		}
@@ -71,7 +77,7 @@ func TestCreateFile(t *testing.T) {
 		root := t.TempDir()
 		tool := newTool(t, root)
 
-		content, isErr := run(t, tool, "just/a/dir/", "")
+		content, isErr := run(t, tool, root, "just/a/dir/", "")
 		if isErr {
 			t.Fatalf("unexpected error result: %q", content)
 		}
@@ -89,7 +95,7 @@ func TestCreateFile(t *testing.T) {
 		root := t.TempDir()
 		tool := newTool(t, root)
 
-		_, isErr := run(t, tool, "empty.txt", "")
+		_, isErr := run(t, tool, root, "empty.txt", "")
 		if isErr {
 			t.Fatalf("unexpected error result")
 		}
@@ -107,8 +113,8 @@ func TestCreateFile(t *testing.T) {
 		root := t.TempDir()
 		tool := newTool(t, root)
 
-		run(t, tool, "overwrite.txt", "first")
-		_, isErr := run(t, tool, "overwrite.txt", "second")
+		run(t, tool, root, "overwrite.txt", "first")
+		_, isErr := run(t, tool, root, "overwrite.txt", "second")
 		if isErr {
 			t.Fatalf("unexpected error result")
 		}
@@ -123,7 +129,7 @@ func TestCreateFile(t *testing.T) {
 		root := t.TempDir()
 		tool := newTool(t, root)
 
-		_, isErr := run(t, tool, "", "content")
+		_, isErr := run(t, tool, root, "", "content")
 		if !isErr {
 			t.Error("expected an error result for an empty path")
 		}
@@ -133,7 +139,7 @@ func TestCreateFile(t *testing.T) {
 		root := t.TempDir()
 		tool := newTool(t, root)
 
-		_, isErr := run(t, tool, "../outside/evil.txt", "malicious")
+		_, isErr := run(t, tool, root, "../outside/evil.txt", "malicious")
 		if !isErr {
 			t.Error("expected an error result for a path traversal attempt")
 		}
@@ -148,7 +154,7 @@ func TestCreateFile(t *testing.T) {
 		root := t.TempDir()
 		tool := newTool(t, root)
 
-		_, isErr := run(t, tool, "/etc/evil.txt", "malicious")
+		_, isErr := run(t, tool, root, "/etc/evil.txt", "malicious")
 		if !isErr {
 			t.Error("expected an error result for an absolute path")
 		}
@@ -167,7 +173,7 @@ func TestCreateFile(t *testing.T) {
 		}
 
 		tool := newTool(t, root)
-		_, isErr := run(t, tool, "escape/evil.txt", "malicious")
+		_, isErr := run(t, tool, root, "escape/evil.txt", "malicious")
 		if !isErr {
 			t.Error("expected an error when creating a file through a symlink pointing outside root")
 		}
@@ -178,13 +184,20 @@ func TestCreateFile(t *testing.T) {
 	})
 
 	t.Run("returns a Go error for malformed input JSON", func(t *testing.T) {
-		tool := newTool(t, t.TempDir())
-		_, err := tool.Run(context.Background(), json.RawMessage(`{not valid json`))
+		root := t.TempDir()
+		tool := newTool(t, root)
+		
+		args, err := tools.InitDispatchArgs(root)
+		if err != nil {
+			t.Fatalf("failed to init dispatch args: %v", err)
+		}
+		defer args.Root.Close()
+
+		_, err = tool.Run(context.Background(), args, json.RawMessage(`{not valid json`))
 		if err == nil {
 			t.Error("expected a Go error for malformed input JSON")
 		}
 	})
-
 }
 
 func containsAny(s string, subs ...string) bool {
