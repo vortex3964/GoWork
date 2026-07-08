@@ -1,5 +1,5 @@
 //DESC: the interface every tool must follow
-// plus things multiple tools would like to have access to
+//plus things multiple tools would like to have access to
 
 package tools
 
@@ -19,7 +19,7 @@ import (
 type Schema map[string]any
 
 //NOTE: Kind categorizes what a tool does, independent of its name or logic.
-// This isn't used by the LLM — it's for the dispatcher/TUI to make (like how to render the results).
+// This isn't used by the LLM it's for the dispatcher/TUI to make (like how to render the results).
 type Kind int
 
 const (
@@ -52,7 +52,7 @@ func (k Kind) String() string {
 
 //IMPORTANT: ToolResult is what every tool returns on a completed run, whether the
 // underlying operation succeeded or failed. Using one type for both cases
-// means the LLM always receives something it can read — a failed delete
+// means the LLM always receives something it can read a failed delete
 // and a successful delete look the same shape, just with IsError flipped.
 type ToolResult struct {
 	Content string
@@ -78,6 +78,11 @@ type DispatchArgs struct {
 }
 
 func InitDispatchArgs(projectRoot string) (DispatchArgs , error) {
+	
+	if projectRoot == "" {
+		return DispatchArgs{} , fmt.Errorf("projectRoot cant be empty")
+	}
+
 	abs , err := filepath.Abs(projectRoot)
 
 	if err != nil {
@@ -105,9 +110,56 @@ type AgentTool interface {
 	Kind() Kind // Kind categorizes this tool for dispatcher/UI purposes.
 
 	//NOTE: Run executes the tool with the given raw JSON input.
-	// ctx carries cancellation — long-running tools should check
+	// ctx carries cancellation long-running tools should check
 	// The returned error is for failures for the code
 	Run(ctx context.Context, args DispatchArgs , input json.RawMessage) (ToolResult, error)
+}
+
+//code for the dispatcher
+type Dispatcher struct {
+	tools map[string]AgentTool
+	args DispatchArgs
+}
+
+type ToolUse struct {
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
+}
+
+func InitDispacher(projectRoot string , tools ... AgentTool) ( *Dispatcher , error ) {
+	args , err := InitDispatchArgs(projectRoot)
+
+	if err != nil {
+		return nil , err
+	}
+
+	tool_map := make(map[string]AgentTool , len(tools))
+
+	for _ , tool := range tools {
+		//set the tool objs to the map so they can be called
+		tool_map[tool.Name()] = tool
+	}
+
+
+	return  &Dispatcher{tools: tool_map , args: args } , nil
+}
+
+//NOTE:it iss the providers class job to parse the json
+//from the llm and actually call dispatch (plus init the tool use struct)
+func (d *Dispatcher) Dispach(ctx context.Context , tu ToolUse )  ToolResult {
+	tool , ok := d.tools[tu.Name]
+
+	if !ok {
+		return Errf("unknown tool:%q",tu.Name)
+	}
+
+	res , err := tool.Run(ctx , d.args , tu.Input)
+
+	if err != nil {
+		return Errf("tool %v failed:%s" , tu.Name , err)
+	}
+
+	return res
 }
 
 // LoadIgnores loads .gitignore and .agentignore from root, if present.

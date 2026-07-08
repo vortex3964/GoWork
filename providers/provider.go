@@ -11,6 +11,10 @@
 //it every time for every new prompt inside the generate function witch currently is 
 //only in the gemini file
 
+//TODO: add tool calls to the llm 
+
+//TODO: properly parce the llms response right now its scuffed
+
 //IMPORTANT: Generate should handle retries or handle high server demands etch
 package providers
 
