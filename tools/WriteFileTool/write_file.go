@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
 	"GoWork/tools"
 )
@@ -21,22 +20,10 @@ type Input struct {
 	ReplaceAll bool   `json:"replace_all_mentions"`
 }
 
-type Tool struct {
-	root     *os.Root
-	rootPath string
-}
+type Tool struct {}
 
-func New(projectRoot string) (*Tool, error) {
-	abs, err := filepath.Abs(projectRoot)
-	if err != nil {
-		return nil, fmt.Errorf("resolving project root: %w", err)
-	}
-	root, err := os.OpenRoot(abs)
-	if err != nil {
-		return nil, fmt.Errorf("opening project root: %w", err)
-	}
-	return &Tool{root: root, rootPath: abs}, nil
-}
+//NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface 
+func New() tools.AgentTool { return &Tool{} }
 
 func (t *Tool) Name() string { return "write_file"}
 
@@ -86,7 +73,7 @@ func count_appearance(file_contents []byte , search string) (int , error){
 
 //NOTE: this is a simple implementation we dont make any validation checks (for example if the llm actually read the file recently etch)
 //just replace older text with the new one
-func (t *Tool) Run(ctx context.Context, rawInput json.RawMessage) (tools.ToolResult, error) {
+func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs , rawInput json.RawMessage) (tools.ToolResult, error) {
 	var input Input
 	if err := json.Unmarshal(rawInput, &input); err != nil {
 		return tools.ToolResult{}, fmt.Errorf("write_file: invalid input: %w", err)
@@ -105,7 +92,7 @@ func (t *Tool) Run(ctx context.Context, rawInput json.RawMessage) (tools.ToolRes
 	}
 
 	// Open and read the existing file through the sandboxed root.
-	f, err := t.root.Open(input.FilePath)
+	f, err := args.Root.Open(input.FilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return tools.Errf("file %s does not exist, create it first using the create_file tool", input.FilePath), nil
@@ -148,7 +135,7 @@ func (t *Tool) Run(ctx context.Context, rawInput json.RawMessage) (tools.ToolRes
 	}
 
 	// Reopen (truncating) through the sandboxed root and write the new contents.
-	wf, err := t.root.OpenFile(input.FilePath, os.O_WRONLY|os.O_TRUNC, 0)
+	wf, err := args.Root.OpenFile(input.FilePath, os.O_WRONLY|os.O_TRUNC, 0)
 	if err != nil {
 		return tools.ToolResult{}, fmt.Errorf("write_file: opening %s for write: %w", input.FilePath, err)
 	}

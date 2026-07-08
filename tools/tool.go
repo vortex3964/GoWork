@@ -70,9 +70,34 @@ func Errf(format string, args ...any) ToolResult {
 	return ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }
 
+//DESC: DispatchArgs holds run-wide context that's the same for every tool call.
+// Built once by the dispatcher at startup and passed into every Run call.
+type DispatchArgs struct {
+	Root *os.Root
+	RootPath string
+}
+
+func InitDispatchArgs(projectRoot string) (DispatchArgs , error) {
+	abs , err := filepath.Abs(projectRoot)
+
+	if err != nil {
+		return DispatchArgs{} , fmt.Errorf("resolving project root:%w",err)
+	}
+
+	root , err := os.OpenRoot(abs)
+
+	if err != nil {
+		return DispatchArgs{} , fmt.Errorf("opening project root failed:%w" , err)
+	}
+
+	return DispatchArgs{Root: root , RootPath: abs} , nil
+}
+
 //DESC: AgentTool is the contract every tool must satisfy. A tool is anything
 // that can describe itself to the LLM  and execute a call from it (Run). 
 // Nothing outside this interface should be required to add a new tool.
+// each tool will have a tool struct even if its empty just to implement the interface
+// or the dispatcher wont call it
 type AgentTool interface {
 	Name() string //Name is the identifier the LLM uses to call this tool (unique across every tool)
 	Description() string //Description explains what the tool does and when to use it.
@@ -82,7 +107,7 @@ type AgentTool interface {
 	//NOTE: Run executes the tool with the given raw JSON input.
 	// ctx carries cancellation — long-running tools should check
 	// The returned error is for failures for the code
-	Run(ctx context.Context, input json.RawMessage) (ToolResult, error)
+	Run(ctx context.Context, args DispatchArgs , input json.RawMessage) (ToolResult, error)
 }
 
 // LoadIgnores loads .gitignore and .agentignore from root, if present.

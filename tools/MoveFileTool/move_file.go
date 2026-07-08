@@ -1,4 +1,4 @@
-// DESC: Package movefile implements the move_file tool: moves a file from one
+// DESC: package MoveFile implements the move_file tool: moving  a file from one
 // path to another within the project root. If the destination is in the same
 // directory as the source but has a different filename, this performs a
 // rename. Missing destination directories are created automatically, and if
@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"os"
 	"path/filepath"
 
 	"GoWork/tools"
@@ -23,22 +22,10 @@ type Input struct {
 	DestinationPath string `json:"destination_path"`
 }
 
-type Tool struct {
-	root     *os.Root
-	rootPath string
-}
+type Tool struct {}
 
-func New(projectRoot string) (*Tool, error) {
-	abs, err := filepath.Abs(projectRoot)
-	if err != nil {
-		return nil, fmt.Errorf("resolving project root: %w", err)
-	}
-	root, err := os.OpenRoot(abs)
-	if err != nil {
-		return nil, fmt.Errorf("opening project root: %w", err)
-	}
-	return &Tool{root: root, rootPath: abs}, nil
-}
+//NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface 
+func New() tools.AgentTool { return &Tool{} }
 
 func (t *Tool) Name() string { return "move_file" }
 
@@ -65,7 +52,7 @@ func (t *Tool) InputSchema() tools.Schema {
 
 func (t *Tool) Kind() tools.Kind { return tools.KindWrite }
 
-func (t *Tool) Run(ctx context.Context, rawInput json.RawMessage) (tools.ToolResult, error) {
+func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs,rawInput json.RawMessage) (tools.ToolResult, error) {
 	var input Input
 	if err := json.Unmarshal(rawInput, &input); err != nil {
 		return tools.ToolResult{}, fmt.Errorf("move_file: invalid input: %w", err)
@@ -82,7 +69,7 @@ func (t *Tool) Run(ctx context.Context, rawInput json.RawMessage) (tools.ToolRes
 
 	// Read the source file fully before touching the destination, so a failed
 	// write never leaves us in a state where the source has already been removed.
-	file, err := t.root.Open(input.SourcePath)
+	file, err := args.Root.Open(input.SourcePath)
 	if err != nil {
 		return tools.Errf("error reading source file: %s", err), nil
 	}
@@ -94,12 +81,12 @@ func (t *Tool) Run(ctx context.Context, rawInput json.RawMessage) (tools.ToolRes
 
 	destDir := filepath.Dir(input.DestinationPath)
 	if destDir != "." {
-		if err := tools.MkdirAllInRoot(t.root, destDir); err != nil {
+		if err := tools.MkdirAllInRoot(args.Root, destDir); err != nil {
 			return tools.Errf("error creating destination directories: %s", err), nil
 		}
 	}
 
-	dest, err := t.root.Create(input.DestinationPath)
+	dest, err := args.Root.Create(input.DestinationPath)
 	if err != nil {
 		return tools.Errf("error writing destination file: %s", err), nil
 	}
@@ -111,7 +98,7 @@ func (t *Tool) Run(ctx context.Context, rawInput json.RawMessage) (tools.ToolRes
 		return tools.Errf("error writing destination file: %s", err), nil
 	}
 
-	if err := t.root.Remove(input.SourcePath); err != nil {
+	if err := args.Root.Remove(input.SourcePath); err != nil {
 		return tools.Errf("moved file but failed to remove original at %s: %s", input.SourcePath, err), nil
 	}
 
@@ -119,8 +106,8 @@ func (t *Tool) Run(ctx context.Context, rawInput json.RawMessage) (tools.ToolRes
 	srcParent := filepath.Dir(input.SourcePath)
 	// srcParent == "." means the source file was at the project root itself; never remove the root.
 	if srcParent != "." {
-		if entries, err := fs.ReadDir(t.root.FS(), srcParent); err == nil && len(entries) == 0 {
-			if err := t.root.Remove(srcParent); err == nil {
+		if entries, err := fs.ReadDir(args.Root.FS(), srcParent); err == nil && len(entries) == 0 {
+			if err := args.Root.Remove(srcParent); err == nil {
 				extra = " also deleted now-empty directory " + srcParent
 			}
 		}

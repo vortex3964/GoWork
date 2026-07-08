@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"strconv"
 
@@ -18,24 +17,10 @@ type Input struct {
 	Path string `json:"path"`
 }
 
-// Tool implements tools.AgentTool for listing directory contents.
-type Tool struct {
-	root     *os.Root // sandboxed handle — operations cannot escape this, even via symlinks
-	rootPath string    // absolute path on disk, needed only for LoadIgnores
-}
+type Tool struct {}
 
-// New creates a get_files_info tool sandboxed to projectRoot.
-func New(projectRoot string) (*Tool, error) {
-	abs, err := filepath.Abs(projectRoot)
-	if err != nil {
-		return nil, fmt.Errorf("resolving project root: %w", err)
-	}
-	root, err := os.OpenRoot(abs)
-	if err != nil {
-		return nil, fmt.Errorf("opening project root: %w", err)
-	}
-	return &Tool{root: root, rootPath: abs}, nil
-}
+//NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface 
+func New() tools.AgentTool { return &Tool{} }
 
 func (t *Tool) Name() string { return "get_files_info" }
 
@@ -58,7 +43,7 @@ func (t *Tool) InputSchema() tools.Schema {
 
 func (t *Tool) Kind() tools.Kind { return tools.KindRead }
 
-func (t *Tool) Run(ctx context.Context, rawInput json.RawMessage) (tools.ToolResult, error) {
+func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs , rawInput json.RawMessage) (tools.ToolResult, error) {
 	var input Input
 	if err := json.Unmarshal(rawInput, &input); err != nil {
 		return tools.ToolResult{}, fmt.Errorf("get_files_info: invalid input: %w", err)
@@ -70,12 +55,12 @@ func (t *Tool) Run(ctx context.Context, rawInput json.RawMessage) (tools.ToolRes
 		dir = "."
 	}
 
-	entries, err := fs.ReadDir(t.root.FS(), dir)
+	entries, err := fs.ReadDir(args.Root.FS(), dir)
 	if err != nil {
 		return tools.Errf("error reading directory: %s", err), nil
 	}
 
-	ignores := tools.LoadIgnores(t.rootPath)
+	ignores := tools.LoadIgnores(args.RootPath)
 
 	var resp string
 	for _, entry := range entries {

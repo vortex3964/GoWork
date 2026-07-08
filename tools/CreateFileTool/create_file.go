@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -19,22 +18,10 @@ type Input struct {
 	Content string `json:"content"`
 }
 
-type Tool struct {
-	root     *os.Root
-	rootPath string
-}
+type Tool struct {}
 
-func New(projectRoot string) (*Tool, error) {
-	abs, err := filepath.Abs(projectRoot)
-	if err != nil {
-		return nil, fmt.Errorf("resolving project root: %w", err)
-	}
-	root, err := os.OpenRoot(abs)
-	if err != nil {
-		return nil, fmt.Errorf("opening project root: %w", err)
-	}
-	return &Tool{root: root, rootPath: abs}, nil
-}
+//NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface 
+func New() tools.AgentTool { return &Tool{} }
 
 func (t *Tool) Name() string { return "create_file" }
 
@@ -61,7 +48,7 @@ func (t *Tool) InputSchema() tools.Schema {
 
 func (t *Tool) Kind() tools.Kind { return tools.KindWrite }
 
-func (t *Tool) Run(ctx context.Context, rawInput json.RawMessage) (tools.ToolResult, error) {
+func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.RawMessage) (tools.ToolResult, error) {
 	var input Input
 	if err := json.Unmarshal(rawInput, &input); err != nil {
 		return tools.ToolResult{}, fmt.Errorf("create_file: invalid input: %w", err)
@@ -70,21 +57,20 @@ func (t *Tool) Run(ctx context.Context, rawInput json.RawMessage) (tools.ToolRes
 		return tools.Errf("path is required"), nil
 	}
 
-	// A trailing separator means "just create this directory, no file".
 	if strings.HasSuffix(input.Path, "/") || strings.HasSuffix(input.Path, "\\") {
 		dir := filepath.Clean(input.Path)
-		if err := tools.MkdirAllInRoot(t.root, dir); err != nil {
+		if err := tools.MkdirAllInRoot(args.Root, dir); err != nil {
 			return tools.Errf("error creating directories: %s", err), nil
 		}
-		return tools.Ok(fmt.Sprintf("successfully created directory %s", filepath.Join(t.rootPath, dir))), nil
+		return tools.Ok(fmt.Sprintf("successfully created directory %s", filepath.Join(args.RootPath, dir))), nil
 	}
 
 	dir := filepath.Dir(input.Path)
-	if err := tools.MkdirAllInRoot(t.root, dir); err != nil {
+	if err := tools.MkdirAllInRoot(args.Root, dir); err != nil {
 		return tools.Errf("error creating directories: %s", err), nil
 	}
 
-	file, err := t.root.Create(input.Path)
+	file, err := args.Root.Create(input.Path)
 	if err != nil {
 		return tools.Errf("error writing file: %s", err), nil
 	}
@@ -93,5 +79,5 @@ func (t *Tool) Run(ctx context.Context, rawInput json.RawMessage) (tools.ToolRes
 		return tools.Errf("error writing file: %s", err), nil
 	}
 
-	return tools.Ok(fmt.Sprintf("successfully created file at %s", filepath.Join(t.rootPath, input.Path))), nil
+	return tools.Ok(fmt.Sprintf("successfully created file at %s", filepath.Join(args.RootPath, input.Path))), nil
 }
