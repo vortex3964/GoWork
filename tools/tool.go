@@ -10,6 +10,8 @@ import (
 	"strings"
 	"os"
 	"path/filepath"
+	"time"
+
 	ignore "github.com/sabhiram/go-gitignore"
 )
 
@@ -68,6 +70,78 @@ func Ok(content string) ToolResult {
 //NOTE:Use this for expected failures the model should see and can act on.
 func Errf(format string, args ...any) ToolResult {
 	return ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+}
+
+//DESC: ReadState this will include what lines we read from a file 
+// so that when we try to read a file we wont read the same lines
+// if a change to the file is detected then the entry is discarded
+
+type LineRanges struct {
+	start int // where we start reading the file
+	offset int // where we stop for pagination
+}
+
+type ReadState struct {
+	ModTime time.Time // track the last time the file changed
+	LineCount int // total lines of a file
+	Ranges map[LineRanges]string //Ranges for a file
+}
+
+//NOTE: right now we dont plan to use multiple tool calls per turn 
+// so theres no need for mutexes but if that changes then ReadState needs mutex
+var cache = map[string]*ReadState{}
+
+// Get returns cached content for a range, but only if the file on disk
+// hasn't changed since it was cached. Any mismatch no entry, no range,
+// or a stale mtime is a miss, so callers always fall through to a real read
+func (r *ReadState) Get(path string, lr LineRanges) (string, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", false
+	}
+	if !info.ModTime().Equal(r.ModTime) {
+		return "invalid", false // file changed since this was cached
+	}
+	content , ok := r.Ranges[lr]
+	return content, ok
+}
+
+// Put stores freshly-read content for a range along with the file's
+// current mtime/line count. Call this right after every real disk read
+func (r *ReadState) Put(lr LineRanges, content string, modTime time.Time, lineCount int) {
+	if r.Ranges == nil {
+		r.Ranges = make(map[LineRanges]string)
+	}
+	r.ModTime = modTime
+	r.LineCount = lineCount
+	r.Ranges[lr] = content
+}
+
+// InvalidateFrom drops every cached range starting at or after fromLine
+// call this after a write that changes line count, since everything past
+// the edit point is now mislabeled.
+func (r *ReadState) InvalidateFrom(fromLine int) {
+	for lr := range r.Ranges {
+		if lr.start >= fromLine {
+			delete(r.Ranges, lr)
+		}
+	}
+}
+
+// Load fetches the ReadState for a path.
+func Load(path string) *ReadState {
+	rs, ok := cache[path]
+	if !ok {
+		rs = &ReadState{Ranges: make(map[LineRanges]string)}
+		cache[path] = rs
+	}
+	return rs
+}
+
+// Delete removes a file's entire cache entry  e.g. the file was deleted,
+// or you want to force a full re-read next time it's touched.
+func Delete(path string) {
+	delete(cache, path)
 }
 
 //DESC: DispatchArgs holds run-wide context that's the same for every tool call.
