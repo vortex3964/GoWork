@@ -81,29 +81,29 @@ type LineRanges struct {
 	offset int // where we stop for pagination
 }
 
+//NOTE: right now we dont plan to use multiple tool calls per turn 
+// so theres no need for mutexes but if that changes then ReadState needs mutex
 type ReadState struct {
 	ModTime time.Time // track the last time the file changed
 	LineCount int // total lines of a file
 	Ranges map[LineRanges]string //Ranges for a file
 }
 
-//NOTE: right now we dont plan to use multiple tool calls per turn 
-// so theres no need for mutexes but if that changes then ReadState needs mutex
-var cache = map[string]*ReadState{}
+var Cache = map[string]*ReadState{}
 
 // Get returns cached content for a range, but only if the file on disk
 // hasn't changed since it was cached. Any mismatch no entry, no range,
 // or a stale mtime is a miss, so callers always fall through to a real read
-func (r *ReadState) Get(path string, lr LineRanges) (string, bool) {
+func (r *ReadState) Get(path string, lr LineRanges) bool {
 	info, err := os.Stat(path)
 	if err != nil {
-		return "", false
+		return false
 	}
 	if !info.ModTime().Equal(r.ModTime) {
-		return "invalid", false // file changed since this was cached
+		return false // file changed since this was cached
 	}
-	content , ok := r.Ranges[lr]
-	return content, ok
+	_ , ok := r.Ranges[lr]
+	return ok
 }
 
 // Put stores freshly-read content for a range along with the file's
@@ -130,10 +130,10 @@ func (r *ReadState) InvalidateFrom(fromLine int) {
 
 // Load fetches the ReadState for a path.
 func Load(path string) *ReadState {
-	rs, ok := cache[path]
+	rs, ok := Cache[path]
 	if !ok {
 		rs = &ReadState{Ranges: make(map[LineRanges]string)}
-		cache[path] = rs
+		Cache[path] = rs
 	}
 	return rs
 }
@@ -141,7 +141,7 @@ func Load(path string) *ReadState {
 // Delete removes a file's entire cache entry  e.g. the file was deleted,
 // or you want to force a full re-read next time it's touched.
 func Delete(path string) {
-	delete(cache, path)
+	delete(Cache, path)
 }
 
 //DESC: DispatchArgs holds run-wide context that's the same for every tool call.
