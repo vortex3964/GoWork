@@ -48,6 +48,7 @@ supported ai : gemini for now (and will stay like that untill were ready to tack
 - states for the tui and read etch.
 - designing skills
 - actually test tool calls with the llm
+- interupt handling and time excited error handling in tool calls (so that when the user wants to interupt a tool call they can or if a tool call is taking too long)
 
 ## common errors to check for api providers
 invalid request\
