@@ -33,6 +33,7 @@ func (t *Tool) Description() string {
 	return `Read a range of lines from a text file.
 
 Returns the requested lines with 1-indexed line numbers prefixed, so you can reference exact locations in later edits. Large files are not returned in full use starting_line and offset_lines to page through them.
+If you already read this exact range and the file hasn't changed since, this returns a short notice telling you that instead of repeating the content reuse what you already have in context.
 If the file has changed since you last read it, the returned content reflects the current state on disk so use later code blocks for edits as they are more reliable to not be stale`
 }
 
@@ -172,7 +173,14 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	rs := tools.Load(absPath)
 
 	if rs.Get(absPath, lr) {
-		return tools.Ok(rs.Ranges[lr]), nil
+		end := start + offset - 1
+		if rs.LineCount > 0 && end > rs.LineCount {
+			end = rs.LineCount
+		}
+		return tools.Ok(fmt.Sprintf(
+			"You already read lines %d-%d of %s earlier in this conversation and the file hasn't changed since then no need to read it again, reuse what's already in your context.",
+			start, end, input.Path,
+		)), nil
 	}
 
 	//since the file exists we need to read the contents now and return it
