@@ -15,7 +15,8 @@ import (
 	ignore "github.com/sabhiram/go-gitignore"
 )
 
-//TODO: add a handler for read file states (so we know if and how mutch of the file is in context before writting to it)
+//NOTE: read file state handling lives below (ReadState/Cache) so we know if
+// and how much of a file is already in context before writing to it.
 
 //NOTE: Schema represents a JSON schema describing a tool's input, sent to the LLM so it knows what arguments to provide and in what shape.
 type Schema map[string]any
@@ -79,6 +80,13 @@ func Errf(format string, args ...any) ToolResult {
 type LineRanges struct {
 	start int // where we start reading the file
 	offset int // where we stop for pagination
+}
+
+// NewLineRanges builds a LineRanges cache key. Exported because the fields
+// above are private: tools live in their own packages and need a way to
+// build the key without reaching into ReadState's internals.
+func NewLineRanges(start, offset int) LineRanges {
+	return LineRanges{start: start, offset: offset}
 }
 
 //NOTE: right now we dont plan to use multiple tool calls per turn 
@@ -287,4 +295,3 @@ func MkdirAllInRoot(root *os.Root, dir string) error {
 	}
 	return nil
 }
-
