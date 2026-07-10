@@ -320,11 +320,10 @@ func TestRun_InvalidJSONReturnsAGoError(t *testing.T) {
 	}
 }
 
-// TestRun_CacheHitServesCachedContent proves a repeat read of the same
-// range on an unchanged file is served from tools.Cache rather than disk:
-// it plants a sentinel string directly into the cached range (without
-// touching the file or its mtime) and checks that sentinel comes back.
-func TestRun_CacheHitServesCachedContent(t *testing.T) {
+// TestRun_CacheHitReturnsAlreadyReadNotice proves a repeat read of the same
+// range on an unchanged file returns a short "already read" notice instead
+// of repeating the file content.
+func TestRun_CacheHitReturnsAlreadyReadNotice(t *testing.T) {
 	dir := t.TempDir()
 	args := newArgs(t, dir)
 	tool := readfiletool.New()
@@ -334,21 +333,28 @@ func TestRun_CacheHitServesCachedContent(t *testing.T) {
 	if first.IsError {
 		t.Fatalf("unexpected error: %s", first.Content)
 	}
-
-	absPath := filepath.Join(args.RootPath, "f.txt")
-	lr := tools.NewLineRanges(1, readfiletool.DEFAULT_MAX_LINES)
-	rs := tools.Load(absPath)
-	if _, ok := rs.Ranges[lr]; !ok {
-		t.Fatalf("expected range %+v to be cached after first read", lr)
+	if want := expectedRange(1, 5); first.Content != want {
+		t.Fatalf("first read = %q, want the file content %q", first.Content, want)
 	}
-	rs.Ranges[lr] = "SENTINEL-CACHED-CONTENT"
 
 	second := run(t, tool, args, readfiletool.Input{Path: "f.txt"})
 	if second.IsError {
 		t.Fatalf("unexpected error: %s", second.Content)
 	}
-	if second.Content != "SENTINEL-CACHED-CONTENT" {
-		t.Errorf("expected cache hit to serve the sentinel, got %q", second.Content)
+	if second.Content == first.Content {
+		t.Fatalf("expected the second read to return a notice, not the file content again")
+	}
+	if !strings.Contains(second.Content, "already read") {
+		t.Errorf("Content = %q, want it to mention the lines were already read", second.Content)
+	}
+	if !strings.Contains(second.Content, "f.txt") {
+		t.Errorf("Content = %q, want it to name the file", second.Content)
+	}
+	if !strings.Contains(second.Content, "1-5") {
+		t.Errorf("Content = %q, want it to mention the actual line range 1-5 (clamped to the file's length)", second.Content)
+	}
+	if strings.Contains(second.Content, "line 1\n") {
+		t.Errorf("Content = %q, want it to NOT repeat the file content", second.Content)
 	}
 }
 
