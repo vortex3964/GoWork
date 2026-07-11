@@ -74,7 +74,7 @@ things to consider :
 maybe there should be a way for the user to prompt the ai to correct things 
 while the changes havent been finalised (will inspect and consider if this is in this projects scope)
 
-## Tools the agent has
+## Harness
 
 These are the tools the agent has access to when making tool calls
 
@@ -82,35 +82,29 @@ These are the tools the agent has access to when making tool calls
 read_file(path, start_line?, end_line?) - reads a file, optional line range for large files so you don't blow the context window reading a 2000 line Typst doc.\
 write_file(path, old_str, new_str) - targeted find and replace, errors if old_str matches zero or more than one place.\
 edit_file(path , newContent , linenums) - replace text with percision\
-search_files(path, pattern) - grep across files, returns file path and line number for each match.
+grep_files(path, pattern) - grep across files, returns file path and line number for each match.
 create_file(path, content?) - creates a new file, errors if it already exists.\
 move_file(srcpath , dstpath) - moves a file from one dir to another (it can also rename it)\
 delete_file(path) - deletes a file.\
 list_directory(path, recursive?) - lists files and folders, recursive flag for full project tree.\
 get_file_info(path , subpath) - get usefull info about the file 
 
-### Execution — coding (probably)
-run_command(command, working_dir?, timeout?) - runs any shell command, returns stdout, stderr, and exit code.\
-get_diagnostics(path) - returns compiler or linter errors for a file without running the program. For Go this wraps go vet.\
-compile(path , args) - wraps typst compile but returns errors in a clean structured way.
-
-### for excel
+### Excel
 read_excel(path, sheet?) - reads a sheet and returns it as a grid the agent can reason about. Defaults to first sheet if none specified.\
 read_excel_range(path, sheet, start_row, start_col, end_row, end_col) - reads a specific range instead of the whole sheet. Critical for large spreadsheets where reading everything wastes context.\
-write_excel_cell(path, sheet, row, col, value) - writes a single cell. This is the atomic operation the agent uses after deciding what to fill in.\
-list_excel_sheets(path) - returns all sheet names in a workbook so the agent knows what it's working with.\
-create_excel_sheet(path, sheet_name) - adds a new sheet to an existing workbook.
+edit_excel() - edit the contents of an excel sheet
 
-### Memory and skills (some of them maybe shouldnt be used by the ai)
-read_memory(key) - reads a value from the memory store by key. The agent calls this at the start of a session to reload what it knows about the project.\
-write_memory(key, value) - writes a value to the memory store. The agent calls this at the end of a session to save things worth remembering.\
+### Skills
 list_skills() - returns all available skill files so the agent can pick which ones are relevant for the current task.\
+create_skil() - create and save a new skill for the llm to use
+edit_skil() - edit an existing skill
+delete_skil() - delete an existing skill
 
 ### WebSearch
 SearchWebUrl(url) - used to search the url for docs etch or things not in training data
 
-### pdf read
-ReadPdf - used to parse a pdf for an assigment 
+### Pdf
+ReadPdf() - used to parse a pdf for an assigment 
 
 ## Instalation
 
