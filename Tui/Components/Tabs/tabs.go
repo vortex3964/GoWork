@@ -1,8 +1,6 @@
 package tabs
 
 import (
-	"strings"
-
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -12,10 +10,6 @@ import (
 type tab struct {
 	Name string
 }
-
-var gapStyle = lipgloss.NewStyle().
-	Border(lipgloss.Border{Bottom: "─"}, false, false, true, false).
-	BorderForeground(style.Border)
 
 type Model struct {
 	Tabs      []tab
@@ -39,40 +33,70 @@ func (m Model) Active() tab {
 	return m.Tabs[m.ActiveIdx]
 }
 
-func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "tab":
-			if m.ActiveIdx < len(m.Tabs)-1 {
-				m.ActiveIdx++
-			}
-		case "shift+tab":
-			if m.ActiveIdx > 0 {
-				m.ActiveIdx--
-			}
+func (m *Model) Next() {
+	if m.ActiveIdx < len(m.Tabs)-1 {
+		m.ActiveIdx++
+	}
+}
+
+func (m *Model) Prev() {
+	if m.ActiveIdx > 0 {
+		m.ActiveIdx--
+	}
+}
+
+// clickRect + hit-testing: lets main.go forward a mouse click's X
+// coordinate and have the tab strip figure out which tab (if any) was
+// hit, without main.go needing to know tab widths itself.
+type clickRect struct {
+	x0, x1 int
+	idx    int
+}
+
+func (m Model) rects() []clickRect {
+	rects := make([]clickRect, 0, len(m.Tabs))
+	x := 0
+	for idx, t := range m.Tabs {
+		w := lipgloss.Width(styleFor(idx == m.ActiveIdx).Render(t.Name))
+		rects = append(rects, clickRect{x0: x, x1: x + w, idx: idx})
+		x += w
+	}
+	return rects
+}
+
+// HandleClick returns true (and updates ActiveIdx) if the given X
+// coordinate landed on a tab. Y is not checked here main.go is
+// expected to only forward clicks whose Y already matches the top-bar
+// row, since that's the only row tabs occupies.
+func (m *Model) HandleClick(x int) bool {
+	for _, r := range m.rects() {
+		if x >= r.x0 && x < r.x1 {
+			m.ActiveIdx = r.idx
+			return true
 		}
 	}
+	return false
+}
+
+func styleFor(active bool) lipgloss.Style {
+	if active {
+		return style.TabStyle.Border(style.ActiveTabBorder)
+	}
+	return style.TabStyle.Border(style.TabBorder)
+}
+
+// Update now only exists to satisfy the same shape every other
+// sub-model uses; it deliberately does nothing with tea.KeyMsg. Mouse
+// clicks are routed via HandleClick from main.go instead of tea.MouseMsg
+// directly, so tabs doesn't need to know its own screen position.
+func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	return m, nil
 }
 
 func (m Model) View() string {
 	rendered := make([]string, len(m.Tabs))
-	for idx, tab := range m.Tabs {
-		if idx == m.ActiveIdx {
-			rendered[idx] = style.TabStyle.Border(style.ActiveTabBorder).Render(tab.Name)
-		} else {
-			rendered[idx] = style.TabStyle.Border(style.TabBorder).Render(tab.Name)
-		}
+	for idx, t := range m.Tabs {
+		rendered[idx] = styleFor(idx == m.ActiveIdx).Render(t.Name)
 	}
-
-	row := lipgloss.JoinHorizontal(lipgloss.Bottom, rendered...)
-
-	gapWidth := m.width - lipgloss.Width(row)
-	if gapWidth < 0 {
-		gapWidth = 0
-	}
-	gap := gapStyle.Render(strings.Repeat(" ", gapWidth))
-
-	return lipgloss.JoinHorizontal(lipgloss.Bottom, row, gap)
+	return lipgloss.JoinHorizontal(lipgloss.Bottom, rendered...)
 }
