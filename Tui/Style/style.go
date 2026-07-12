@@ -13,8 +13,14 @@ var (
 	Border     = lipgloss.Color("#E6B450") // Ayu accent gold
 	Muted      = lipgloss.Color("#626A73") // Ayu comment gray
 	Text       = lipgloss.Color("#B3B1AD") // Ayu fg
-	Background = lipgloss.Color("#0A0E14") // Ayu bg
-	Danger     = lipgloss.Color("#FF3333") // Ayu error red
+	Background = lipgloss.Color("#0F1419") // Ayu bg
+	Danger     = lipgloss.Color("#FF3333") // Ayu syntax.error red
+	Success = lipgloss.Color("#7FD962") // Ayu vcs.added green
+	Warning = lipgloss.Color("#FFB454") // Ayu syntax.func orange
+	Info    = lipgloss.Color("#59C2FF") // Ayu syntax.entity blue
+	Secondary = lipgloss.Color("#0D1017") 
+	Highlight = lipgloss.Color("#253340") 
+	Special = lipgloss.Color("#95E6CB") 
 )
 
 // TabAccent is intentionally NOT part of the Ayu palette above.
