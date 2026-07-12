@@ -9,12 +9,8 @@ import (
 	"GoWork/Tui/Components/Skills"
 	"GoWork/Tui/Components/Stats"
 	"GoWork/Tui/Components/Tabs"
-	"GoWork/Focus"
 )
 
-// topBarHeight is the row the tab strip occupies. Kept as a named
-// constant (not a magic 1) so the layout math below reads as a budget,
-// matching the row-budget approach used for the rest of the screen.
 const topBarHeight = 1
 
 type model struct {
@@ -22,8 +18,10 @@ type model struct {
 	stats  stats.Model
 	skills skills.Model
 
-	focus focus.Focus
+	// prompt mode
+	prompt_mode bool
 
+	// size of the window
 	winWidth  int
 	winHeight int
 }
@@ -31,13 +29,7 @@ type model struct {
 func initialModel() model {
 	return model{
 		tabs: tabs.New("code", "skills", "stats"),
-		// Everything starts focused on the viewport/chat area, not the
-		// prompt, so arrow keys and future scroll keys work immediately
-		// without the user having to Tab away from an empty input first.
-		// (The prompt box isn't built yet, so this mostly matters once
-		// it lands — flagging the default here rather than leaving it
-		// implicit.)
-		focus: focus.Viewport,
+		prompt_mode: false, // dont start in prompt mode
 	}
 }
 
@@ -61,18 +53,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c":
-			return m, tea.Quit
-		}
-
-		// Global keybinds are only live when focus is NOT on the
-		// prompt. The prompt box doesn't exist yet, but this branch is
-		// written now so adding it later is a matter of forwarding to
-		// its Update, not restructuring this switch.
-		if m.focus != focus.Prompt {
+		if m.prompt_mode{
+			if msg.String() == "esc"{
+				m.prompt_mode = false
+			}
+		}else {
 			switch msg.String() {
-			case "q":
+			case "ctrl+c":
 				return m, tea.Quit
 			case "tab":
 				m.tabs.Next()
@@ -82,6 +69,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+	
 
 	case tea.MouseMsg:
 		if msg.Type == tea.MouseLeft {
