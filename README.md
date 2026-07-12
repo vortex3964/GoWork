@@ -27,6 +27,8 @@ easter eggs will be included  do (just some fun things)\
 some basic commands like /help , /model  they will start with /\
 also a way to see token consumption (maybe a token managment tab with stats)
 
+392 by 655 is the minimum size (the goal is for it to fit in another ides sub terminal so that we dont also make a mini ide too)
+
 ## files that i want to support for sure with skills
 excel sheets\
 typst\
@@ -43,12 +45,22 @@ supported ai : gemini for now (and will stay like that untill were ready to tack
 - actually create a tui
 - list the tuis features
 - extend providers to include more (local models plus open ai gemini etch.)
-- complete tools used
 - context handling
-- states for the tui and read etch.
 - designing skills
 - actually test tool calls with the llm
 - interupt handling and time excited error handling in tool calls (so that when the user wants to interupt a tool call they can or if a tool call is taking too long)
+- make a tokeniser to start preparing for the stats tab 
+
+## TUI COMPONENTS TODO
+- make prompting area
+- make the main message area
+- style messages
+- add spinner
+- add logo
+- add changes area with pager
+- think of more things to add that you need
+- add placeholders
+- decide color scheme
 
 ## common errors to check for api providers
 invalid request\
