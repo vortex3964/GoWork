@@ -4,6 +4,7 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
 	"GoWork/Tui/Style"
 )
 
@@ -12,6 +13,7 @@ const visibleLines = 3
 const (
 	borderWidth  = 2 
 	paddingWidth = 2
+	marginSide   = 3 // leaves x cells of space on the left and right
 )
 
 const Height = visibleLines + 2
@@ -27,9 +29,9 @@ func baseStyles() textarea.Styles {
 		CursorLine:  lipgloss.NewStyle(), // no per-line highlight band
 	}
 	return textarea.Styles{
-			Focused: state,
-			Blurred: state,
-			Cursor: textarea.CursorStyle{
+		Focused: state,
+		Blurred: state,
+		Cursor: textarea.CursorStyle{
 			Color: style.Primary,
 			Blink: true,
 		},
@@ -51,7 +53,8 @@ func New() Model {
 }
 
 func (m *Model) SetWidth(outerWidth int) {
-	inner := outerWidth - borderWidth - paddingWidth
+	// Subtract the margin from both sides to constrain the inner textarea
+	inner := outerWidth - borderWidth - paddingWidth - (marginSide * 2)
 	if inner < 1 {
 		inner = 1
 	}
@@ -61,7 +64,6 @@ func (m *Model) SetWidth(outerWidth int) {
 func (m *Model) Focus() tea.Cmd {
 	return m.area.Focus()
 }
-
 
 func (m *Model) Blur() {
 	m.area.Blur()
@@ -97,5 +99,8 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	return style.PromptStyle.Render(m.area.View())
+	// Apply the margin to the outside of the prompt style
+	return lipgloss.NewStyle().
+		Margin(0, marginSide).
+		Render(style.PromptStyle.Render(m.area.View()))
 }
