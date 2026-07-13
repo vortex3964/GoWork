@@ -4,11 +4,11 @@
 // keeping them as separate small files now matches the eventual shape
 // (each screen owns its own state/Update/View) rather than requiring a
 // later split.
-package skills
+package skills 
 
 import (
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"GoWork/Tui/Style"
 )
