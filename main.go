@@ -72,6 +72,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "shift+tab":
 				m.tabs.Prev()
 				return m, nil
+			case "enter":
+				m.prompt_mode=true
+				return m,m.prompt.Focus()
 			}
 		}
 	case tea.MouseClickMsg:
@@ -123,9 +126,7 @@ func (m model) View() tea.View {
 	case "skills":
 		content = top + "\n" + m.skills.View()
 	default:
-		// "code" (or anything else) — the main chat screen isn't built
-		// yet, but the prompt bar is: it sits right under the tab row,
-		// so it's always the first thing rendered once you're here.
+		//this is the main screen
 		content = top + "\n" + m.prompt.View()
 	}
 
