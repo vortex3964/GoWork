@@ -41,8 +41,6 @@ packages : bubbletea , go-gitignore , godotenv
 supported ai : gemini for now (and will stay like that untill were ready to tackle supporting multiple ai providers)
 
 ## TODO
-- design the tui in papper
-- actually create a tui
 - list the tuis features
 - extend providers to include more (local models plus open ai gemini etch.)
 - context handling
@@ -50,15 +48,16 @@ supported ai : gemini for now (and will stay like that untill were ready to tack
 - actually test tool calls with the llm
 - interupt handling and time excited error handling in tool calls (so that when the user wants to interupt a tool call they can or if a tool call is taking too long)
 - make a tokeniser to start preparing for the stats tab 
+- add tools to allow for web searching and scraping
+- sql db for storing stats and messages and session data etch
 
 ## TUI COMPONENTS TODO
-- make the main message area
+- make the main message area (maybe use markdown to an extent)
 - style messages
 - add spinner
 - add logo
 - add changes area with pager
-- think of more things to add that you need
-- add placeholders
+- add boxes for diferent stats
 
 ## common errors to check for api providers
 invalid request\
