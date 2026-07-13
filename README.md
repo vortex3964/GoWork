@@ -60,6 +60,7 @@ supported ai : gemini for now (and will stay like that untill were ready to tack
 - add logo
 - add changes area with pager
 - add boxes for diferent stats
+- extend the prompt areas functionality with features like cntr a selects everything written you can copy and paste things like that 
 
 ## common errors to check for api providers
 invalid request\
