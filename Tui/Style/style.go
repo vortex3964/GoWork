@@ -5,7 +5,7 @@
 // change instead of a grep-and-replace.
 package style
 
-import "github.com/charmbracelet/lipgloss"
+import "charm.land/lipgloss/v2"
 
 // Palette (Ayu Dark)
 var (
@@ -15,12 +15,12 @@ var (
 	Text       = lipgloss.Color("#B3B1AD") // Ayu fg
 	Background = lipgloss.Color("#0F1419") // Ayu bg
 	Danger     = lipgloss.Color("#FF3333") // Ayu syntax.error red
-	Success = lipgloss.Color("#7FD962") // Ayu vcs.added green
-	Warning = lipgloss.Color("#FFB454") // Ayu syntax.func orange
-	Info    = lipgloss.Color("#59C2FF") // Ayu syntax.entity blue
-	Secondary = lipgloss.Color("#0D1017") 
-	Highlight = lipgloss.Color("#253340") 
-	Special = lipgloss.Color("#95E6CB") 
+	Success    = lipgloss.Color("#7FD962") // Ayu vcs.added green
+	Warning    = lipgloss.Color("#FFB454") // Ayu syntax.func orange
+	Info       = lipgloss.Color("#59C2FF") // Ayu syntax.entity blue
+	Secondary  = lipgloss.Color("#0D1017")
+	Highlight  = lipgloss.Color("#253340")
+	Special    = lipgloss.Color("#95E6CB")
 )
 
 // TabAccent is intentionally NOT part of the Ayu palette above.
@@ -29,6 +29,7 @@ var (
 var TabAccent = lipgloss.Color("#7010E3")
 
 // Tabs
+
 // TabBorder is the border for inactive tabs.
 var TabBorder = lipgloss.Border{
 	Top:         "─",
@@ -57,3 +58,9 @@ var TabStyle = lipgloss.NewStyle().
 	PaddingLeft(1).
 	PaddingRight(1).
 	BorderForeground(TabAccent)
+
+var PromptStyle = lipgloss.NewStyle().
+	Border(lipgloss.RoundedBorder()).
+	BorderForeground(Border).
+	PaddingLeft(1).
+	PaddingRight(1)
