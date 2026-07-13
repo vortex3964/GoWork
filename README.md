@@ -52,7 +52,6 @@ supported ai : gemini for now (and will stay like that untill were ready to tack
 - make a tokeniser to start preparing for the stats tab 
 
 ## TUI COMPONENTS TODO
-- make prompting area
 - make the main message area
 - style messages
 - add spinner
@@ -60,7 +59,6 @@ supported ai : gemini for now (and will stay like that untill were ready to tack
 - add changes area with pager
 - think of more things to add that you need
 - add placeholders
-- decide color scheme
 
 ## common errors to check for api providers
 invalid request\
