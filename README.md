@@ -47,7 +47,9 @@ supported ai : gemini for now (and will stay like that untill were ready to tack
 - designing skills
 - actually test tool calls with the llm
 - interupt handling and time excited error handling in tool calls (so that when the user wants to interupt a tool call they can or if a tool call is taking too long)
-- make a tokeniser to start preparing for the stats tab 
+- make a tokeniser to start preparing for the stats tab
+- extend the edit and write tools maybe to allow for keeping temp changes to a file
+- if we do these edits to them then the tests should also change for them
 - add tools to allow for web searching and scraping
 - sql db for storing stats and messages and session data etch
 
