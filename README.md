@@ -40,6 +40,22 @@ packages : bubbletea , go-gitignore , godotenv
 
 supported ai : gemini for now (and will stay like that untill were ready to tackle supporting multiple ai providers)
 
+## FOLLOWING COMMITS FOCUS
+- make the logo appear when there are 0 history messages
+- add project root plus footers or styled boxes for context percent , api key , select model (they will be empty for now)
+- make the chat area render markdown with the charm lib
+- add a < elents which will be used in the future to hold the changes list in general it will handle all write kind tools(can be opened with cntrl e and cntr a accepts a change cntr r rejects one (and they can accept all or reject all from a file with the same binds))
+- make preparations for updating the write tools with a changeState list
+- update write and edit tools and their tests to acommodate for the new changeState
+- implement the functionality of the change tab
+- fix tabs ____ getting cut off
+- add system prompt with the tools
+- wire and init the tools in main and make a prompt with tool calls
+- improve the provider interface to make it robust
+- make gemini.go better and create one for local we will support ollama.cpp , gemini (maybe others too later but unless they give a free api key there wont be a way to test for sure) 
+- add functionality to the buttons we added long before
+- extend the prompt areas functionality with features like cntr a selects everything written you can copy and paste things like that 
+
 ## TODO
 - list the tuis features
 - extend providers to include more (local models plus open ai gemini etch.)
@@ -52,15 +68,11 @@ supported ai : gemini for now (and will stay like that untill were ready to tack
 - if we do these edits to them then the tests should also change for them
 - add tools to allow for web searching and scraping
 - sql db for storing stats and messages and session data etch
-
-## TUI COMPONENTS TODO
-- make the main message area (maybe use markdown to an extent)
-- style messages
-- add spinner
-- add logo
-- add changes area with pager
-- add boxes for diferent stats
-- extend the prompt areas functionality with features like cntr a selects everything written you can copy and paste things like that 
+- add slash commands 
+- implement skills area
+- implement token usage area stats
+- tools for generating skills and handling them
+- implement skill managment area 
 
 ## common errors to check for api providers
 invalid request\
