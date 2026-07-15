@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"GoWork/Tui/Components/MessageArea"
 	"GoWork/Tui/Components/Promptbar"
 	"GoWork/Tui/Components/Skills"
 	"GoWork/Tui/Components/Stats"
@@ -14,28 +15,48 @@ import (
 
 const topBarHeight = 1
 
+// spinnerHeight reserves a blank row between the message area and the
+// prompt bar — this is where a "thinking" spinner will eventually render.
+const spinnerHeight = 1
+
 type model struct {
-	tabs   tabs.Model
-	stats  stats.Model
-	skills skills.Model
-	prompt promptbar.Model
+	tabs         tabs.Model
+	stats        stats.Model
+	skills       skills.Model
+	prompt       promptbar.Model
+	message_area messagearea.Model
+
 	// prompt mode
 	prompt_mode bool
+
 	// size of the window
 	winWidth  int
 	winHeight int
 }
 
 func initialModel() model {
+	m := messagearea.New()
+
+	//2 test messages to see if they render and render correctly
+	m.AppendMessage("hey look at me im an ai message", false)
+	m.AppendMessage("im a user message a big user message ..........................................................................................", true)
+
 	return model{
-		tabs:        tabs.New("code", "skills", "stats"),
-		prompt:      promptbar.New(),
-		prompt_mode: false, // dont start in prompt mode
+		tabs:         tabs.New("code", "skills", "stats"),
+		prompt:       promptbar.New(),
+		message_area: m,
+		prompt_mode:  false, // dont start in prompt mode
 	}
 }
 
 func (m model) Init() tea.Cmd {
 	return nil
+}
+
+// promptTop is the row the prompt bar starts on, since it's pinned to the
+// bottom of the window on the code tab rather than sitting under the tabs.
+func (m model) promptTop() int {
+	return m.winHeight - promptbar.Height
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -51,6 +72,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.stats.SetSize(m.winWidth, contentHeight)
 		m.skills.SetSize(m.winWidth, contentHeight)
+
+		// message area fills everything between the tabs and the prompt
+		// bar, minus the reserved spinner row.
+		msgAreaHeight := m.winHeight - topBarHeight - spinnerHeight - promptbar.Height
+		if msgAreaHeight < 0 {
+			msgAreaHeight = 0
+		}
+		m.message_area.SetSize(m.winWidth, msgAreaHeight)
 		return m, nil
 	case tea.KeyPressMsg:
 		if m.prompt_mode {
@@ -73,36 +102,47 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tabs.Prev()
 				return m, nil
 			case "enter":
-				m.prompt_mode=true
-				return m,m.prompt.Focus()
+				m.prompt_mode = true
+				return m, m.prompt.Focus()
 			}
 		}
 	case tea.MouseClickMsg:
 		if msg.Button == tea.MouseLeft {
-			// Tabs occupy row 0 only (topBarHeight == 1). Below that,
-			// the prompt box owns the next promptbar.Height rows — but
-			// only on the "code" tab, since that's the only screen it's
-			// rendered on. Once the viewport and status bar exist, this
-			// is where their own Y ranges get checked too, each
-			// forwarding the click only if msg.Y falls in its range.
+			// Tabs occupy row 0 only (topBarHeight == 1). The prompt bar
+			// is pinned to the bottom of the screen, so it owns the last
+			// promptbar.Height rows instead but only on the "code" tab,
+			// since that's the only screen it's rendered on. Once the
+			// message area needs its own click handling (e.g. selecting
+			// a message), this is where its Y range gets checked too.
 			switch {
 			case msg.Y < topBarHeight:
 				m.tabs.HandleClick(msg.X)
-			case m.tabs.Active().Name == "code" && msg.Y < topBarHeight+promptbar.Height:
+			case m.tabs.Active().Name == "code" && msg.Y >= m.promptTop():
 				m.prompt_mode = true
 				return m, m.prompt.Focus()
 			}
 		}
 		return m, nil
 	case tea.MouseWheelMsg:
-		// Scrolling the prompt box doesn't require focus — same as
-		// scrolling a window you're not "in" in nvim.
-		if m.tabs.Active().Name == "code" && msg.Y < topBarHeight+promptbar.Height {
-			switch msg.Button {
-			case tea.MouseWheelUp:
-				m.prompt.ScrollUp()
-			case tea.MouseWheelDown:
-				m.prompt.ScrollDown()
+		// Scrolling either box doesn't require focus — same as scrolling
+		// a window you're not "in" in nvim.
+		if m.tabs.Active().Name == "code" {
+			promptTop := m.promptTop()
+			switch {
+			case msg.Y >= promptTop:
+				switch msg.Button {
+				case tea.MouseWheelUp:
+					m.prompt.ScrollUp()
+				case tea.MouseWheelDown:
+					m.prompt.ScrollDown()
+				}
+			case msg.Y >= topBarHeight:
+				switch msg.Button {
+				case tea.MouseWheelUp:
+					m.message_area.ScrollUp()
+				case tea.MouseWheelDown:
+					m.message_area.ScrollDown()
+				}
 			}
 		}
 		return m, nil
@@ -112,9 +152,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// The prompt bar's cursor blink runs on its own message loop
 	// (cursor.BlinkMsg) that doesn't match any case above, so it has to
 	// be forwarded here too or the cursor blinks once and then freezes.
+	// The message area's viewport has the same needs (e.g. its own
+	// internal key/mouse handling), so it gets forwarded the same way.
 	var promptCmd tea.Cmd
 	m.prompt, promptCmd = m.prompt.Update(msg)
-	return m, tea.Batch(tabsCmd, promptCmd)
+	var msgAreaCmd tea.Cmd
+	m.message_area, msgAreaCmd = m.message_area.Update(msg)
+	return m, tea.Batch(tabsCmd, promptCmd, msgAreaCmd)
 }
 
 func (m model) View() tea.View {
@@ -126,8 +170,10 @@ func (m model) View() tea.View {
 	case "skills":
 		content = top + "\n" + m.skills.View()
 	default:
-		//this is the main screen
-		content = top + "\n" + m.prompt.View()
+		content += top + "\n" 
+		content += m.message_area.View() + "\n" 
+		content += "\n"
+		content += m.prompt.View()
 	}
 
 	v := tea.NewView(content)
@@ -138,6 +184,7 @@ func (m model) View() tea.View {
 
 func main() {
 	p := tea.NewProgram(initialModel())
+
 	if _, err := p.Run(); err != nil {
 		fmt.Println("error:", err)
 		os.Exit(1)
