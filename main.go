@@ -76,15 +76,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.message_area.SetSize(m.winWidth, msgAreaHeight)
 		return m, nil
 	case tea.KeyPressMsg:
+		msg_str := msg.String()
+		
+		if msg_str == "ctrl+c"{
+			return m , tea.Quit
+		}
+
 		if m.prompt_mode {
-			switch msg.String() {
-			case "ctrl+c":
-				return m, tea.Quit
+			switch msg_str {
 			case "esc":
 				m.prompt.Blur()
 				m.prompt_mode = false
 				return m, nil
-			case "shift+enter":
+			case "shift+enter", "ctrl+j":
 				m.prompt.InsertNewline()
 				return m, nil
 			case "enter":
@@ -100,9 +104,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.prompt, cmd = m.prompt.Update(msg)
 			return m, cmd
 		} else {
-			switch msg.String() {
-			case "ctrl+c":
-				return m, tea.Quit
+			switch msg_str {
 			case "tab":
 				m.tabs.Next()
 				return m, nil
