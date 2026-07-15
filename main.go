@@ -5,19 +5,27 @@ import (
 	"os"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/bubbles/v2/spinner"
+	"github.com/joho/godotenv"
 
 	"GoWork/Tui/Components/MessageArea"
 	"GoWork/Tui/Components/Promptbar"
 	"GoWork/Tui/Components/Skills"
 	"GoWork/Tui/Components/Stats"
 	"GoWork/Tui/Components/Tabs"
+
+	"GoWork/providers"
 )
 
 const topBarHeight = 1
 
-// spinnerHeight reserves a blank row between the message area and the
-// prompt bar — this is where a "thinking" spinner will eventually render.
 const spinnerHeight = 1
+
+// to catch errors in case the api call for the ai fails
+type aiResponseMsg struct {
+	content string
+	err     error
+}
 
 type model struct {
 	tabs         tabs.Model
@@ -25,6 +33,7 @@ type model struct {
 	skills       skills.Model
 	prompt       promptbar.Model
 	message_area messagearea.Model
+	spinner spinner.Model
 
 	// prompt mode
 	prompt_mode bool
@@ -32,19 +41,42 @@ type model struct {
 	// size of the window
 	winWidth  int
 	winHeight int
+
+	//ai related
+	model providers.Provider
+	context []providers.Message
+	aiThink bool
 }
 
-func initialModel() model {
+func initialModel(provider providers.Provider) model {
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+
 	return model{
 		tabs:         tabs.New("code", "skills", "stats"),
 		prompt:       promptbar.New(),
 		message_area: messagearea.New(),
 		prompt_mode:  false, // dont start in prompt mode
+		spinner: sp,
+		context: []providers.Message{},
+		model: provider,
+		aiThink: false,
 	}
 }
 
 func (m model) Init() tea.Cmd {
 	return nil
+}
+
+// tea.Cmd that actually calls the AI provider - runs off the main update loop
+func generateCmd(p providers.Provider, prompt string, context []providers.Message) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := p.Generate(prompt, context)
+		if err != nil {
+			return aiResponseMsg{content: resp, err: err}
+		}
+		return aiResponseMsg{content: resp}
+	}
 }
 
 // promptTop is the row the prompt bar starts on, since it's pinned to the
@@ -54,6 +86,7 @@ func (m model) promptTop() int {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.winWidth = msg.Width
@@ -95,10 +128,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Submit whatever's in the prompt bar as a user message,
 				// then clear it and stay in prompt mode for the next one.
 				if val := m.prompt.Value(); val != "" {
+					m.aiThink = true
 					m.message_area.AppendMessage(val, true)
+					m.context = append(m.context, providers.Message{Role:"user",Content: val})
 					m.prompt.Reset()
+					cmds = append(cmds, generateCmd(m.model, val , m.context))
+					cmds = append(cmds, m.spinner.Tick)
 				}
-				return m, nil
+				return m, tea.Batch(cmds...)
 			}
 			var cmd tea.Cmd
 			m.prompt, cmd = m.prompt.Update(msg)
@@ -156,6 +193,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case spinner.TickMsg:
+		// Only keep re-ticking while we're actually waiting on a response,
+		// otherwise the spinner would spin forever in the background.
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		if m.aiThink {
+			return m, cmd
+		}
+		return m, nil
+	case aiResponseMsg:
+		m.aiThink = false
+		if msg.err != nil {
+			m.message_area.AppendMessage("Error: "+msg.err.Error(), false)
+		} else {
+			m.message_area.AppendMessage(msg.content, false)
+			m.context = append(m.context, providers.Message{Role: "assistant", Content: msg.content})
+		}
+		return m, nil
 	}
 	var tabsCmd tea.Cmd
 	m.tabs, tabsCmd = m.tabs.Update(msg)
@@ -181,7 +236,10 @@ func (m model) View() tea.View {
 		content = top + "\n" + m.skills.View()
 	default:
 		content += top + "\n" 
-		content += m.message_area.View() + "\n" 
+		content += m.message_area.View() + "\n"
+		if m.aiThink {
+			content+=m.spinner.View() + " thinking...."
+		}
 		content += "\n"
 		content += m.prompt.View()
 	}
@@ -193,10 +251,28 @@ func (m model) View() tea.View {
 }
 
 func main() {
-	p := tea.NewProgram(initialModel())
+	if err := godotenv.Load(); err != nil {
+		fmt.Println("Couldn't locate .env file:", err)
+		os.Exit(1)
+	}
 
+	apiKey := os.Getenv("API_KEY")
+
+	if apiKey == "" {
+		fmt.Println("API_KEY is empty")
+		os.Exit(1)
+	}
+
+	provider, err := providers.Select_provider("gemini-3.1-flash-lite", apiKey)
+
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
+	p := tea.NewProgram(initialModel(provider))
 	if _, err := p.Run(); err != nil {
-		fmt.Println("error:", err)
+		fmt.Fprintf(os.Stderr, "Oof: %v\n", err)
 		os.Exit(1)
 	}
 }
