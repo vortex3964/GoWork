@@ -8,7 +8,7 @@ import (
 	"GoWork/Tui/Style"
 )
 
-const visibleLines = 3
+const visibleLines = 2
 
 const (
 	borderWidth  = 2 
@@ -87,6 +87,10 @@ func (m Model) Value() string {
 
 func (m *Model) Reset() {
 	m.area.Reset()
+}
+
+func (m *Model) InsertNewline() {
+	m.area.InsertRune('\n')
 }
 
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {

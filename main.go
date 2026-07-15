@@ -84,6 +84,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.prompt.Blur()
 				m.prompt_mode = false
 				return m, nil
+			case "shift+enter":
+				m.prompt.InsertNewline()
+				return m, nil
 			case "enter":
 				// Submit whatever's in the prompt bar as a user message,
 				// then clear it and stay in prompt mode for the next one.
