@@ -35,16 +35,10 @@ type model struct {
 }
 
 func initialModel() model {
-	m := messagearea.New()
-
-	//2 test messages to see if they render and render correctly
-	m.AppendMessage("hey look at me im an ai message", false)
-	m.AppendMessage("im a user message a big user message ..........................................................................................", true)
-
 	return model{
 		tabs:         tabs.New("code", "skills", "stats"),
 		prompt:       promptbar.New(),
-		message_area: m,
+		message_area: messagearea.New(),
 		prompt_mode:  false, // dont start in prompt mode
 	}
 }
@@ -83,9 +77,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyPressMsg:
 		if m.prompt_mode {
-			if msg.String() == "esc" {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
 				m.prompt.Blur()
 				m.prompt_mode = false
+				return m, nil
+			case "enter":
+				// Submit whatever's in the prompt bar as a user message,
+				// then clear it and stay in prompt mode for the next one.
+				if val := m.prompt.Value(); val != "" {
+					m.message_area.AppendMessage(val, true)
+					m.prompt.Reset()
+				}
 				return m, nil
 			}
 			var cmd tea.Cmd
