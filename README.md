@@ -144,4 +144,18 @@ use this to run all the tests for every tool
 ```
 make test 
 ```
+## Keybinds
 
+## Slash commands
+/help \
+/stats \
+/skills \
+/save \
+/coffee \
+/new \
+/save \
+/key \
+/context filename 
+
+## commands to open it
+gowork <project path>
