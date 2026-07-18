@@ -3,31 +3,72 @@
 package providers
 
 import (
-    "bytes"
-    "encoding/json"
-    "io"
-    "net/http"
+	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
 )
+
+const geminiBaseURL = "https://generativelanguage.googleapis.com/v1beta"
 
 type geminiProvider struct {
 	api_key string
-	model  string
+	model   string
 }
 
-func newGemini(model string , api_key string) *geminiProvider {
-	return &geminiProvider{api_key: api_key , model:model}
+func newGemini(model string, api_key string) *geminiProvider {
+	return &geminiProvider{api_key: api_key, model: model}
 }
 
-// implementations of the interface
+// doRequest is shared by every endpoint below (generate, countTokens, get
+// model, list models) so they all build/send/read requests the same way.
+func (g *geminiProvider) doRequest(ctx context.Context, method, url string, reqBody interface{}) ([]byte, error) {
+	var reader io.Reader
+	if reqBody != nil {
+		jsonData, err := json.Marshal(reqBody)
+		if err != nil {
+			return nil, fmt.Errorf("marshal error: %w", err)
+		}
+		reader = bytes.NewBuffer(jsonData)
+	}
 
-func (g *geminiProvider) Generate(userPrompt string ,context []Message) (string, error) {
-	contents := make([]map[string]interface{},0,len(context))
+	req, err := http.NewRequestWithContext(ctx, method, url, reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", g.api_key)
 
-	for _, msg := range context {
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("gemini error (%d): %s", resp.StatusCode, body)
+	}
+
+	return body, nil
+}
+
+// toContents turns our provider-agnostic Message slice into gemini's
+// "contents" shape, flipping "assistant" -> "model" since that's what
+// gemini calls it.
+func toContents(messages []Message) []map[string]interface{} {
+	contents := make([]map[string]interface{}, 0, len(messages))
+	for _, msg := range messages {
 		role := msg.Role
 		if role == "assistant" {
-			role = "model" 
+			role = "model"
 		}
 		contents = append(contents, map[string]interface{}{
 			"role": role,
@@ -36,38 +77,20 @@ func (g *geminiProvider) Generate(userPrompt string ,context []Message) (string,
 			},
 		})
 	}
+	return contents
+}
 
+// implementations of the Provider interface
+
+func (g *geminiProvider) Generate(ctx context.Context, messages []Message) (GenerateResult, error) {
 	reqBody := map[string]interface{}{
-		"contents": contents,
+		"contents": toContents(messages),
 	}
 
-	jsonData, err := json.Marshal(reqBody)
+	url := geminiBaseURL + "/models/" + g.model + ":generateContent"
+	body, err := g.doRequest(ctx, http.MethodPost, url, reqBody)
 	if err != nil {
-		return "", fmt.Errorf("marshal error: %w", err)
-	}
-
-	url := "https://generativelanguage.googleapis.com/v1beta/models/" + g.model + ":generateContent"
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-goog-api-key", g.api_key)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("gemini error (%d): %s", resp.StatusCode, body)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read response: %w", err)
+		return GenerateResult{}, err
 	}
 
 	var parsed struct {
@@ -78,14 +101,109 @@ func (g *geminiProvider) Generate(userPrompt string ,context []Message) (string,
 				} `json:"parts"`
 			} `json:"content"`
 		} `json:"candidates"`
+		UsageMetadata struct {
+			PromptTokenCount     int `json:"promptTokenCount"`
+			CandidatesTokenCount int `json:"candidatesTokenCount"`
+			TotalTokenCount      int `json:"totalTokenCount"`
+		} `json:"usageMetadata"`
 	}
 
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return "", fmt.Errorf("failed to parse response: %w", err)
+		return GenerateResult{}, fmt.Errorf("failed to parse response: %w", err)
 	}
 	if len(parsed.Candidates) == 0 || len(parsed.Candidates[0].Content.Parts) == 0 {
-		return "", fmt.Errorf("empty response from gemini")
+		return GenerateResult{}, fmt.Errorf("empty response from gemini")
 	}
 
-	return parsed.Candidates[0].Content.Parts[0].Text, nil
+	return GenerateResult{
+		Content: parsed.Candidates[0].Content.Parts[0].Text,
+		Usage: Usage{
+			PromptTokens:     parsed.UsageMetadata.PromptTokenCount,
+			CompletionTokens: parsed.UsageMetadata.CandidatesTokenCount,
+			TotalTokens:      parsed.UsageMetadata.TotalTokenCount,
+		},
+	}, nil
+}
+
+func (g *geminiProvider) EstimateTokens(ctx context.Context, messages []Message) (int, error) {
+	reqBody := map[string]interface{}{
+		"contents": toContents(messages),
+	}
+
+	url := geminiBaseURL + "/models/" + g.model + ":countTokens"
+	body, err := g.doRequest(ctx, http.MethodPost, url, reqBody)
+	if err != nil {
+		return 0, err
+	}
+
+	var parsed struct {
+		TotalTokens int `json:"totalTokens"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return 0, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return parsed.TotalTokens, nil
+}
+
+// geminiModel mirrors the model object gemini's API returns. Both Info
+// (single model) and ListModels (all models) parse into this and convert
+// it into our own ModelInfo.
+type geminiModel struct {
+	Name             string `json:"name"` // comes back as "models/gemini-2.5-flash"
+	DisplayName      string `json:"displayName"`
+	Description      string `json:"description"`
+	InputTokenLimit  int    `json:"inputTokenLimit"`
+	OutputTokenLimit int    `json:"outputTokenLimit"`
+}
+
+func (gm geminiModel) toModelInfo() ModelInfo {
+	return ModelInfo{
+		ID:              strings.TrimPrefix(gm.Name, "models/"),
+		ContextWindow:   gm.InputTokenLimit,
+		MaxOutputTokens: gm.OutputTokenLimit,
+		// gemini's API doesn't expose pricing anywhere, so these stay at 0
+		// for now - would need a separate pricing source if we want them.
+		InputPrice:  0,
+		OutputPrice: 0,
+	}
+}
+
+func (g *geminiProvider) Info(ctx context.Context, model string) (ModelInfo, error) {
+	url := geminiBaseURL + "/models/" + model
+	body, err := g.doRequest(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return ModelInfo{}, err
+	}
+
+	var parsed geminiModel
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return ModelInfo{}, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return parsed.toModelInfo(), nil
+}
+
+func (g *geminiProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	url := geminiBaseURL + "/models"
+	body, err := g.doRequest(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var parsed struct {
+		Models []geminiModel `json:"models"`
+		//TODO: gemini paginates this past a certain model count via
+		//nextPageToken - not handled yet, so very large lists get cut off.
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	models := make([]ModelInfo, 0, len(parsed.Models))
+	for _, m := range parsed.Models {
+		models = append(models, m.toModelInfo())
+	}
+
+	return models, nil
 }

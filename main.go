@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -25,6 +26,12 @@ const spinnerHeight = 1
 type aiResponseMsg struct {
 	content string
 	err     error
+}
+
+type aiSelect struct {
+	provider string
+	key string
+	model string
 }
 
 type model struct {
@@ -69,13 +76,15 @@ func (m model) Init() tea.Cmd {
 }
 
 // tea.Cmd that actually calls the AI provider - runs off the main update loop
-func generateCmd(p providers.Provider, prompt string, context []providers.Message) tea.Cmd {
+func generateCmd(p providers.Provider, prompt string, messages []providers.Message) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := p.Generate(prompt, context)
+		//TODO: swap context.Background() for something cancelable (e.g. tied
+		//to a "stop generating" keybind) once that's wired up.
+		result, err := p.Generate(context.Background(), messages)
 		if err != nil {
-			return aiResponseMsg{content: resp, err: err}
+			return aiResponseMsg{err: err}
 		}
-		return aiResponseMsg{content: resp}
+		return aiResponseMsg{content: result.Content}
 	}
 }
 
