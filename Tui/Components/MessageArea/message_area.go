@@ -44,6 +44,10 @@ type Model struct {
 	size     int
 }
 
+func (m *Model) GetSize() int {
+	return m.size 
+}
+
 // New creates an empty message area.
 func New() Model {
 	vp := viewport.New()

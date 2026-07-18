@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/bubbles/v2/spinner"
@@ -22,6 +25,81 @@ import (
 const topBarHeight = 1
 
 const spinnerHeight = 1
+
+//go:embed logo/logo.txt
+var logoRaw string
+
+var ansiEscapePattern = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+// visibleWidth measures a line's on-screen width, ignoring ANSI color
+// codes (naive len() would count those escape bytes and throw off any
+// centering math).
+func visibleWidth(s string) int {
+	return len([]rune(ansiEscapePattern.ReplaceAllString(s, "")))
+}
+
+// logoLines/logoWidth/logoHeight describe the full box-art logo, computed
+// once at startup, so we know both how to center it and how much room it
+// needs before deciding it no longer fits.
+var logoLines = strings.Split(strings.TrimRight(logoRaw, "\n"), "\n")
+var logoHeight = len(logoLines)
+var logoWidth = func() int {
+	max := 0
+	for _, l := range logoLines {
+		if w := visibleWidth(l); w > max {
+			max = w
+		}
+	}
+	return max
+}()
+
+// logoCompact is the fallback wordmark for when the terminal is too
+// narrow or too short for the full box art.
+const logoCompact = "\x1b[38;2;255;243;200mGoWork\x1b[0m"
+
+// centerLine pads a (possibly ANSI-colored) line with leading spaces so
+// it's centered within the given width.
+func centerLine(s string, width int) string {
+	pad := (width - visibleWidth(s)) / 2
+	if pad < 0 {
+		pad = 0
+	}
+	return strings.Repeat(" ", pad) + s
+}
+
+// welcomeLogoHeight decides, for the current window size, how many rows
+// the welcome-screen logo block will occupy: the full art if there's
+// room, a one-line wordmark if there's not quite enough, or nothing at
+// all on a really cramped terminal. Both View() and promptTop() call
+// this so the prompt bar always sits directly under whatever actually
+// got drawn.
+func welcomeLogoHeight(winWidth, winHeight int) int {
+	switch {
+	case winWidth >= logoWidth+4 && winHeight >= logoHeight+promptbar.Height+3:
+		return logoHeight
+	case winWidth >= 12:
+		return 1 // compact single-line wordmark
+	default:
+		return 0 // nothing fits
+	}
+}
+
+// renderLogo renders whichever logo variant welcomeLogoHeight picked,
+// centered horizontally for the current window width.
+func renderLogo(winWidth, winHeight int) string {
+	switch welcomeLogoHeight(winWidth, winHeight) {
+	case logoHeight:
+		lines := make([]string, len(logoLines))
+		for i, l := range logoLines {
+			lines[i] = centerLine(l, winWidth)
+		}
+		return strings.Join(lines, "\n")
+	case 1:
+		return centerLine(logoCompact, winWidth)
+	default:
+		return ""
+	}
+}
 
 // to catch errors in case the api call for the ai fails
 type aiResponseMsg struct {
@@ -89,10 +167,55 @@ func generateCmd(p providers.Provider, prompt string, messages []providers.Messa
 	}
 }
 
-// promptTop is the row the prompt bar starts on, since it's pinned to the
-// bottom of the window on the code tab rather than sitting under the tabs.
+// hasMessages reports whether we're in "chat mode" (at least one message
+// has been sent) as opposed to the empty welcome screen.
+func (m model) hasMessages() bool {
+	return m.message_area.GetSize() > 0
+}
+
+// promptTop is the row the prompt bar starts on. In chat mode it's pinned
+// to the bottom of the window; on the welcome screen (no messages yet)
+// there's no message area to pin against, so it sits directly under the
+// logo instead.
 func (m model) promptTop() int {
+	if !m.hasMessages() {
+		h := welcomeLogoHeight(m.winWidth, m.winHeight)
+		if h == 0 {
+			return topBarHeight
+		}
+		return topBarHeight + h + 1 // +1 blank line under the logo
+	}
 	return m.winHeight - promptbar.Height
+}
+
+// applyLayout sizes every child component for the current window size and
+// current mode (welcome vs. chat). It's called on resize, and again right
+// when the first message is sent, since that's the other event that flips
+// which mode we're in.
+func (m *model) applyLayout() {
+	m.tabs.SetSize(m.winWidth)
+	m.prompt.SetWidth(m.winWidth)
+
+	contentHeight := m.winHeight - topBarHeight
+	if contentHeight < 0 {
+		contentHeight = 0
+	}
+	m.stats.SetSize(m.winWidth, contentHeight)
+	m.skills.SetSize(m.winWidth, contentHeight)
+
+	if !m.hasMessages() {
+		// Welcome screen: no message area reserved at all.
+		m.message_area.SetSize(m.winWidth, 0)
+		return
+	}
+
+	// message area fills everything between the tabs and the prompt
+	// bar, minus the reserved spinner row.
+	msgAreaHeight := m.winHeight - topBarHeight - spinnerHeight - promptbar.Height
+	if msgAreaHeight < 0 {
+		msgAreaHeight = 0
+	}
+	m.message_area.SetSize(m.winWidth, msgAreaHeight)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -101,22 +224,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.winWidth = msg.Width
 		m.winHeight = msg.Height
-		m.tabs.SetSize(m.winWidth)
-		m.prompt.SetWidth(m.winWidth)
-		contentHeight := m.winHeight - topBarHeight
-		if contentHeight < 0 {
-			contentHeight = 0
-		}
-		m.stats.SetSize(m.winWidth, contentHeight)
-		m.skills.SetSize(m.winWidth, contentHeight)
-
-		// message area fills everything between the tabs and the prompt
-		// bar, minus the reserved spinner row.
-		msgAreaHeight := m.winHeight - topBarHeight - spinnerHeight - promptbar.Height
-		if msgAreaHeight < 0 {
-			msgAreaHeight = 0
-		}
-		m.message_area.SetSize(m.winWidth, msgAreaHeight)
+		m.applyLayout()
 		return m, nil
 	case tea.KeyPressMsg:
 		msg_str := msg.String()
@@ -142,6 +250,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.message_area.AppendMessage(val, true)
 					m.context = append(m.context, providers.Message{Role:"user",Content: val})
 					m.prompt.Reset()
+					m.applyLayout() // first message just switched us from welcome -> chat mode
 					cmds = append(cmds, generateCmd(m.model, val , m.context))
 					cmds = append(cmds, m.spinner.Tick)
 				}
@@ -193,7 +302,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case tea.MouseWheelDown:
 					m.prompt.ScrollDown()
 				}
-			case msg.Y >= topBarHeight:
+			case m.hasMessages() && msg.Y >= topBarHeight:
 				switch msg.Button {
 				case tea.MouseWheelUp:
 					m.message_area.ScrollUp()
@@ -259,13 +368,24 @@ func (m model) View() tea.View {
 	case "skills":
 		content = top + "\n" + m.skills.View()
 	default:
-		content += top + "\n" 
-		content += m.message_area.View() + "\n"
-		if m.aiThink {
-			content+=m.spinner.View() + " thinking...."
+		content += top + "\n"
+		if !m.hasMessages() {
+			// Welcome screen: logo (sized to fit the window), then the
+			// prompt right underneath it. No message area, no spinner
+			// row — nothing to reserve space for until there's an
+			// actual conversation.
+			if logo := renderLogo(m.winWidth, m.winHeight); logo != "" {
+				content += logo + "\n\n"
+			}
+			content += m.prompt.View()
+		} else {
+			content += m.message_area.View() + "\n"
+			if m.aiThink {
+				content += m.spinner.View() + " thinking...."
+			}
+			content += "\n"
+			content += m.prompt.View()
 		}
-		content += "\n"
-		content += m.prompt.View()
 	}
 
 	v := tea.NewView(content)
