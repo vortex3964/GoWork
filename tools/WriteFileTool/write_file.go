@@ -74,6 +74,9 @@ func count_appearance(file_contents []byte , search string) (int , error){
 
 //NOTE: this is a simple implementation we dont make any validation checks (for example if the llm actually read the file recently etch)
 //just replace older text with the new one
+
+//TODO: find a way to have it list changes plus update cache handling with context handling and add that to the test cases
+
 func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs , rawInput json.RawMessage) (tools.ToolResult, error) {
 	var input Input
 	if err := json.Unmarshal(rawInput, &input); err != nil {

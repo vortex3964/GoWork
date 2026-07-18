@@ -146,6 +146,8 @@ func validateRange(startLine, endLine, lineCount int) error {
 	return nil
 }
 
+//TODO: find a way to have it list changes plus update cache handling with context handling and add that to the test cases
+
 func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.RawMessage) (tools.ToolResult, error) {
 	var input Input
 	if err := json.Unmarshal(rawInput, &input); err != nil {
