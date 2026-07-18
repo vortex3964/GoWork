@@ -29,16 +29,23 @@ also a way to see token consumption (maybe a token managment tab with stats)
 
 392 by 655 is the minimum size (the goal is for it to fit in another ides sub terminal so that we dont also make a mini ide too)
 
-## files that i want to support for sure with skills
-excel sheets\
-typst\
-python for writting docs\
-python code structure (maybe)
-
-
+## Depedencies 
+ripgrep\
 packages : bubbletea , go-gitignore , godotenv
 
-supported ai : gemini for now (and will stay like that untill were ready to tackle supporting multiple ai providers)
+## Supported ai
+the providers we support local or paid 
+
+### Paid with api key
+gemini\
+groq (in the future)\
+chat gpt (in the future)\
+anthropic (in the future)
+
+### local no api key needed
+lmStudio (in the future)\
+ollama\
+llama.cpp
 
 ## FOLLOWING COMMITS FOCUS
 - make the logo appear when there are 0 history messages
@@ -47,12 +54,11 @@ supported ai : gemini for now (and will stay like that untill were ready to tack
 - add a < elents which will be used in the future to hold the changes list in general it will handle all write kind tools(can be opened with cntrl e and cntr a accepts a change cntr r rejects one (and they can accept all or reject all from a file with the same binds))
 - make preparations for updating the write tools with a changeState list
 - update write and edit tools and their tests to acommodate for the new changeState
-- implement the functionality of the change tab
+- implement the functionality of the change_list tab
 - fix tabs ____ getting cut off
 - add system prompt with the tools
 - wire and init the tools in main and make a prompt with tool calls
 - improve the provider interface to make it robust
-- make gemini.go better and create one for local we will support ollama.cpp , gemini (maybe others too later but unless they give a free api key there wont be a way to test for sure) 
 - add functionality to the buttons we added long before
 - extend the prompt areas functionality with features like cntr a selects everything written you can copy and paste things like that 
 
@@ -73,6 +79,7 @@ supported ai : gemini for now (and will stay like that untill were ready to tack
 - implement token usage area stats
 - tools for generating skills and handling them
 - implement skill managment area 
+- Important remember limit the tokens of generate so we dont burn everything in non local models
 
 ## common errors to check for api providers
 invalid request\
@@ -145,6 +152,8 @@ use this to run all the tests for every tool
 make test 
 ```
 ## Keybinds
+
+COMING SOON MAN A LOT OF THINGS ARE STILL NOT DONE LOL
 
 ## Slash commands
 /help \

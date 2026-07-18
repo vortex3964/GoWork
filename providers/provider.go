@@ -13,6 +13,17 @@
 // IMPORTANT: we should handle retries or handle high server demands etch
 package providers
 
+//TODO:maybe we should limit the output tokens of non local models
+// so that we dont burn all of our api money
+
+//supported: 
+//gemini
+//groq
+
+//local:
+//ollama
+//llama.cpp
+
 import (
 	"context"
 	"fmt"
