@@ -3,11 +3,9 @@
 package providers
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 )
@@ -26,38 +24,7 @@ func newGemini(model string, api_key string) *geminiProvider {
 // doRequest is shared by every endpoint below (generate, countTokens, get
 // model, list models) so they all build/send/read requests the same way.
 func (g *geminiProvider) doRequest(ctx context.Context, method, url string, reqBody interface{}) ([]byte, error) {
-	var reader io.Reader
-	if reqBody != nil {
-		jsonData, err := json.Marshal(reqBody)
-		if err != nil {
-			return nil, fmt.Errorf("marshal error: %w", err)
-		}
-		reader = bytes.NewBuffer(jsonData)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, url, reader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-goog-api-key", g.api_key)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("gemini error (%d): %s", resp.StatusCode, body)
-	}
-
-	return body, nil
+	return doJSONRequest(ctx, method, url, map[string]string{"x-goog-api-key": g.api_key}, reqBody)
 }
 
 // toContents turns our provider-agnostic Message slice into gemini's
