@@ -29,6 +29,7 @@ also a way to see token consumption (maybe a token managment tab with stats)
 
 392 by 655 is the minimum size (the goal is for it to fit in another ides sub terminal so that we dont also make a mini ide too)
 
+ai will print in a read me style text
 ## Depedencies 
 ripgrep\
 packages : bubbletea , go-gitignore , godotenv
@@ -69,7 +70,6 @@ llama.cpp
 - designing skills
 - actually test tool calls with the llm
 - interupt handling and time excited error handling in tool calls (so that when the user wants to interupt a tool call they can or if a tool call is taking too long)
-- make a tokeniser to start preparing for the stats tab
 - extend the edit and write tools maybe to allow for keeping temp changes to a file
 - if we do these edits to them then the tests should also change for them
 - add tools to allow for web searching and scraping
@@ -81,7 +81,7 @@ llama.cpp
 - implement skill managment area 
 - Important remember limit the tokens of generate so we dont burn everything in non local models
 
-## common errors to check for api providers
+## common errors we check for 
 invalid request\
 Auth err\
 Not found\
@@ -90,20 +90,6 @@ Api error\
 Out of tokens\
 rate limit\
 Overload
-
-## basic idea of the steps for coding agent
-- user writes prompt
-- agent starts thinking
-- agent makes changes on file(s)
-- user can see the files with the changes (like a list)
-- they can use their ide to see the changes or they can use the tools nav
-- each file selected expands and shows contents allong side a before and after the change
-- the user selects accept or reject (there is also an accept and reject all button outside of the files)
-- reject does nothing and accept finalises the changes
-
-things to consider : 
-maybe there should be a way for the user to prompt the ai to correct things 
-while the changes havent been finalised (will inspect and consider if this is in this projects scope)
 
 ## Harness
 

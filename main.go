@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -214,7 +215,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case aiResponseMsg:
 		m.aiThink = false
 		if msg.err != nil {
-			m.message_area.AppendMessage("Error: "+msg.err.Error(), false)
+			var perr *providers.ProviderError
+			if errors.As(msg.err, &perr) {
+				switch perr.Kind {
+				case providers.ErrRateLimited:
+					m.message_area.AppendMessage("Rate limited - try again in a moment.", false)
+				case providers.ErrAuthFailed:
+					m.message_area.AppendMessage("Auth failed - check your API key.", false)
+				case providers.ErrContextExceeded:
+					m.message_area.AppendMessage("Context window exceeded - try trimming history.", false)
+				default:
+					m.message_area.AppendMessage("Error: "+perr.Error(), false)
+				}
+			} else {
+				m.message_area.AppendMessage("Error: "+msg.err.Error(), false)
+			}
 		} else {
 			m.message_area.AppendMessage(msg.content, false)
 			m.context = append(m.context, providers.Message{Role: "assistant", Content: msg.content})
@@ -272,7 +287,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	provider, err := providers.Select_provider("gemini-3.1-flash-lite", apiKey)
+	provider, err := providers.Select_provider("gemini-3.5-flash", apiKey)
 
 	if err != nil {
 		fmt.Println(err)

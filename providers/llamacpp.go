@@ -3,11 +3,9 @@
 package providers
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -37,42 +35,8 @@ func NewLlamaCpp(model string) Provider {
 	return newLlamaCpp(model)
 }
 
-// doRequest is shared by every endpoint below (chat, tokenize,
-// apply-template, props, models) so they all build/send/read requests the
-// same way. Param named "endpoint" rather than "url" since this file
-// imports the net/url package and a same-named local would shadow it.
 func (l *llamaCppProvider) doRequest(ctx context.Context, method, endpoint string, reqBody interface{}) ([]byte, error) {
-	var reader io.Reader
-	if reqBody != nil {
-		jsonData, err := json.Marshal(reqBody)
-		if err != nil {
-			return nil, fmt.Errorf("marshal error: %w", err)
-		}
-		reader = bytes.NewBuffer(jsonData)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("llama.cpp error (%d): %s", resp.StatusCode, body)
-	}
-
-	return body, nil
+	return doJSONRequest(ctx, method, endpoint, nil, reqBody)
 }
 
 // toLlamaCppMessages converts our provider-agnostic Message slice into the
