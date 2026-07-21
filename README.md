@@ -59,7 +59,6 @@ llama.cpp
 - fix tabs ____ getting cut off
 - add system prompt with the tools
 - wire and init the tools in main and make a prompt with tool calls
-- improve the provider interface to make it robust
 - add functionality to the buttons we added long before
 - extend the prompt areas functionality with features like cntr a selects everything written you can copy and paste things like that 
 
