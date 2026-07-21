@@ -157,7 +157,7 @@ func (m *Model) markdownRenderer(width int) *glamour.TermRenderer {
 	}
 	if m.mdRenderer == nil || m.mdWidth != width {
 		r, err := glamour.NewTermRenderer(
-			glamour.WithStylePath("dark"),
+			glamour.WithStyles(markdownStyle()),
 			glamour.WithWordWrap(width),
 		)
 		if err != nil {
