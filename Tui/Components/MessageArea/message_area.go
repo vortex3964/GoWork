@@ -5,6 +5,7 @@ import (
 
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	glamour "charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
 
 	"GoWork/Tui/Style"
@@ -16,6 +17,7 @@ const botPad = 1
 // msgGap is the number of blank lines left between two consecutive
 // messages.
 const msgGap = 1
+const fallbackWidth = 80
 
 var (
 	aiLabelColor   = lipgloss.Color("111")
@@ -36,12 +38,14 @@ func NewMessage(content string, isUser bool) message {
 type Model struct {
 	vp       viewport.Model
 	messages []message
-	// rendered caches the styled (but NOT width-wrapped) block for each
-	// message, aligned by index with messages. The viewport does the
-	// actual wrapping itself at render time, so a block only needs to be
-	// built once, ever resizing doesn't touch it.
 	rendered []string
 	size     int
+
+	// mdRenderer is the glamour renderer used for AI messages, cached
+	// and only rebuilt when the width it was built for (mdWidth) no
+	// longer matches what we need, since constructing one isn't free.
+	mdRenderer *glamour.TermRenderer
+	mdWidth    int
 }
 
 // New creates an empty message area.
@@ -53,9 +57,9 @@ func New() Model {
 		PaddingLeft(2).
 		PaddingRight(2)
 
-	// Let the viewport wrap its own content. It re-wraps to whatever
-	// width it currently has, including after a resize, so we don't
-	// need to hand-roll that ourselves.
+	// Let the viewport wrap its own (plain-text) content. It re-wraps to
+	// whatever width it currently has, including after a resize, so we
+	// don't need to hand-roll that ourselves.
 	vp.SoftWrap = true
 
 	return Model{
@@ -69,7 +73,7 @@ func (m *Model) AppendMessage(content string, isUser bool) {
 	m.messages = append(m.messages, msg)
 	m.size += 1
 
-	m.rendered = append(m.rendered, m.renderBlock(msg))
+	m.rendered = append(m.rendered, m.renderBlock(msg, m.contentWidth()))
 	if m.vp.Width() > 0 {
 		// Only push to the viewport once it actually has dimensions
 		// SetContent before any SetWidth/SetHeight call used to be a
@@ -112,21 +116,63 @@ func (m *Model) SetSize(outerWidth int, outerHeight int) {
 		h = 0
 	}
 
-	firstSize := m.vp.Width() == 0
+	prevWidth := m.vp.Width()
 	m.vp.SetWidth(inner)
 	m.vp.SetHeight(h)
 
-	if firstSize {
+	if prevWidth == 0 || inner != prevWidth {
+		m.rebuildRendered()
 		m.pushContent()
 	}
-
 }
 
-// renderBlock styles a single message a small colored header on its own
-// line, then the body. It does NOT wrap the text; the viewport handles
-// that. That makes this a one-time cost per message rather than something
-// that has to be redone on every resize.
-func (m *Model) renderBlock(msg message) string {
+// contentWidth returns the width blocks should be rendered at right now:
+// the viewport's real width once it has one, or a reasonable fallback
+// before the first SetSize call.
+func (m *Model) contentWidth() int {
+	if w := m.vp.Width(); w > 0 {
+		return w
+	}
+	return fallbackWidth
+}
+
+// rebuildRendered re-renders every cached block at the current content
+// width. Only needed when that width changes - a block rendered at its
+// original width doesn't otherwise go stale.
+func (m *Model) rebuildRendered() {
+	width := m.contentWidth()
+	rendered := make([]string, len(m.messages))
+	for i, msg := range m.messages {
+		rendered[i] = m.renderBlock(msg, width)
+	}
+	m.rendered = rendered
+}
+
+// markdownRenderer returns a glamour renderer sized to width, rebuilding
+// it only when the width actually changed since last time. Constructing
+// one loads/parses a style, so it's not something to do per-message.
+func (m *Model) markdownRenderer(width int) *glamour.TermRenderer {
+	if width < 1 {
+		width = 1
+	}
+	if m.mdRenderer == nil || m.mdWidth != width {
+		r, err := glamour.NewTermRenderer(
+			glamour.WithStylePath("dark"),
+			glamour.WithWordWrap(width),
+		)
+		if err != nil {
+			// Keep whatever renderer we already had (possibly nil)
+			// rather than losing it - renderBlock falls back to plain
+			// styled text if this ends up nil.
+			return m.mdRenderer
+		}
+		m.mdRenderer = r
+		m.mdWidth = width
+	}
+	return m.mdRenderer
+}
+
+func (m *Model) renderBlock(msg message, width int) string {
 	label := "● Ai"
 	labelColor := aiLabelColor
 	bodyColor := aiBodyColor
@@ -137,15 +183,29 @@ func (m *Model) renderBlock(msg message) string {
 	}
 
 	header := lipgloss.NewStyle().Bold(true).Foreground(labelColor).Render(label)
+
+	// Default to plain styled text - this is what user messages use,
+	// and also what AI messages fall back to if markdown rendering
+	// isn't available or fails on this particular message.
 	body := lipgloss.NewStyle().Foreground(bodyColor).Render(msg.content)
+	if !msg.isUser {
+		if r := m.markdownRenderer(width); r != nil {
+			if out, err := r.Render(msg.content); err == nil {
+				// glamour pads block elements with leading/trailing
+				// blank lines; trim those so message spacing stays
+				// governed by msgGap instead of stacking with it.
+				body = strings.Trim(out, "\n")
+			}
+		}
+	}
 
 	return header + "\n" + body
 }
 
 // pushContent joins the cached per-message blocks and hands the result to
 // the viewport. SetContent always wants the whole string, but since every
-// block was already styled once when its message was appended, this is
-// just a cheap string join, not a re-render.
+// block was already styled once when its message was appended (or
+// rebuilt), this is just a cheap string join, not a re-render.
 func (m *Model) pushContent() {
 	if len(m.rendered) == 0 {
 		m.vp.SetContent("")
