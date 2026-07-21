@@ -23,6 +23,14 @@ const topBarHeight = 1
 
 const spinnerHeight = 1
 
+func get_supported_providers() []string{
+	return []string { "google" , "anthropic" , "groq" , "openAi" , "local" }
+}
+
+func get_supported_providers_local() []string {
+	return []string { "ollama" , "llamaCpp" , "lmStudio" }
+}
+
 // to catch errors in case the api call for the ai fails
 type aiResponseMsg struct {
 	content string
