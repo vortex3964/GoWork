@@ -34,7 +34,13 @@ func get_supported_providers_local() []string {
 // to catch errors in case the api call for the ai fails
 type aiResponseMsg struct {
 	content string
+	usage   providers.Usage
 	err     error
+}
+
+type modelInfoMsg struct {
+	info providers.ModelInfo
+	err  error
 }
 
 type aiSelect struct {
@@ -62,9 +68,13 @@ type model struct {
 	model providers.Provider
 	context []providers.Message
 	aiThink bool
+
+	//status line data to be displayed
+	modelID string
+	status statusLine
 }
 
-func initialModel(provider providers.Provider) model {
+func initialModel(provider providers.Provider, modelID string, providerName string) model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 
@@ -77,11 +87,13 @@ func initialModel(provider providers.Provider) model {
 		context: []providers.Message{},
 		model: provider,
 		aiThink: false,
+		modelID: modelID,
+		status:  newStatusLine(providerName),
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	return nil
+	return fetchModelInfoCmd(m.model, m.modelID)
 }
 
 // tea.Cmd that actually calls the AI provider - runs off the main update loop
@@ -93,14 +105,19 @@ func generateCmd(p providers.Provider, prompt string, messages []providers.Messa
 		if err != nil {
 			return aiResponseMsg{err: err}
 		}
-		return aiResponseMsg{content: result.Content}
+		return aiResponseMsg{content: result.Content, usage: result.Usage}
 	}
 }
 
-// promptTop is the row the prompt bar starts on, since it's pinned to the
-// bottom of the window on the code tab rather than sitting under the tabs.
+func fetchModelInfoCmd(p providers.Provider, model string) tea.Cmd {
+	return func() tea.Msg {
+		info, err := p.Info(context.Background(), model)
+		return modelInfoMsg{info: info, err: err}
+	}
+}
+
 func (m model) promptTop() int {
-	return m.winHeight - promptbar.Height
+	return m.winHeight - statusLineHeight - promptbar.Height
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -119,8 +136,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.skills.SetSize(m.winWidth, contentHeight)
 
 		// message area fills everything between the tabs and the prompt
-		// bar, minus the reserved spinner row.
-		msgAreaHeight := m.winHeight - topBarHeight - spinnerHeight - promptbar.Height
+		// bar, minus the reserved spinner row and the statusline row.
+		msgAreaHeight := m.winHeight - topBarHeight - spinnerHeight - statusLineHeight - promptbar.Height
 		if msgAreaHeight < 0 {
 			msgAreaHeight = 0
 		}
@@ -174,15 +191,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseClickMsg:
 		if msg.Button == tea.MouseLeft {
 			// Tabs occupy row 0 only (topBarHeight == 1). The prompt bar
-			// is pinned to the bottom of the screen, so it owns the last
-			// promptbar.Height rows instead but only on the "code" tab,
-			// since that's the only screen it's rendered on. Once the
+			// sits pinned just above the statusline at the bottom of the
+			// screen, so it owns exactly promptbar.Height rows starting
+			// at promptTop() - anything below that is the statusline,
+			// which isn't clickable. Only on the "code" tab, since
+			// that's the only screen either is rendered on. Once the
 			// message area needs its own click handling (e.g. selecting
 			// a message), this is where its Y range gets checked too.
 			switch {
 			case msg.Y < topBarHeight:
 				m.tabs.HandleClick(msg.X)
-			case m.tabs.Active().Name == "code" && msg.Y >= m.promptTop():
+			case m.tabs.Active().Name == "code" && msg.Y >= m.promptTop() && msg.Y < m.promptTop()+promptbar.Height:
 				m.prompt_mode = true
 				return m, m.prompt.Focus()
 			}
@@ -194,14 +213,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.tabs.Active().Name == "code" {
 			promptTop := m.promptTop()
 			switch {
-			case msg.Y >= promptTop:
+			case msg.Y >= promptTop && msg.Y < promptTop+promptbar.Height:
 				switch msg.Button {
 				case tea.MouseWheelUp:
 					m.prompt.ScrollUp()
 				case tea.MouseWheelDown:
 					m.prompt.ScrollDown()
 				}
-			case msg.Y >= topBarHeight:
+			case msg.Y >= topBarHeight && msg.Y < promptTop:
 				switch msg.Button {
 				case tea.MouseWheelUp:
 					m.message_area.ScrollUp()
@@ -241,6 +260,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.message_area.AppendMessage(msg.content, false)
 			m.context = append(m.context, providers.Message{Role: "assistant", Content: msg.content})
+			m.status.sessionTokens += msg.usage.TotalTokens
+			m.status.lastPromptTokens = msg.usage.PromptTokens
+		}
+		return m, nil
+	case modelInfoMsg:
+		if msg.err == nil {
+			m.status.contextWindow = msg.info.ContextWindow
 		}
 		return m, nil
 	}
@@ -273,7 +299,8 @@ func (m model) View() tea.View {
 			content+=m.spinner.View() + " thinking...."
 		}
 		content += "\n"
-		content += m.prompt.View()
+		content += m.prompt.View() + "\n"
+		content += renderStatusLine(m)
 	}
 
 	v := tea.NewView(content)
@@ -295,14 +322,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	provider, err := providers.Select_provider("gemini-3.5-flash", apiKey)
+	modelName := "gemini-3.5-flash"
+	providerName := "google"
+
+	provider, err := providers.Select_provider(modelName, apiKey)
 
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
 
-	p := tea.NewProgram(initialModel(provider))
+	p := tea.NewProgram(initialModel(provider, modelName, providerName))
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Oof: %v\n", err)
 		os.Exit(1)
