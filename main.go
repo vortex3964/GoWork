@@ -70,7 +70,6 @@ type model struct {
 	aiThink bool
 
 	//status line data to be displayed
-	modelID string
 	status statusLine
 }
 
@@ -87,13 +86,12 @@ func initialModel(provider providers.Provider, modelID string, providerName stri
 		context: []providers.Message{},
 		model: provider,
 		aiThink: false,
-		modelID: modelID,
-		status:  newStatusLine(providerName),
+		status:  newStatusLine(providerName, modelID),
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	return fetchModelInfoCmd(m.model, m.modelID)
+	return fetchModelInfoCmd(m.model, m.status.modelID)
 }
 
 // tea.Cmd that actually calls the AI provider - runs off the main update loop

@@ -169,15 +169,11 @@ func (o *ollamaProvider) Info(ctx context.Context, model string) (ModelInfo, err
 	ctxLen := parsed.contextLength()
 
 	return ModelInfo{
-		ID:            model,
 		ContextWindow: ctxLen,
 		// ollama doesn't cap output tokens separately from the context
 		// window - generation just keeps going until it fills whatever
 		// context room is left, so we report the same number here.
 		MaxOutputTokens: ctxLen,
-		// local models have no per-token price.
-		InputPrice:  0,
-		OutputPrice: 0,
 	}, nil
 }
 

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 )
 
 const geminiBaseURL = "https://generativelanguage.googleapis.com/v1beta"
@@ -126,13 +125,8 @@ type geminiModel struct {
 
 func (gm geminiModel) toModelInfo() ModelInfo {
 	return ModelInfo{
-		ID:              strings.TrimPrefix(gm.Name, "models/"),
 		ContextWindow:   gm.InputTokenLimit,
 		MaxOutputTokens: gm.OutputTokenLimit,
-		// gemini's API doesn't expose pricing anywhere, so these stay at 0
-		// for now - would need a separate pricing source if we want them.
-		InputPrice:  0,
-		OutputPrice: 0,
 	}
 }
 

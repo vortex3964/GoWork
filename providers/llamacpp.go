@@ -155,11 +155,8 @@ func (l *llamaCppProvider) Info(ctx context.Context, model string) (ModelInfo, e
 	ctxLen := parsed.DefaultGenerationSettings.NCtx
 
 	return ModelInfo{
-		ID:            model,
 		ContextWindow: ctxLen,
 		MaxOutputTokens: ctxLen,
-		InputPrice:  0,
-		OutputPrice: 0,
 	}, nil
 }
 
