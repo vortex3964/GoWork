@@ -39,9 +39,9 @@ the providers we support local or paid
 
 ### Paid with api key
 gemini\
-groq (in the future)\
-chat gpt (in the future)\
-anthropic (in the future)
+groq\
+chat gpt\
+anthropic
 
 ### local no api key needed
 lmStudio (in the future)\
@@ -51,7 +51,6 @@ llama.cpp
 ## FOLLOWING COMMITS FOCUS
 - make the logo appear when there are 0 history messages
 - add project root plus footers or styled boxes for context percent , api key , select model (they will be empty for now)
-- make the chat area render markdown with the charm lib
 - add a < elents which will be used in the future to hold the changes list in general it will handle all write kind tools(can be opened with cntrl e and cntr a accepts a change cntr r rejects one (and they can accept all or reject all from a file with the same binds))
 - make preparations for updating the write tools with a changeState list
 - update write and edit tools and their tests to acommodate for the new changeState
@@ -63,8 +62,7 @@ llama.cpp
 - extend the prompt areas functionality with features like cntr a selects everything written you can copy and paste things like that 
 
 ## TODO
-- list the tuis features
-- extend providers to include more (local models plus open ai gemini etch.)
+- update read and edit so that we handle pdfs and images we will ignore images and read pdfs with the new tool we will make in the future
 - context handling
 - designing skills
 - actually test tool calls with the llm
@@ -79,6 +77,7 @@ llama.cpp
 - tools for generating skills and handling them
 - implement skill managment area 
 - Important remember limit the tokens of generate so we dont burn everything in non local models
+- fix visual bug when we have long ai messages in message area the border doesnt render correctly for some reason
 
 ## common errors we check for 
 invalid request\
