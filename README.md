@@ -138,7 +138,20 @@ make test
 ```
 ## Keybinds
 
-COMING SOON MAN A LOT OF THINGS ARE STILL NOT DONE LOL
+some of the basic keybinds may we will add more
+
+tab -> next tab
+shift tab -> previous tab
+
+cntr j -> new line in prompt mode\
+cntrl i -> interupt\
+cntrl tab -> select provider and model\
+cntrl fa ->accept all changes on the file\
+cntrl a -> accept current change\
+cntrl r -> reject current change\
+cntrl fr -> reject the file
+
+cntrl a , c , v -> select all , copy , paste while in prompt mode
 
 ## Slash commands
 /help \
