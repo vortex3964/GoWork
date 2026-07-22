@@ -14,7 +14,7 @@ import (
 const statusLineHeight = 1
 
 type statusLine struct {
-	modelName    string // TODO: source this from Info() once it returns a model name - hardcoded for now
+	modelID      string
 	providerName string
 	projectRoot  string // just the root folder's name (e.g. "GoWork"), not the full path
 
@@ -23,14 +23,14 @@ type statusLine struct {
 	sessionTokens    int // running total of prompt+completion tokens for the whole session
 }
 
-func newStatusLine(providerName string) statusLine {
+func newStatusLine(providerName string, modelID string) statusLine {
 	root := "?"
 	if cwd, err := os.Getwd(); err == nil {
 		root = filepath.Base(cwd)
 	}
 
 	return statusLine{
-		modelName:    "example-model", // TODO: swap for Info()'s model name once that exists
+		modelID:      modelID,
 		providerName: providerName,
 		projectRoot:  root,
 	}
@@ -74,7 +74,7 @@ func renderChain(segs []segment) string {
 }
 func renderStatusLine(m model) string {
 	left := renderChain([]segment{
-		{bg: statusModelBG, text: m.status.modelName},
+		{bg: statusModelBG, text: m.status.modelID},
 		{bg: statusProviderBG, text: m.status.providerName},
 	})
 

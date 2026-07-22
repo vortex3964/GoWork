@@ -45,11 +45,8 @@ type Message struct{
 }
 
 type ModelInfo struct {
-    ID string
     ContextWindow int
     MaxOutputTokens int
-    InputPrice float64
-    OutputPrice float64
 }
 
 type Usage struct {
