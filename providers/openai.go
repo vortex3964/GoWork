@@ -1,1 +1,148 @@
+//DESC: code for using openai models
+
 package providers
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+)
+
+const openaiBaseURL = "https://api.openai.com/v1"
+
+type openaiProvider struct {
+	api_key string
+	model   string
+}
+
+func newOpenAI(model string, api_key string) *openaiProvider {
+	return &openaiProvider{api_key: api_key, model: model}
+}
+
+// doRequest is shared by every endpoint below (generate, get model, list
+// models) so they all build/send/read requests the same way.
+func (o *openaiProvider) doRequest(ctx context.Context, method, url string, reqBody interface{}) ([]byte, error) {
+	return doJSONRequest(ctx, method, url, map[string]string{"Authorization": "Bearer " + o.api_key}, reqBody)
+}
+
+// toOpenAIMessages turns our provider-agnostic Message slice into openai's
+// chat completions messages shape, which is a straight passthrough since
+// openai already uses "system"/"user"/"assistant" role names.
+func toOpenAIMessages(messages []Message) []map[string]string {
+	out := make([]map[string]string, 0, len(messages))
+	for _, msg := range messages {
+		out = append(out, map[string]string{
+			"role":    msg.Role,
+			"content": msg.Content,
+		})
+	}
+	return out
+}
+
+// implementations of the Provider interface
+
+func (o *openaiProvider) Generate(ctx context.Context, messages []Message) (GenerateResult, error) {
+	reqBody := map[string]interface{}{
+		"model":    o.model,
+		"messages": toOpenAIMessages(messages),
+	}
+
+	url := openaiBaseURL + "/chat/completions"
+	body, err := o.doRequest(ctx, http.MethodPost, url, reqBody)
+	if err != nil {
+		return GenerateResult{}, err
+	}
+
+	var parsed struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return GenerateResult{}, fmt.Errorf("failed to parse response: %w", err)
+	}
+	if len(parsed.Choices) == 0 {
+		return GenerateResult{}, fmt.Errorf("empty response from openai")
+	}
+
+	return GenerateResult{
+		Content: parsed.Choices[0].Message.Content,
+		Usage: Usage{
+			PromptTokens:     parsed.Usage.PromptTokens,
+			CompletionTokens: parsed.Usage.CompletionTokens,
+			TotalTokens:      parsed.Usage.TotalTokens,
+		},
+	}, nil
+}
+
+//TODO: also add a better token counting func
+
+// openai doesn't expose a token-counting endpoint, so this falls back to
+// a rough estimate until something better (e.g. a real tokenizer) is
+// wired up.
+func (o *openaiProvider) EstimateTokens(ctx context.Context, messages []Message) (int, error) {
+	chars := 0
+	for _, msg := range messages {
+		chars += len(msg.Content)
+	}
+	return chars / 4, nil
+}
+
+// openaiModel mirrors the model object openai's API returns. NOTE: unlike
+// gemini/groq, openai's /v1/models response doesn't include context
+// window or max output token limits at all - those aren't published
+// through the API anywhere, so ContextWindow/MaxOutputTokens below will
+// always come back 0 for now.
+type openaiModel struct {
+	ID string `json:"id"`
+}
+
+func (om openaiModel) toModelInfo() ModelInfo {
+	return ModelInfo{}
+}
+
+func (o *openaiProvider) Info(ctx context.Context, model string) (ModelInfo, error) {
+	url := openaiBaseURL + "/models/" + model
+	body, err := o.doRequest(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return ModelInfo{}, err
+	}
+
+	var parsed openaiModel
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return ModelInfo{}, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return parsed.toModelInfo(), nil
+}
+
+func (o *openaiProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	url := openaiBaseURL + "/models"
+	body, err := o.doRequest(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var parsed struct {
+		Data []openaiModel `json:"data"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	models := make([]ModelInfo, 0, len(parsed.Data))
+	for _, m := range parsed.Data {
+		models = append(models, m.toModelInfo())
+	}
+
+	return models, nil
+}
