@@ -108,6 +108,8 @@ type groqModel struct {
 
 func (gm groqModel) toModelInfo() ModelInfo {
 	return ModelInfo{
+		ID:              gm.ID,
+		DisplayName:     gm.ID,
 		ContextWindow:   gm.ContextWindow,
 		MaxOutputTokens: gm.MaxCompletionTokens,
 	}

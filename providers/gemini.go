@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 const geminiBaseURL = "https://generativelanguage.googleapis.com/v1beta"
@@ -124,7 +125,10 @@ type geminiModel struct {
 }
 
 func (gm geminiModel) toModelInfo() ModelInfo {
+	id := strings.TrimPrefix(gm.Name, "models/")
 	return ModelInfo{
+		ID:              id,
+		DisplayName:     gm.DisplayName,
 		ContextWindow:   gm.InputTokenLimit,
 		MaxOutputTokens: gm.OutputTokenLimit,
 	}

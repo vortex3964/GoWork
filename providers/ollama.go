@@ -169,6 +169,8 @@ func (o *ollamaProvider) Info(ctx context.Context, model string) (ModelInfo, err
 	ctxLen := parsed.contextLength()
 
 	return ModelInfo{
+		ID:          model,
+		DisplayName: model,
 		ContextWindow: ctxLen,
 		// ollama doesn't cap output tokens separately from the context
 		// window - generation just keeps going until it fills whatever
@@ -195,14 +197,10 @@ func (o *ollamaProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 
 	models := make([]ModelInfo, 0, len(parsed.Models))
 	for _, m := range parsed.Models {
-		// /api/tags doesn't include context length, so Info gets called
-		// per model to fill that in - one extra request per model, but it
-		// keeps ListModels honest instead of returning half-empty structs.
-		info, err := o.Info(ctx, m.Name)
-		if err != nil {
-			return nil, fmt.Errorf("info for %s: %w", m.Name, err)
-		}
-		models = append(models, info)
+		// Names only - calling /api/show per model made the picker hang
+		// (and used to abort the whole list on a single failure). Context
+		// window is filled later via Info when a model is selected.
+		models = append(models, ModelInfo{ID: m.Name, DisplayName: m.Name})
 	}
 
 	return models, nil

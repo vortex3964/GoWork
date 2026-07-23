@@ -144,7 +144,7 @@ shift tab -> previous tab
 
 cntr j -> new line in prompt mode\
 cntrl i -> interupt\
-cntrl tab -> select provider and model\
+cntrl p -> select provider and model\
 cntrl fa ->accept all changes on the file\
 cntrl a -> accept current change\
 cntrl r -> reject current change\
