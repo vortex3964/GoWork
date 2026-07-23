@@ -45,8 +45,10 @@ type Message struct{
 }
 
 type ModelInfo struct {
-    ContextWindow int
-    MaxOutputTokens int
+	ID              string
+	DisplayName     string
+	ContextWindow   int
+	MaxOutputTokens int
 }
 
 type Usage struct {
@@ -225,14 +227,57 @@ func backoff(attempt int) time.Duration {
 	return d
 }
 
-//selects an ai provider (model) and returns it to the main loop
-// curently it still only works for gemini
-func Select_provider(model string , api_key string) (Provider , error){
-	if api_key == ""{
-		return nil , fmt.Errorf("Empty api key")
+// Selects an ai provider by name and returns a ready-to-use Provider.
+// Cloud providers require a non-empty api_key; local ones ignore it.
+func Select_provider(providerName string, model string, api_key string) (Provider, error) {
+	name := strings.ToLower(strings.TrimSpace(providerName))
+	switch name {
+	case "google", "gemini":
+		if api_key == "" {
+			return nil, fmt.Errorf("empty api key")
+		}
+		return WithRetries(newGemini(model, api_key), 3), nil
+	case "anthropic":
+		if api_key == "" {
+			return nil, fmt.Errorf("empty api key")
+		}
+		return WithRetries(newAnthropic(model, api_key), 3), nil
+	case "groq":
+		if api_key == "" {
+			return nil, fmt.Errorf("empty api key")
+		}
+		return WithRetries(newGroq(model, api_key), 3), nil
+	case "openai", "openAi":
+		if api_key == "" {
+			return nil, fmt.Errorf("empty api key")
+		}
+		return WithRetries(newOpenAI(model, api_key), 3), nil
+	case "ollama":
+		return newOllama(model), nil
+	case "llamacpp", "llamaCpp":
+		return newLlamaCpp(model), nil
+	case "lmstudio", "lmStudio":
+		return newLMStudio(model), nil
+	default:
+		return nil, fmt.Errorf("unknown provider: %s", providerName)
 	}
+}
 
-	return WithRetries(newGemini(model, api_key), 3) , nil
+// IsLocalProvider reports whether the named provider talks to a local server
+// and therefore needs no API key.
+func IsLocalProvider(providerName string) bool {
+	switch strings.ToLower(strings.TrimSpace(providerName)) {
+	case "ollama", "llamacpp", "lmstudio":
+		return true
+	default:
+		return false
+	}
+}
+
+// NewForListing builds a provider instance solely for ListModels calls.
+// For cloud providers api_key must be set; for local ones it may be empty.
+func NewForListing(providerName string, api_key string) (Provider, error) {
+	return Select_provider(providerName, "", api_key)
 }
 
 func ExportContext(context []Message) error {

@@ -155,7 +155,9 @@ func (l *llamaCppProvider) Info(ctx context.Context, model string) (ModelInfo, e
 	ctxLen := parsed.DefaultGenerationSettings.NCtx
 
 	return ModelInfo{
-		ContextWindow: ctxLen,
+		ID:              model,
+		DisplayName:     model,
+		ContextWindow:   ctxLen,
 		MaxOutputTokens: ctxLen,
 	}, nil
 }
@@ -177,11 +179,9 @@ func (l *llamaCppProvider) ListModels(ctx context.Context) ([]ModelInfo, error) 
 
 	models := make([]ModelInfo, 0, len(parsed.Data))
 	for _, m := range parsed.Data {
-		info, err := l.Info(ctx, m.ID)
-		if err != nil {
-			return nil, fmt.Errorf("info for %s: %w", m.ID, err)
-		}
-		models = append(models, info)
+		// Names only - Info-per-model made listing slow/fragile for the
+		// picker. Context window is filled later when a model is selected.
+		models = append(models, ModelInfo{ID: m.ID, DisplayName: m.ID})
 	}
 
 	return models, nil

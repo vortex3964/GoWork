@@ -107,7 +107,10 @@ type openaiModel struct {
 }
 
 func (om openaiModel) toModelInfo() ModelInfo {
-	return ModelInfo{}
+	return ModelInfo{
+		ID:          om.ID,
+		DisplayName: om.ID,
+	}
 }
 
 func (o *openaiProvider) Info(ctx context.Context, model string) (ModelInfo, error) {
