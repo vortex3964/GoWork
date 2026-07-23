@@ -30,9 +30,11 @@ also a way to see token consumption (maybe a token managment tab with stats)
 392 by 655 is the minimum size (the goal is for it to fit in another ides sub terminal so that we dont also make a mini ide too)
 
 ai will print in a read me style text
+
+in providers list when were selecting pressing / starts filtering
 ## Depedencies 
 ripgrep\
-packages : bubbletea , go-gitignore , godotenv
+packages : bubbletea , go-gitignore , godotenv , sahilm/fuzzy
 
 ## Supported ai
 the providers we support local or paid 
@@ -44,13 +46,12 @@ chat gpt\
 anthropic
 
 ### local no api key needed
-lmStudio (in the future)\
+lmStudio\
 ollama\
 llama.cpp
 
 ## FOLLOWING COMMITS FOCUS
 - make the logo appear when there are 0 history messages
-- add project root plus footers or styled boxes for context percent , api key , select model (they will be empty for now)
 - add a < elents which will be used in the future to hold the changes list in general it will handle all write kind tools(can be opened with cntrl e and cntr a accepts a change cntr r rejects one (and they can accept all or reject all from a file with the same binds))
 - make preparations for updating the write tools with a changeState list
 - update write and edit tools and their tests to acommodate for the new changeState
@@ -77,7 +78,7 @@ llama.cpp
 - tools for generating skills and handling them
 - implement skill managment area 
 - Important remember limit the tokens of generate so we dont burn everything in non local models
-- fix visual bug when we have long ai messages in message area the border doesnt render correctly for some reason
+- fix visual bug when we have long ai messages in message area the border doesnt render correctly for some reason (doesnt appear now but keep tabs on it)
 
 ## common errors we check for 
 invalid request\
