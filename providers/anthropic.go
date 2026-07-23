@@ -133,6 +133,8 @@ type anthropicModel struct {
 
 func (am anthropicModel) toModelInfo() ModelInfo {
 	return ModelInfo{
+		ID:              am.ID,
+		DisplayName:     am.ID,
 		ContextWindow:   am.MaxInputTokens,
 		MaxOutputTokens: am.MaxTokens,
 	}

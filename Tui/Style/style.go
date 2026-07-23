@@ -7,19 +7,19 @@ package style
 
 import "charm.land/lipgloss/v2"
 
-// Palette (Ayu Dark)
+
 var (
 	Primary    = lipgloss.Color("#E6B450") // Ayu accent gold
 	Border     = lipgloss.Color("#E6B450") // Ayu accent gold
 	Muted      = lipgloss.Color("#626A73") // Ayu comment gray
 	Text       = lipgloss.Color("#B3B1AD") // Ayu fg
-	Background = lipgloss.Color("#0F1419") // Ayu bg
+	Background = lipgloss.Color("#000000") // black
 	Danger     = lipgloss.Color("#FF3333") // Ayu syntax.error red
 	Success    = lipgloss.Color("#7FD962") // Ayu vcs.added green
 	Warning    = lipgloss.Color("#FFB454") // Ayu syntax.func orange
 	Info       = lipgloss.Color("#59C2FF") // Ayu syntax.entity blue
-	Secondary  = lipgloss.Color("#0D1017")
-	Highlight  = lipgloss.Color("#253340")
+	Secondary  = lipgloss.Color("#000000") // match app bg
+	Highlight  = lipgloss.Color("#1a1a1a") // slightly lifted black for selection
 	Special    = lipgloss.Color("#95E6CB")
 )
 
