@@ -171,7 +171,9 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	absPath := filepath.Join(args.RootPath, relPath)
 	lr := tools.NewLineRanges(start, offset)
 	rs := tools.Load(absPath)
-
+	
+	//TODO: this is probably wrong with the read state we want to add rethink how the cache should work
+	/*
 	if rs.Get(absPath, lr) {
 		end := start + offset - 1
 		if rs.LineCount > 0 && end > rs.LineCount {
@@ -182,6 +184,7 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 			start, end, input.Path,
 		)), nil
 	}
+	*/
 
 	//since the file exists we need to read the contents now and return it
 	//NOTE: we also need to update the read state and in general check if we have made that read
