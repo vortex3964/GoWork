@@ -51,7 +51,6 @@ ollama\
 llama.cpp
 
 ## FOLLOWING COMMITS FOCUS
-- make the logo appear when there are 0 history messages
 - add a < elents which will be used in the future to hold the changes list in general it will handle all write kind tools(can be opened with cntrl e and cntr a accepts a change cntr r rejects one (and they can accept all or reject all from a file with the same binds))
 - make preparations for updating the write tools with a changeState list
 - update write and edit tools and their tests to acommodate for the new changeState
@@ -78,7 +77,6 @@ llama.cpp
 - tools for generating skills and handling them
 - implement skill managment area 
 - Important remember limit the tokens of generate so we dont burn everything in non local models
-- fix visual bug when we have long ai messages in message area the border doesnt render correctly for some reason (doesnt appear now but keep tabs on it)
 
 ## common errors we check for 
 invalid request\
