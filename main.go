@@ -46,6 +46,15 @@ type modelInfoMsg struct {
 	err  error
 }
 
+type uiMode int
+
+const (
+	modeIdle uiMode = iota
+	modePrompt
+	modeProviderSelect
+	modeChangeHandling
+)
+
 type model struct {
 	tabs         tabs.Model
 	stats        stats.Model
@@ -54,8 +63,8 @@ type model struct {
 	message_area messagearea.Model
 	spinner      spinner.Model
 
-	// prompt mode
-	prompt_mode bool
+	// which UI mode we're in (idle, prompt entry, provider select, ...)
+	mode uiMode
 
 	// size of the window
 	winWidth  int
@@ -67,8 +76,7 @@ type model struct {
 	aiThink bool
 
 	// provider/model picker (ctrl+p)
-	selectingProvider bool
-	providerSelect    providerselect.Model
+	providerSelect providerselect.Model
 
 	//status line data to be displayed
 	status statusLine
@@ -82,7 +90,7 @@ func initialModel(provider providers.Provider, modelID string, providerName stri
 		tabs:         tabs.New("code", "skills", "stats"),
 		prompt:       promptbar.New(),
 		message_area: messagearea.New(),
-		prompt_mode:  false, // dont start in prompt mode
+		mode:         modeIdle,
 		spinner:      sp,
 		context:      []providers.Message{},
 		model:        provider,
@@ -123,11 +131,8 @@ func (m model) promptTop() int {
 }
 
 func (m *model) openProviderSelect() tea.Cmd {
-	m.selectingProvider = true
-	if m.prompt_mode {
-		m.prompt.Blur()
-		m.prompt_mode = false
-	}
+	m.mode = modeProviderSelect
+	m.prompt.Blur()
 	m.providerSelect = providerselect.New(
 		get_supported_providers(),
 		get_supported_providers_local(),
@@ -159,13 +164,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			msgAreaHeight = 0
 		}
 		m.message_area.SetSize(m.winWidth, msgAreaHeight)
-		if m.selectingProvider {
+		if m.mode == modeProviderSelect {
 			m.providerSelect.SetSize(m.winWidth, m.winHeight)
 		}
 		return m, nil
 
 	case providerselect.SelectedMsg:
-		m.selectingProvider = false
+		m.mode = modeIdle
 		apiKey := msg.APIKey
 		if apiKey == "" {
 			apiKey = os.Getenv("API_KEY")
@@ -199,14 +204,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, fetchModelInfoCmd(m.model, m.status.modelID)
 
 	case providerselect.CancelledMsg:
-		m.selectingProvider = false
+		m.mode = modeIdle
 		return m, nil
 
 	case tea.KeyPressMsg:
 		msg_str := msg.String()
 
 		if msg_str == "ctrl+c" {
-			if m.selectingProvider {
+			if m.mode == modeProviderSelect {
 				var cmd tea.Cmd
 				m.providerSelect, cmd = m.providerSelect.Update(msg)
 				return m, cmd
@@ -214,24 +219,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
-		if msg_str == "ctrl+p" && !m.prompt_mode {
-			if m.selectingProvider {
+		if msg_str == "ctrl+p" && m.mode != modePrompt {
+			if m.mode == modeProviderSelect {
 				return m, nil
 			}
 			return m, m.openProviderSelect()
 		}
 
-		if m.selectingProvider {
+		if m.mode == modeProviderSelect {
 			var cmd tea.Cmd
 			m.providerSelect, cmd = m.providerSelect.Update(msg)
 			return m, cmd
 		}
 
-		if m.prompt_mode {
+		if m.mode == modePrompt {
 			switch msg_str {
 			case "esc":
 				m.prompt.Blur()
-				m.prompt_mode = false
+				m.mode = modeIdle
 				return m, nil
 			case "shift+enter", "ctrl+j":
 				m.prompt.InsertNewline()
@@ -243,7 +248,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.model == nil {
 						m.message_area.AppendMessage(">**ERROR** No provider selected press ctrl+p to pick one.", false)
 						m.prompt.Reset()
-						m.prompt_mode = false
+						m.mode = modeIdle
 						m.prompt.Blur()
 						//m.prompt.Blur()
 						return m , nil
@@ -269,12 +274,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tabs.Prev()
 				return m, nil
 			case "enter":
-				m.prompt_mode = true
+				m.mode = modePrompt
 				return m, m.prompt.Focus()
 			}
 		}
 	case tea.MouseClickMsg:
-		if m.selectingProvider {
+		if m.mode == modeProviderSelect {
 			return m, nil
 		}
 		if msg.Button == tea.MouseLeft {
@@ -290,13 +295,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case msg.Y < topBarHeight:
 				m.tabs.HandleClick(msg.X)
 			case m.tabs.Active().Name == "code" && msg.Y >= m.promptTop() && msg.Y < m.promptTop()+promptbar.Height:
-				m.prompt_mode = true
+				m.mode = modePrompt
 				return m, m.prompt.Focus()
 			}
 		}
 		return m, nil
 	case tea.MouseWheelMsg:
-		if m.selectingProvider {
+		if m.mode == modeProviderSelect {
 			var cmd tea.Cmd
 			m.providerSelect, cmd = m.providerSelect.Update(msg)
 			return m, cmd
@@ -364,7 +369,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.selectingProvider {
+	if m.mode == modeProviderSelect {
 		var cmd tea.Cmd
 		m.providerSelect, cmd = m.providerSelect.Update(msg)
 		return m, cmd
@@ -404,7 +409,7 @@ func (m model) View() tea.View {
 		content += renderStatusLine(m)
 	}
 
-	if m.selectingProvider {
+	if m.mode == modeProviderSelect {
 		content = m.providerSelect.Overlay(content)
 	}
 
