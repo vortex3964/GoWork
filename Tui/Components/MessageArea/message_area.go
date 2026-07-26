@@ -81,6 +81,10 @@ func (m *Model) AppendMessage(content string, isUser bool) {
 	m.vp.GotoBottom()
 }
 
+func (m Model) Size() int {
+	return m.size
+}
+
 func (m *Model) ScrollUp() {
 	m.vp.ScrollUp(m.vp.MouseWheelDelta)
 }

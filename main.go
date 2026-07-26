@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/bubbles/v2/spinner"
+	"charm.land/lipgloss/v2"
 	"github.com/joho/godotenv"
 
 	"GoWork/Tui/Components/MessageArea"
@@ -80,6 +81,23 @@ type model struct {
 
 	//status line data to be displayed
 	status statusLine
+
+	// our logo
+	logoLines []string
+}
+
+func loadLogo() []string {
+	data, err := os.ReadFile("logo/logo.txt")
+	if err != nil {
+		return nil
+	}
+	// Trim a single trailing newline so we don't count a phantom blank
+	// line when centering vertically.
+	text := strings.TrimRight(string(data), "\n")
+	if text == "" {
+		return nil
+	}
+	return strings.Split(text, "\n")
 }
 
 func initialModel(provider providers.Provider, modelID string, providerName string) model {
@@ -96,6 +114,7 @@ func initialModel(provider providers.Provider, modelID string, providerName stri
 		model:        provider,
 		aiThink:      false,
 		status:       newStatusLine(providerName, modelID),
+		logoLines:    loadLogo(),
 	}
 }
 
@@ -389,6 +408,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(tabsCmd, promptCmd, msgAreaCmd)
 }
 
+func (m model) emptyStateHeight() int {
+	h := m.winHeight - topBarHeight - spinnerHeight - statusLineHeight - promptbar.Height
+	h -= 2
+	if h < 0 {
+		h = 0
+	}
+	return h
+}
+
+func (m model) renderLogo() string {
+	availH := m.emptyStateHeight()
+	if len(m.logoLines) == 0 {
+		return lipgloss.Place(m.winWidth, availH, lipgloss.Center, lipgloss.Center, "")
+	}
+
+	logoWidth := 0
+	for _, line := range m.logoLines {
+		if w := lipgloss.Width(line); w > logoWidth {
+			logoWidth = w
+		}
+	}
+
+	block := strings.Join(m.logoLines, "\n")
+
+	return lipgloss.Place(
+		m.winWidth, availH,
+		lipgloss.Center, lipgloss.Center,
+		lipgloss.NewStyle().Width(logoWidth).Render(block),
+	)
+}
+
 func (m model) View() tea.View {
 	top := m.tabs.View()
 	var content string
@@ -400,7 +450,12 @@ func (m model) View() tea.View {
 		content = top + "\n" + m.skills.View()
 	default:
 		content += top + "\n"
-		content += m.message_area.View() + "\n"
+		if m.message_area.Size() == 0 {
+			content += m.renderLogo()
+		} else {
+			content += m.message_area.View()
+		}
+		content += "\n"
 		if m.aiThink {
 			content += m.spinner.View() + " thinking...."
 		}
