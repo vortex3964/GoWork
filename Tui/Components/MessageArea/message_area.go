@@ -57,9 +57,6 @@ func New() Model {
 		PaddingLeft(2).
 		PaddingRight(2)
 
-	// Let the viewport wrap its own (plain-text) content. It re-wraps to
-	// whatever width it currently has, including after a resize, so we
-	// don't need to hand-roll that ourselves.
 	vp.SoftWrap = true
 
 	return Model{
@@ -126,14 +123,23 @@ func (m *Model) SetSize(outerWidth int, outerHeight int) {
 	}
 }
 
-// contentWidth returns the width blocks should be rendered at right now:
-// the viewport's real width once it has one, or a reasonable fallback
-// before the first SetSize call.
+// contentWidth returns the width blocks should be rendered/wrapped at
+// right now. vp.Width() is the viewport's OUTER width internally the
+// viewport subtracts its own Style's border+padding (GetHorizontalFrameSize)
+// to get the usable content width, and clips (not wraps) anything wider
+// than that. So we have to do the same subtraction here before handing
+// this width to glamour/lipgloss, or wrapped text overflows the frame and
+// gets silently truncated instead of wrapping onto the next line.
 func (m *Model) contentWidth() int {
-	if w := m.vp.Width(); w > 0 {
-		return w
+	w := m.vp.Width()
+	if w <= 0 {
+		return fallbackWidth
 	}
-	return fallbackWidth
+	w -= m.vp.Style.GetHorizontalFrameSize()
+	if w < 1 {
+		w = 1
+	}
+	return w
 }
 
 // rebuildRendered re-renders every cached block at the current content
@@ -184,10 +190,14 @@ func (m *Model) renderBlock(msg message, width int) string {
 
 	header := lipgloss.NewStyle().Bold(true).Foreground(labelColor).Render(label)
 
-	// Default to plain styled text - this is what user messages use,
+	// Default to plain styled text this is what user messages use,
 	// and also what AI messages fall back to if markdown rendering
-	// isn't available or fails on this particular message.
-	body := lipgloss.NewStyle().Foreground(bodyColor).Render(msg.content)
+	// isn't available or fails on this particular message. Width() here
+	// word-wraps to the block's target width so these lines wrap at the
+	// same boundary as glamour's AI-message output, rather than relying
+	// on the viewport's cut-based SoftWrap (which doesn't respect word
+	// boundaries) to do it for us.
+	body := lipgloss.NewStyle().Foreground(bodyColor).Width(width).Render(msg.content)
 	if !msg.isUser {
 		if r := m.markdownRenderer(width); r != nil {
 			if out, err := r.Render(msg.content); err == nil {
