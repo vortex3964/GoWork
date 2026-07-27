@@ -54,6 +54,7 @@ const (
 	modePrompt
 	modeProviderSelect
 	modeChangeHandling
+	modeRecall
 )
 
 type model struct {
@@ -78,6 +79,9 @@ type model struct {
 
 	// provider/model picker (ctrl+p)
 	providerSelect providerselect.Model
+
+	// track the message were on for recall mode
+	historyIdx int
 
 	//status line data to be displayed
 	status statusLine
@@ -147,6 +151,33 @@ func fetchModelInfoCmd(p providers.Provider, model string) tea.Cmd {
 
 func (m model) promptTop() int {
 	return m.winHeight - statusLineHeight - promptbar.Height
+}
+
+// submitPrompt sends whatever's currently in the prompt bar as a user
+// message (if non-empty), resets the prompt and history state, and kicks
+// off the AI generation. 
+func (m *model) submitPrompt() []tea.Cmd {
+	var cmds []tea.Cmd
+	val := m.prompt.Value()
+	if val == "" {
+		return cmds
+	}
+	if m.model == nil {
+		m.message_area.AppendMessage(">**ERROR** No provider selected press ctrl+p to pick one.", false)
+		m.prompt.Reset()
+		m.historyIdx = 0
+		m.mode = modeIdle
+		m.prompt.Blur()
+		return cmds
+	}
+	m.aiThink = true
+	m.message_area.AppendMessage(val, true)
+	m.context = append(m.context, providers.Message{Role: "user", Content: val})
+	m.prompt.Reset()
+	m.historyIdx = 0
+	cmds = append(cmds, generateCmd(m.model, val, m.context))
+	cmds = append(cmds, m.spinner.Tick)
+	return cmds
 }
 
 func (m *model) openProviderSelect() tea.Cmd {
@@ -238,7 +269,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
-		if msg_str == "ctrl+p" && m.mode != modePrompt {
+		if msg_str == "ctrl+p" && m.mode != modePrompt && m.mode != modeRecall {
 			if m.mode == modeProviderSelect {
 				return m, nil
 			}
@@ -251,34 +282,72 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		if m.mode == modeRecall {
+			switch msg_str {
+			case "esc":
+				m.prompt.Blur()
+				m.mode = modeIdle
+				m.historyIdx = 0
+				return m, nil
+			case "up":
+				if val := m.message_area.LastUserMessage(m.historyIdx + 1); val != "" {
+					m.historyIdx++
+					m.prompt.SetValue(val)
+				}
+				return m, nil
+			case "down":
+				if m.historyIdx > 1 {
+					m.historyIdx--
+					m.prompt.SetValue(m.message_area.LastUserMessage(m.historyIdx))
+				} else {
+					m.historyIdx = 0
+					m.prompt.Reset()
+					m.mode = modePrompt
+				}
+				return m, nil
+			case "left", "right":
+				var cmd tea.Cmd
+				m.prompt, cmd = m.prompt.Update(msg)
+				return m, cmd
+			case "enter":
+				m.mode = modePrompt
+				cmds = m.submitPrompt()
+				return m, tea.Batch(cmds...)
+			default:
+				m.mode = modePrompt
+				m.historyIdx = 0
+				var cmd tea.Cmd
+				m.prompt, cmd = m.prompt.Update(msg)
+				return m, cmd
+			}
+		}
+
 		if m.mode == modePrompt {
 			switch msg_str {
 			case "esc":
 				m.prompt.Blur()
 				m.mode = modeIdle
+				m.historyIdx = 0
 				return m, nil
 			case "shift+enter", "ctrl+j":
 				m.prompt.InsertNewline()
 				return m, nil
-			case "enter":
-				// Submit whatever's in the prompt bar as a user message,
-				// then clear it and stay in prompt mode for the next one.
-				if val := m.prompt.Value(); val != "" {
-					if m.model == nil {
-						m.message_area.AppendMessage(">**ERROR** No provider selected press ctrl+p to pick one.", false)
-						m.prompt.Reset()
-						m.mode = modeIdle
-						m.prompt.Blur()
-						//m.prompt.Blur()
-						return m , nil
+			case "up":
+				// Only recall history when the prompt is empty; otherwise
+				// let the textarea handle cursor movement as usual.
+				if m.prompt.IsEmpty() {
+					if val := m.message_area.LastUserMessage(1); val != "" {
+						m.historyIdx = 1
+						m.prompt.SetValue(val)
+						m.mode = modeRecall
 					}
-					m.aiThink = true
-					m.message_area.AppendMessage(val, true)
-					m.context = append(m.context, providers.Message{Role: "user", Content: val})
-					m.prompt.Reset()
-					cmds = append(cmds, generateCmd(m.model, val, m.context))
-					cmds = append(cmds, m.spinner.Tick)
+					return m, nil
 				}
+				var cmd tea.Cmd
+				m.prompt, cmd = m.prompt.Update(msg)
+				return m, cmd
+			case "enter":
+				cmds = m.submitPrompt()
 				return m, tea.Batch(cmds...)
 			}
 			var cmd tea.Cmd
@@ -314,6 +383,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case msg.Y < topBarHeight:
 				m.tabs.HandleClick(msg.X)
 			case m.tabs.Active().Name == "code" && msg.Y >= m.promptTop() && msg.Y < m.promptTop()+promptbar.Height:
+				m.historyIdx = 0
 				m.mode = modePrompt
 				return m, m.prompt.Focus()
 			}

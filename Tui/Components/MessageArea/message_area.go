@@ -227,3 +227,19 @@ func (m *Model) pushContent() {
 	}
 	m.vp.SetContent(strings.Join(m.rendered, strings.Repeat("\n", msgGap+1)))
 }
+
+func (m *Model) LastUserMessage(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	count := 0
+	for i := m.size - 1; i >= 0; i-- {
+		if m.messages[i].isUser {
+			count++
+			if count == n {
+				return m.messages[i].content
+			}
+		}
+	}
+	return ""
+}
