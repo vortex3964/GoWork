@@ -226,7 +226,7 @@ func InitDispacher(projectRoot string , tools ... AgentTool) ( *Dispatcher , err
 	return  &Dispatcher{tools: tool_map , args: args } , nil
 }
 
-//NOTE:it iss the providers class job to parse the json
+//NOTE:it is the providers class job to parse the json
 //from the llm and actually call dispatch (plus init the tool use struct)
 func (d *Dispatcher) Dispach(ctx context.Context , tu ToolUse )  ToolResult {
 	tool , ok := d.tools[tu.Name]
