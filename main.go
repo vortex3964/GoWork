@@ -346,6 +346,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var cmd tea.Cmd
 				m.prompt, cmd = m.prompt.Update(msg)
 				return m, cmd
+			case "ctrl+u":
+				m.prompt.Reset()
+				m.historyIdx = 0
+				return m, nil
 			case "enter":
 				cmds = m.submitPrompt()
 				return m, tea.Batch(cmds...)
