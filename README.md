@@ -151,7 +151,7 @@ cntrl a -> accept current change\
 cntrl r -> reject current change\
 cntrl fr -> reject the file
 
-cntrl a , c , v -> select all , copy , paste while in prompt mode\
+cntrl a -> copy prompt content to clipboard (works in any mode)\
 cntrl v -> paste into promptbar
 cntrl u -> clear the prompt bar
 
