@@ -55,7 +55,6 @@ llama.cpp
 - make preparations for updating the write tools with a changeState list
 - update write and edit tools and their tests to acommodate for the new changeState
 - implement the functionality of the change_list tab
-- fix tabs ____ getting cut off
 - add system prompt with the tools
 - wire and init the tools in main and make a prompt with tool calls
 - add functionality to the buttons we added long before
@@ -71,7 +70,7 @@ llama.cpp
 - if we do these edits to them then the tests should also change for them
 - add tools to allow for web searching and scraping
 - sql db for storing stats and messages and session data etch
-- add slash commands 
+- add slash commands (with window for autocomplete)
 - implement skills area
 - implement token usage area stats
 - tools for generating skills and handling them
@@ -79,6 +78,7 @@ llama.cpp
 - Important remember limit the tokens of generate so we dont burn everything in non local models
 - maybe make llama and lmstuido haean in app launch button in case the user forgot to start them
 - dispacher for tools is just wrong it needs a rewrite now that the app is coming together
+- maybe add lsp support?
 
 ## common errors we check for 
 invalid request\
