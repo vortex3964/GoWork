@@ -14,6 +14,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"GoWork/Tui/Components/MessageArea"
+	popup "GoWork/Tui/Components/PopUp"
 	"GoWork/Tui/Components/Promptbar"
 	providerselect "GoWork/Tui/Components/ProviderSelect"
 	"GoWork/Tui/Components/Skills"
@@ -89,6 +90,9 @@ type model struct {
 
 	// our logo
 	logoLines []string
+
+	// popup notification 
+	popUp popup.Model
 }
 
 func loadLogo() []string {
@@ -120,6 +124,7 @@ func initialModel(provider providers.Provider, modelID string, providerName stri
 		aiThink:      false,
 		status:       newStatusLine(providerName, modelID),
 		logoLines:    loadLogo(),
+		popUp:        popup.New(),
 	}
 }
 
@@ -181,6 +186,18 @@ func (m *model) submitPrompt() []tea.Cmd {
 	return cmds
 }
 
+func popupCopyMessage(val string) string {
+	oneLine := strings.ReplaceAll(strings.TrimSpace(val), "\n", " ")
+	const maxLen = 40
+	if len(oneLine) > maxLen {
+		oneLine = oneLine[:maxLen] + "…"
+	}
+	if oneLine == "" {
+		return "Copied to clipboard"
+	}
+	return "Copied: " + oneLine
+}
+
 func (m *model) openProviderSelect() tea.Cmd {
 	m.mode = modeProviderSelect
 	m.prompt.Blur()
@@ -215,6 +232,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			msgAreaHeight = 0
 		}
 		m.message_area.SetSize(m.winWidth, msgAreaHeight)
+		m.popUp.SetSize(m.winWidth, m.winHeight)
 		if m.mode == modeProviderSelect {
 			m.providerSelect.SetSize(m.winWidth, m.winHeight)
 		}
@@ -281,8 +299,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			val := m.prompt.Value()
 			if val != "" {
 				return m, func() tea.Msg {
-					clipboard.WriteAll(val)
-					return nil
+					if err := clipboard.WriteAll(val); err != nil {
+						return popup.ShowMsg{Message: "Copy failed: " + err.Error()}
+					}
+					return popup.ShowMsg{Message: popupCopyMessage(val)}
 				}
 			}
 			return m, nil
@@ -472,6 +492,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status.contextWindow = msg.info.ContextWindow
 		}
 		return m, nil
+
+	case popup.ShowMsg:
+		var cmd tea.Cmd
+		m.popUp, cmd = m.popUp.Update(msg)
+		cmds = append(cmds, cmd)
 	}
 
 	if m.mode == modeProviderSelect {
@@ -491,7 +516,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.prompt, promptCmd = m.prompt.Update(msg)
 	var msgAreaCmd tea.Cmd
 	m.message_area, msgAreaCmd = m.message_area.Update(msg)
-	return m, tea.Batch(tabsCmd, promptCmd, msgAreaCmd)
+	var popUpCmd tea.Cmd
+	m.popUp, popUpCmd = m.popUp.Update(msg)
+	return m, tea.Batch(tabsCmd, promptCmd, msgAreaCmd, popUpCmd)
 }
 
 func (m model) emptyStateHeight() int {
@@ -552,6 +579,10 @@ func (m model) View() tea.View {
 
 	if m.mode == modeProviderSelect {
 		content = m.providerSelect.Overlay(content)
+	}
+
+	if m.popUp.IsVisible() {
+		content = m.popUp.Overlay(content)
 	}
 
 	v := tea.NewView(content)
