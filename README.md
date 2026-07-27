@@ -77,6 +77,8 @@ llama.cpp
 - tools for generating skills and handling them
 - implement skill managment area 
 - Important remember limit the tokens of generate so we dont burn everything in non local models
+- maybe make llama and lmstuido haean in app launch button in case the user forgot to start them
+- dispacher for tools is just wrong it needs a rewrite now that the app is coming together
 
 ## common errors we check for 
 invalid request\
