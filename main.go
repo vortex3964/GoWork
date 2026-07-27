@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/lipgloss/v2"
+	"github.com/atotto/clipboard"
 	"github.com/joho/godotenv"
 
 	"GoWork/Tui/Components/MessageArea"
@@ -274,6 +275,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, m.openProviderSelect()
+		}
+
+		if msg_str == "ctrl+a" {
+			val := m.prompt.Value()
+			if val != "" {
+				return m, func() tea.Msg {
+					clipboard.WriteAll(val)
+					return nil
+				}
+			}
+			return m, nil
 		}
 
 		if m.mode == modeProviderSelect {
