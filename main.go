@@ -457,7 +457,7 @@ func (m model) View() tea.View {
 		}
 		content += "\n"
 		if m.aiThink {
-			content += m.spinner.View() + " thinking...."
+			content += lipgloss.NewStyle().Margin(0, 3).Foreground(style.Info).Render(m.spinner.View() + " thinking....")
 		}
 		content += "\n"
 		content += m.prompt.View() + "\n"
