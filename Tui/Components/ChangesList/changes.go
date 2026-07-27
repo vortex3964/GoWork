@@ -5,18 +5,19 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
+
+	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
 //TODO: add a function the write edit create tools will use to write dif markers in files
 // they will follow the format bellow:
-//<<<<< old
+//<<<<<<< old
 // old code
-//====
+//=======
 // new code
-//>>>> Ai change
+//>>>>>>> Ai change
 // they will put the file on a watch list and will return the position in the file of the change (fp maybe or maybe not)
-
-//TODO: a function that takes a shadow file with markers and merges it with the original file who may also have markers too
 
 //this will be used to track the changes
 //we will have a watcher for write events on the os level
@@ -24,9 +25,9 @@ import (
 //for accepts rejects intenaly or externaly
 type Change struct {
 	Id    string
-	Start int // offset of "<<<<< old"
-	Mid   int // offset of "===="
-	End   int // offset of ">>>> ..."
+	Start int // offset of "<<<<<<< old"
+	Mid   int // offset of "======="
+	End   int // offset of ">>>>>> Ai change"
 }
 
 type WatchList struct {
@@ -148,5 +149,60 @@ func Accept_all_changes(path string, changes []Change) {
 func Reject_all_changes(path string, changes []Change) {
 	for i := len(changes) - 1; i >= 0; i-- {
 		Reject_change(path, changes[i].Start, changes[i].Mid, changes[i].End)
+	}
+}
+
+func MergeMarkerFiles(filepath1 string, filepath2 string) {
+	data1, err := os.ReadFile(filepath1)
+	if err != nil {
+		return
+	}
+
+	data2, err := os.ReadFile(filepath2)
+	if err != nil {
+		return
+	}
+
+	dmp := diffmatchpatch.New()
+	text1 := string(data1)
+	text2 := string(data2)
+
+	chars1, chars2, lineArray := dmp.DiffLinesToChars(text1, text2)
+	diffs := dmp.DiffMain(chars1, chars2, false)
+	diffs = dmp.DiffCharsToLines(diffs, lineArray)
+
+	var result strings.Builder
+	var oldBuf, newBuf strings.Builder
+
+	flush := func() {
+		if oldBuf.Len() == 0 && newBuf.Len() == 0 {
+			return
+		}
+		result.WriteString("<<<<<<< old\n")
+		result.WriteString(oldBuf.String())
+		result.WriteString("=======\n")
+		result.WriteString(newBuf.String())
+		result.WriteString(">>>>>>> Ai change\n")
+		oldBuf.Reset()
+		newBuf.Reset()
+	}
+
+	for _, d := range diffs {
+		switch d.Type {
+		case diffmatchpatch.DiffEqual:
+			flush()
+			result.WriteString(d.Text)
+		case diffmatchpatch.DiffDelete:
+			oldBuf.WriteString(d.Text)
+		case diffmatchpatch.DiffInsert:
+			newBuf.WriteString(d.Text)
+		}
+	}
+	flush()
+
+	err = os.WriteFile(filepath1, []byte(result.String()), 0644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "writing %s: %v\n", filepath1, err)
+		return
 	}
 }
