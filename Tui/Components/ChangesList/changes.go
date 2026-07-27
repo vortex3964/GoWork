@@ -16,9 +16,7 @@ import (
 //>>>> Ai change
 // they will put the file on a watch list and will return the position in the file of the change (fp maybe or maybe not)
 
-//TODO: a function to reject , accept a change (will take file pointer pos to locate the start of the change)
-//TODO: a function to reject all , accept all to clear the file for read tools and edit tools
-//TODO: a function to detect the difs in the file and get their pos with regex usage
+//TODO: a function that takes a shadow file with markers and merges it with the original file who may also have markers too
 
 //this will be used to track the changes
 //we will have a watcher for write events on the os level
@@ -48,12 +46,12 @@ func InitWatchList(path string) *WatchList {
 // hunkRe matches a whole diff hunk in one shot and captures the mid
 // (separator) and end marker lines as groups 1 and 2. The start marker
 // is the overall match start, so no separate group is needed for it.
-var hunkRe = regexp.MustCompile(`(?ms)^<{3,}[ \t]*old[ \t]*$\n.*?^(={3,}[ \t]*)$\n.*?^(>{3,}[ \t]*.*)$`)
+var hunkRe = regexp.MustCompile(`(?ms)^<{3,}[ \t]*old[ \t]*$\n.*?^(={3,}[ \t]*)$\n.*?^(>{3,}[ \t]*[^\n]*)$`)
  
 // GetDiffs scans the file at path for diff hunks and returns a Change
 // for each one found, in order of appearance, with the byte offset of
 // each of the three markers (start, mid separator, end).
-//NOTE: a lamformed marker means we will fail silently
+//NOTE: a malformed marker means we will fail silently
 func GetDiffs(path string) ([]Change, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -75,4 +73,80 @@ func GetDiffs(path string) ([]Change, error) {
 		})
 	}
 	return changes, nil
+}
+
+func Accept_change(path string, start int, middle int, end int) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+
+	endOfEnd := end
+	for endOfEnd < len(data) && data[endOfEnd] != '\n' {
+		endOfEnd++
+	}
+	if endOfEnd < len(data) {
+		endOfEnd++
+	}
+
+	startOfNew := middle
+	for startOfNew < len(data) && data[startOfNew] != '\n' {
+		startOfNew++
+	}
+	if startOfNew < len(data) {
+		startOfNew++
+	}
+
+	newCode := data[startOfNew:end]
+
+	result := make([]byte, 0, len(data)-(endOfEnd-start)+len(newCode))
+	result = append(result, data[:start]...)
+	result = append(result, newCode...)
+	result = append(result, data[endOfEnd:]...)
+
+	os.WriteFile(path, result, 0644)
+}
+
+func Reject_change(path string, start int, middle int, end int) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+
+	endOfStart := start
+	for endOfStart < len(data) && data[endOfStart] != '\n' {
+		endOfStart++
+	}
+	if endOfStart < len(data) {
+		endOfStart++
+	}
+
+	endOfEnd := end
+	for endOfEnd < len(data) && data[endOfEnd] != '\n' {
+		endOfEnd++
+	}
+	if endOfEnd < len(data) {
+		endOfEnd++
+	}
+
+	oldCode := data[endOfStart:middle]
+
+	result := make([]byte, 0, len(data)-(endOfEnd-start)+len(oldCode))
+	result = append(result, data[:start]...)
+	result = append(result, oldCode...)
+	result = append(result, data[endOfEnd:]...)
+
+	os.WriteFile(path, result, 0644)
+}
+
+func Accept_all_changes(path string, changes []Change) {
+	for i := len(changes) - 1; i >= 0; i-- {
+		Accept_change(path, changes[i].Start, changes[i].Mid, changes[i].End)
+	}
+}
+
+func Reject_all_changes(path string, changes []Change) {
+	for i := len(changes) - 1; i >= 0; i-- {
+		Reject_change(path, changes[i].Start, changes[i].Mid, changes[i].End)
+	}
 }
