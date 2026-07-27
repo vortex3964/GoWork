@@ -1,6 +1,8 @@
 package tabs
 
 import (
+	"strings"
+
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
@@ -93,10 +95,29 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	return m, nil
 }
 
+var padStyle = lipgloss.NewStyle().Foreground(style.TabAccent)
+
 func (m Model) View() string {
 	rendered := make([]string, len(m.Tabs))
 	for idx, t := range m.Tabs {
 		rendered[idx] = styleFor(idx == m.ActiveIdx).Render(t.Name)
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Bottom, rendered...)
+	tabs := lipgloss.JoinHorizontal(lipgloss.Bottom, rendered...)
+
+	if m.width > 0 {
+		w := lipgloss.Width(tabs)
+		if pad := m.width - w; pad > 0 {
+			lines := strings.Split(tabs, "\n")
+			for i, line := range lines {
+				if i == len(lines)-1 {
+					lines[i] = line + padStyle.Render(strings.Repeat("─", pad))
+				} else {
+					lines[i] = line + strings.Repeat(" ", pad)
+				}
+			}
+			tabs = strings.Join(lines, "\n")
+		}
+	}
+
+	return tabs
 }
