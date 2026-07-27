@@ -151,7 +151,8 @@ cntrl a -> accept current change\
 cntrl r -> reject current change\
 cntrl fr -> reject the file
 
-cntrl a , c , v -> select all , copy , paste while in prompt mode
+cntrl a , c , v -> select all , copy , paste while in prompt mode\
+cntrl v -> paste from clipboard (uses atotto/clipboard for system clipboard access)
 
 ## Slash commands
 /help \
