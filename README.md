@@ -57,8 +57,7 @@ llama.cpp
 - implement the functionality of the change_list tab
 - add system prompt with the tools
 - wire and init the tools in main and make a prompt with tool calls
-- add functionality to the buttons we added long before
-- extend the prompt areas functionality with features like cntr a selects everything written you can copy and paste things like that 
+- add a way to copy text from promptbar and message area
 
 ## TODO
 - update read and edit so that we handle pdfs and images we will ignore images and read pdfs with the new tool we will make in the future
@@ -68,7 +67,6 @@ llama.cpp
 - interupt handling and time excited error handling in tool calls (so that when the user wants to interupt a tool call they can or if a tool call is taking too long)
 - extend the edit and write tools maybe to allow for keeping temp changes to a file
 - if we do these edits to them then the tests should also change for them
-- add tools to allow for web searching and scraping
 - sql db for storing stats and messages and session data etch
 - add slash commands (with window for autocomplete)
 - implement skills area
@@ -140,20 +138,20 @@ make test
 
 some of the basic keybinds may we will add more
 
-tab -> next tab
-shift tab -> previous tab
+tab -> next tab (idle)\
+shift tab -> previous tab (idle)
 
-cntr j -> new line in prompt mode\
+cntr j -> new line in prompt mode (prompt mode)\
 cntrl i -> interupt\
-cntrl p -> select provider and model\
+cntrl p -> select provider and model (any mode)\
 cntrl fa ->accept all changes on the file\
 cntrl a -> accept current change\
 cntrl r -> reject current change\
 cntrl fr -> reject the file
 
 cntrl a -> copy prompt content to clipboard (works in any mode)\
-cntrl v -> paste into promptbar
-cntrl u -> clear the prompt bar
+cntrl v -> paste into promptbar (prompt mode)\
+cntrl u -> clear the prompt bar (prompt mode)
 
 ## Slash commands
 /help \
