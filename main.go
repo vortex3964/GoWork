@@ -288,7 +288,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
-		if msg_str == "ctrl+p" && m.mode != modePrompt && m.mode != modeRecall {
+		if msg_str == "ctrl+p" {
 			if m.mode == modeProviderSelect {
 				return m, nil
 			}
