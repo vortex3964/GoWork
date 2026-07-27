@@ -102,9 +102,17 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) View() string {
+func (m *Model) View() string {
 	// Apply the margin to the outside of the prompt style
 	return lipgloss.NewStyle().
 		Margin(0, marginSide).
 		Render(style.PromptStyle.Render(m.area.View()))
+}
+
+func (m *Model) SetValue(str string) {
+	m.area.SetValue(str)
+}
+
+func (m *Model) IsEmpty() bool {
+	return len(m.area.Value()) == 0
 }
