@@ -149,10 +149,6 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs , rawInput json.
 		return tools.ToolResult{}, fmt.Errorf("write_file: writing %s: %w", input.FilePath, err)
 	}
 
-	//at this point we should delete the entire contents of this files read state cause we dont know what changed
-	//this is less of a controled write than edit_file
-	tools.Delete(input.FilePath)
-
 	if count > 1 {
 		return tools.Ok(fmt.Sprintf("successfully replaced %d occurrences in %s", count, input.FilePath)), nil
 	}

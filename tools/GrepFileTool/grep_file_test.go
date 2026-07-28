@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	grepfiletool "GoWork/tools/GrepFileTool"
 	"GoWork/tools"
@@ -578,9 +577,3 @@ func tail(s string, n int) string {
 	return "..." + s[len(s)-n:]
 }
 
-func TestToolsPackageReadStateModTime(t *testing.T) {
-	rs := &tools.ReadState{ModTime: time.Now()}
-	if rs.ModTime.IsZero() {
-		t.Fatal("expected non-zero ModTime")
-	}
-}
