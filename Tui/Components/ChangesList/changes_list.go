@@ -149,10 +149,10 @@ func (m *Model) applyFilter() {
 	m.renderExplorer()
 }
 
-// same outer size as message_area, panes on top and filter bar
-// below. viewport height is content only, border adds 2 rows, so
-// that has to come off the budget too or the prompt bar gets pushed
-// off screen.
+// same outer size as message_area. Results and its filter bar form
+// a left column; explorer is a separate right column with no filter
+// bar under it, so it uses the full outer height while results gives
+// up filterBarHeight worth of rows to make room underneath it.
 func (m *Model) SetSize(outerWidth, outerHeight int) {
 	m.width = outerWidth
 	m.height = outerHeight
@@ -167,13 +167,19 @@ func (m *Model) SetSize(outerWidth, outerHeight int) {
 	const filterTextRows = 1
 
 	filterBarHeight := filterBorderRows + filterTextRows
-	panesOuterHeight := outerHeight - filterBarHeight
-	if panesOuterHeight < 1 {
-		panesOuterHeight = 1
+
+	resultsOuterHeight := outerHeight - filterBarHeight
+	if resultsOuterHeight < 1 {
+		resultsOuterHeight = 1
 	}
-	panesContentHeight := panesOuterHeight - paneBorderRows
-	if panesContentHeight < 1 {
-		panesContentHeight = 1
+	resultsContentHeight := resultsOuterHeight - paneBorderRows
+	if resultsContentHeight < 1 {
+		resultsContentHeight = 1
+	}
+
+	explorerContentHeight := outerHeight - paneBorderRows
+	if explorerContentHeight < 1 {
+		explorerContentHeight = 1
 	}
 
 	paneWidth := (inner - gapWidth) / 2
@@ -182,11 +188,11 @@ func (m *Model) SetSize(outerWidth, outerHeight int) {
 	}
 
 	m.results.SetWidth(paneWidth)
-	m.results.SetHeight(panesContentHeight)
+	m.results.SetHeight(resultsContentHeight)
 	m.explorer.SetWidth(inner - paneWidth - gapWidth)
-	m.explorer.SetHeight(panesContentHeight)
+	m.explorer.SetHeight(explorerContentHeight)
 
-	filterInner := inner - 2 - 2
+	filterInner := paneWidth - 2 - 2
 	if filterInner < 1 {
 		filterInner = 1
 	}
@@ -282,13 +288,6 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	panes := lipgloss.JoinHorizontal(
-		lipgloss.Top,
-		m.results.View(),
-		strings.Repeat(" ", gapWidth),
-		m.explorer.View(),
-	)
-
 	filterBar := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(style.Muted).
@@ -296,6 +295,14 @@ func (m Model) View() string {
 		PaddingRight(1).
 		Render(m.filter.View())
 
-	content := lipgloss.JoinVertical(lipgloss.Left, panes, filterBar)
+	leftColumn := lipgloss.JoinVertical(lipgloss.Left, m.results.View(), filterBar)
+
+	content := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		leftColumn,
+		strings.Repeat(" ", gapWidth),
+		m.explorer.View(),
+	)
+
 	return lipgloss.NewStyle().Margin(0, padSide).Render(content)
 }
