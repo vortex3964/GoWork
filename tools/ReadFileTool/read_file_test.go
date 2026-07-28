@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"GoWork/tools/ReadFileTool"
 	"GoWork/tools"
@@ -320,95 +319,3 @@ func TestRun_InvalidJSONReturnsAGoError(t *testing.T) {
 	}
 }
 
-// TestRun_CacheHitReturnsAlreadyReadNotice proves a repeat read of the same
-// range on an unchanged file returns a short "already read" notice instead
-// of repeating the file content.
-func TestRun_CacheHitReturnsAlreadyReadNotice(t *testing.T) {
-	dir := t.TempDir()
-	args := newArgs(t, dir)
-	tool := readfiletool.New()
-	writeLines(t, dir, "f.txt", 5)
-
-	first := run(t, tool, args, readfiletool.Input{Path: "f.txt"})
-	if first.IsError {
-		t.Fatalf("unexpected error: %s", first.Content)
-	}
-	if want := expectedRange(1, 5); first.Content != want {
-		t.Fatalf("first read = %q, want the file content %q", first.Content, want)
-	}
-
-	second := run(t, tool, args, readfiletool.Input{Path: "f.txt"})
-	if second.IsError {
-		t.Fatalf("unexpected error: %s", second.Content)
-	}
-	if second.Content == first.Content {
-		t.Fatalf("expected the second read to return a notice, not the file content again")
-	}
-	if !strings.Contains(second.Content, "already read") {
-		t.Errorf("Content = %q, want it to mention the lines were already read", second.Content)
-	}
-	if !strings.Contains(second.Content, "f.txt") {
-		t.Errorf("Content = %q, want it to name the file", second.Content)
-	}
-	if !strings.Contains(second.Content, "1-5") {
-		t.Errorf("Content = %q, want it to mention the actual line range 1-5 (clamped to the file's length)", second.Content)
-	}
-	if strings.Contains(second.Content, "line 1\n") {
-		t.Errorf("Content = %q, want it to NOT repeat the file content", second.Content)
-	}
-}
-
-// TestRun_FileChangeInvalidatesCache proves a changed mtime is treated as
-// a cache miss: the second read must reflect the new file contents, not
-// whatever was cached from the first read.
-func TestRun_FileChangeInvalidatesCache(t *testing.T) {
-	dir := t.TempDir()
-	args := newArgs(t, dir)
-	tool := readfiletool.New()
-	path := writeLines(t, dir, "f.txt", 3)
-
-	first := run(t, tool, args, readfiletool.Input{Path: "f.txt"})
-	if first.IsError {
-		t.Fatalf("unexpected error: %s", first.Content)
-	}
-	if !strings.Contains(first.Content, "line 1") {
-		t.Fatalf("first read = %q, want it to contain the original content", first.Content)
-	}
-
-	if err := os.WriteFile(path, []byte("changed content\n"), 0644); err != nil {
-		t.Fatalf("rewriting file: %v", err)
-	}
-	future := time.Now().Add(time.Hour)
-	if err := os.Chtimes(path, future, future); err != nil {
-		t.Fatalf("Chtimes: %v", err)
-	}
-
-	second := run(t, tool, args, readfiletool.Input{Path: "f.txt"})
-	if second.IsError {
-		t.Fatalf("unexpected error: %s", second.Content)
-	}
-	if !strings.Contains(second.Content, "changed content") {
-		t.Errorf("second read = %q, want the new content", second.Content)
-	}
-	if strings.Contains(second.Content, "line 1") {
-		t.Errorf("second read = %q, served stale cached content after the file changed", second.Content)
-	}
-}
-
-// TestRun_DistinctRangesCachedSeparately makes sure the cache key includes
-// both start and offset, not just the path.
-func TestRun_DistinctRangesCachedSeparately(t *testing.T) {
-	dir := t.TempDir()
-	args := newArgs(t, dir)
-	tool := readfiletool.New()
-	writeLines(t, dir, "f.txt", 10)
-
-	run(t, tool, args, readfiletool.Input{Path: "f.txt", Start: 1, Offset: 2})
-	run(t, tool, args, readfiletool.Input{Path: "f.txt", Start: 3, Offset: 2})
-
-	absPath := filepath.Join(args.RootPath, "f.txt")
-	rs := tools.Load(absPath)
-	if len(rs.Ranges) != 2 {
-		t.Errorf("expected 2 distinct cached ranges, got %d", len(rs.Ranges))
-	}
-}

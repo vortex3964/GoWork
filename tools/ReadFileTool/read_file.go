@@ -166,35 +166,13 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	}
 	offset = min(offset, DEFAULT_MAX_LINES)
 
-	// Cache key is the absolute path so it's unambiguous regardless of the
-	// process's cwd  ReadState.Get/Put stat by exactly this path.
-	absPath := filepath.Join(args.RootPath, relPath)
-	lr := tools.NewLineRanges(start, offset)
-	rs := tools.Load(absPath)
 	
-	//TODO: this is probably wrong with the read state we want to add rethink how the cache should work
-	/*
-	if rs.Get(absPath, lr) {
-		end := start + offset - 1
-		if rs.LineCount > 0 && end > rs.LineCount {
-			end = rs.LineCount
-		}
-		return tools.Ok(fmt.Sprintf(
-			"You already read lines %d-%d of %s earlier in this conversation and the file hasn't changed since then no need to read it again, reuse what's already in your context.",
-			start, end, input.Path,
-		)), nil
-	}
-	*/
-
-	//since the file exists we need to read the contents now and return it
-	//NOTE: we also need to update the read state and in general check if we have made that read
-
 	//NOTE: for future there is the non zero posibility that when we read since context window is finite
 	//even if in read state we have markded that the llm read one range maybe the conversation was long
 	//and the file was not toutched in a while so when we see that the context window is
 	//almost full or a percent full then maybe we should allow the read to pass investigate further when we start dealling properly with the context window
 
-	lines, fi, err := readAllLines(args.Root, relPath)
+	lines, _, err := readAllLines(args.Root, relPath)
 	if err != nil {
 		return tools.Errf("reading %v: %v", input.Path, err), nil
 	}
@@ -210,8 +188,6 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	if truncated {
 		content += fmt.Sprintf("\n...output truncated at %d bytes, raise starting_line to keep paging\n", DEFAULT_MAX_BYTES)
 	}
-
-	rs.Put(lr, content, fi.ModTime(), len(lines))
 
 	return tools.Ok(content), nil
 }
