@@ -120,6 +120,26 @@ SearchWebUrl(url) - used to search the url for docs etch or things not in traini
 ### Pdf
 ReadPdf() - used to parse a pdf for an assigment 
 
+will use pymupdf4llm as default since its small but if user has marker installed it will default to it\
+(we dont force marker on everyone cause its too big)
+
+The goal is to not force a big install on anyone. Instead, we will probe at runtime and pick the best available backend.\
+this will be a python sub process the tui app will use 
+
+Run() {
+    if python3 -c "import marker" works → use marker 
+    else if python3 -c "import pymupdf4llm" works → use pymupdf4llm 
+    else if command -v pdftotext exists → use pdftotext
+    else → return error with install instructions
+}
+The install instructions would recommend the lightweight option first and go as follows in the installel:
+
+#### Install the recommended parser (Most lightweight no gpu needed):
+pip install pymupdf4llm
+
+#### For higher accuracy with OCR/tables/equations (Heaviest but better results)
+pip install marker-pdf
+
 ## Instalation
 
 COMING SOON
@@ -163,6 +183,8 @@ cntrl u -> clear the prompt bar (prompt mode)
 /save \
 /key \
 /context filename 
+
+also an autofil window pops up that lazily matches
 
 ## commands to open it
 gowork <project path>
