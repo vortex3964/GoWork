@@ -13,6 +13,7 @@ import (
 	"github.com/atotto/clipboard"
 	"github.com/joho/godotenv"
 
+	changeslist "GoWork/Tui/Components/ChangesList"
 	"GoWork/Tui/Components/MessageArea"
 	popup "GoWork/Tui/Components/PopUp"
 	"GoWork/Tui/Components/Promptbar"
@@ -93,6 +94,10 @@ type model struct {
 
 	// popup notification 
 	popUp popup.Model
+
+	// changes list overlay (ctrl+l), replaces message_area in place
+	// when open; the prompt bar underneath is untouched either way
+	changesList changeslist.Model
 }
 
 func loadLogo() []string {
@@ -125,6 +130,7 @@ func initialModel(provider providers.Provider, modelID string, providerName stri
 		status:       newStatusLine(providerName, modelID),
 		logoLines:    loadLogo(),
 		popUp:        popup.New(),
+		changesList:  changeslist.New(changeslist.NewWatchList()),
 	}
 }
 
@@ -232,6 +238,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			msgAreaHeight = 0
 		}
 		m.message_area.SetSize(m.winWidth, msgAreaHeight)
+		m.changesList.SetSize(m.winWidth, msgAreaHeight)
 		m.popUp.SetSize(m.winWidth, m.winHeight)
 		if m.mode == modeProviderSelect {
 			m.providerSelect.SetSize(m.winWidth, m.winHeight)
@@ -312,6 +319,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.providerSelect, cmd = m.providerSelect.Update(msg)
 			return m, cmd
+		}
+
+		if msg_str == "ctrl+l" {
+			if m.mode == modeChangeHandling {
+				m.changesList.Close()
+				m.mode = modePrompt
+				return m, m.prompt.Focus()
+			}
+			m.prompt.Blur()
+			m.mode = modeChangeHandling
+			return m, m.changesList.Toggle()
+		}
+
+		if m.mode == modeChangeHandling {
+			switch msg_str {
+			case "esc", "tab", "enter":
+				m.changesList.Close()
+				m.mode = modePrompt
+				return m, m.prompt.Focus()
+			case "up":
+				m.changesList.CursorUp()
+				return m, nil
+			case "down":
+				m.changesList.CursorDown()
+				return m, nil
+			default:
+				var cmd tea.Cmd
+				m.changesList, cmd = m.changesList.Update(msg)
+				return m, cmd
+			}
 		}
 
 		if m.mode == modeRecall {
@@ -443,6 +480,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case tea.MouseWheelDown:
 					m.prompt.ScrollDown()
 				}
+			case m.mode == modeChangeHandling && msg.Y >= topBarHeight && msg.Y < promptTop:
+				// The wheel is reserved for the file-explorer pane
+				// while the changes list is open the results list
+				// is navigated with the arrow keys instead.
+				switch msg.Button {
+				case tea.MouseWheelUp:
+					m.changesList.ExplorerScrollUp()
+				case tea.MouseWheelDown:
+					m.changesList.ExplorerScrollDown()
+				}
 			case msg.Y >= topBarHeight && msg.Y < promptTop:
 				switch msg.Button {
 				case tea.MouseWheelUp:
@@ -563,7 +610,9 @@ func (m model) View() tea.View {
 		content = top + "\n" + m.skills.View()
 	default:
 		content += top + "\n"
-		if m.message_area.Size() == 0 {
+		if m.mode == modeChangeHandling {
+			content += m.changesList.View()
+		} else if m.message_area.Size() == 0 {
 			content += m.renderLogo()
 		} else {
 			content += m.message_area.View()
