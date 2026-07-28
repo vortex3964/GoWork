@@ -30,18 +30,58 @@ type Change struct {
 	End   int // offset of ">>>>>> Ai change"
 }
 
-type WatchList struct {
+type ChangeList struct {
 	//will be used to avoid race conditions (later will consider it when the architecture is more complete)
 	//mu sync.Mutex
-	Filepath string
 	Changes []Change
+	//this will also probably have the watcher here
 }
 
-func InitWatchList(path string) *WatchList {
-	return &WatchList{
-		Filepath: path,
+func InitChangeList(path string) *ChangeList {
+	return &ChangeList{
 		Changes: []Change{},
 	}
+}
+
+type WatchList struct {
+	WatchedFiles map[string]struct{}//this is go's way of having a set
+	Changeslist  map[string]ChangeList
+}
+
+func NewWatchList() *WatchList {
+	return &WatchList{
+		WatchedFiles: make(map[string]struct{}),
+		Changeslist:  make(map[string]ChangeList),
+	}
+}
+
+// Add adds a file to the watch list.
+func (w *WatchList) Add(path string) {
+	w.WatchedFiles[path] = struct{}{}
+}
+
+// Has reports whether path is currently watched.
+func (w *WatchList) Has(path string) bool {
+	_, ok := w.WatchedFiles[path]
+	return ok
+}
+
+// Remove stops watching path.
+func (w *WatchList) Remove(path string) {
+	delete(w.WatchedFiles, path)
+}
+
+// Files returns all currently watched file paths.
+func (w *WatchList) Files() []string {
+	files := make([]string, 0, len(w.WatchedFiles))
+	for f := range w.WatchedFiles {
+		files = append(files, f)
+	}
+	return files
+}
+
+func (w *WatchList) GetChanges(filepath string) []Change {
+	return w.Changeslist[filepath].Changes
 }
 
 // hunkRe matches a whole diff hunk in one shot and captures the mid
