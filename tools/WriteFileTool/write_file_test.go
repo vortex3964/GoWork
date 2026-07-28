@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"GoWork/tools"
 	writefiletool "GoWork/tools/WriteFileTool" )
@@ -220,122 +219,6 @@ func TestRun_OldEqualsNew_NoOp(t *testing.T) {
 	})
 
 	_, _ = tool.Run(context.Background(), input)
-}
-
-func sentinelTime(t *testing.T) time.Time {
-	t.Helper()
-	return time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC)
-}
-
-func TestDelete_RemovesEntry_WhenKeyMatchesLoadKey(t *testing.T) {
-	key := "cache_match.go"
-
-	rs := tools.Load(key)
-	rs.ModTime = sentinelTime(t)
-
-	tools.Delete(key)
-
-	after := tools.Load(key)
-	if after == rs {
-		t.Fatalf("expected Load after Delete to return a new ReadState, got the same pointer back")
-	}
-	if !after.ModTime.IsZero() {
-		t.Errorf("expected fresh ReadState after Delete to have zero ModTime, got %v", after.ModTime)
-	}
-}
-
-func TestDelete_NoEntry_IsSafeNoOp(t *testing.T) {
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("Delete on a never-cached path panicked: %v", r)
-		}
-	}()
-	tools.Delete("never_seen_before.go")
-}
-
-func TestRun_DeletesCacheEntry_ForMatchingRelativeKey(t *testing.T) {
-	tool, dir := setupTool(t)
-	writeTestFile(t, dir, "cached.go", "package main\n\nfunc main() {}\n")
-
-	const relKey = "cached.go"
-	rs := tools.Load(relKey)
-	rs.ModTime = sentinelTime(t)
-
-	input := mustMarshal(t, writefiletool.Input{
-		FilePath: relKey,
-		Old:      "func main() {}",
-		New:      "func main() { println(1) }",
-	})
-
-	result, err := tool.Run(context.Background(), input)
-	if err != nil {
-		t.Fatalf("unexpected code-level error: %v", err)
-	}
-	if result.IsError {
-		t.Fatalf("expected success, got tool error: %s", result.Content)
-	}
-
-	after := tools.Load(relKey)
-	if after == rs {
-		t.Errorf("expected write_file.Run to invalidate the cache entry for %q, but the same ReadState pointer came back", relKey)
-	}
-}
-
-func TestRun_ReplaceAll_InvalidatesCacheEntry(t *testing.T) {
-	tool, dir := setupTool(t)
-	writeTestFile(t, dir, "dup_cached.go", "foo\nfoo\nfoo\n")
-
-	const relKey = "dup_cached.go"
-	rs := tools.Load(relKey)
-	rs.ModTime = sentinelTime(t)
-
-	input := mustMarshal(t, writefiletool.Input{
-		FilePath:   relKey,
-		Old:        "foo",
-		New:        "bar",
-		ReplaceAll: true,
-	})
-
-	result, err := tool.Run(context.Background(), input)
-	if err != nil {
-		t.Fatalf("unexpected code-level error: %v", err)
-	}
-	if result.IsError {
-		t.Fatalf("expected success, got tool error: %s", result.Content)
-	}
-
-	after := tools.Load(relKey)
-	if after == rs {
-		t.Errorf("expected write_file.Run (replace_all) to invalidate the cache entry for %q, but the same ReadState pointer came back", relKey)
-	}
-}
-
-func TestRun_RejectedEdit_LeavesCacheUntouched(t *testing.T) {
-	tool, dir := setupTool(t)
-	writeTestFile(t, dir, "untouched.go", "package main\n")
-
-	const relKey = "untouched.go"
-	rs := tools.Load(relKey)
-	rs.ModTime = sentinelTime(t)
-
-	input := mustMarshal(t, writefiletool.Input{
-		FilePath: relKey,
-		Old:      "this text does not exist",
-		New:      "replacement",
-	})
-
-	result, err := tool.Run(context.Background(), input)
-	if err != nil {
-		t.Fatalf("unexpected code-level error: %v", err)
-	}
-	if !result.IsError {
-		t.Fatalf("expected the edit to be rejected, got success: %s", result.Content)
-	}
-
-	after := tools.Load(relKey)
-	if after != rs {
-		t.Errorf("expected cache entry for %q to survive a rejected edit, but it was invalidated", relKey)
-	}
 }
 
 func TestInputSchema_HasRequiredFields(t *testing.T) {

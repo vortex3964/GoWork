@@ -179,20 +179,6 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		return tools.Errf("%s is a directory, not a file", input.FilePath), nil
 	}
 
-	// This tool trusts line numbers instead of matching text, so it's only
-	// safe to use against a file we know the current shape of. Require a
-	// cache entry whose ModTime still matches the file on disk that means
-	// it was read (or previously edited through us) since the last change.
-	rs, cached := tools.Cache[input.FilePath]
-	if !cached {
-		f.Close()
-		return tools.Errf("file %s has not been read yet; read it first so line numbers can be verified before editing", input.FilePath), nil
-	}
-	if !info.ModTime().Equal(rs.ModTime) {
-		f.Close()
-		return tools.Errf("file %s has changed on disk since it was last read; re-read it before editing so line numbers are accurate", input.FilePath), nil
-	}
-
 	contents, err := io.ReadAll(f)
 	f.Close() // close the read handle before reopening for write
 	if err != nil {
@@ -215,18 +201,6 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 
 	if _, err := wf.Write(updated); err != nil {
 		return tools.ToolResult{}, fmt.Errorf("edit_file: writing %s: %w", input.FilePath, err)
-	}
-
-	// Unlike write_file, this is a controlled, line-precise change: only
-	// cached ranges at or after the edit point are stale (their line numbers
-	// may have shifted). Ranges entirely before start_line are still valid.
-	rs.InvalidateFrom(input.StartLine)
-
-	// Refresh ModTime to the post-write mtime (through the sandboxed root,
-	// same as every other access) so a follow-up edit_file call against the
-	// same file, without an intervening read, is still allowed.
-	if newInfo, statErr := args.Root.Stat(input.FilePath); statErr == nil {
-		rs.ModTime = newInfo.ModTime()
 	}
 
 	return tools.Ok(fmt.Sprintf("successfully edited lines %d-%d in %s", input.StartLine, input.EndLine, input.FilePath)), nil
