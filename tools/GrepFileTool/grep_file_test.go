@@ -22,7 +22,7 @@ func requireRG(t *testing.T) {
 
 func newDispatchArgs(t *testing.T, dir string) tools.DispatchArgs {
 	t.Helper()
-	args, err := tools.InitDispatchArgs(dir)
+	args, err := tools.InitDispatchArgs(dir, nil)
 	if err != nil {
 		t.Fatalf("InitDispatchArgs: %v", err)
 	}
