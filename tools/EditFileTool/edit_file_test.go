@@ -58,188 +58,200 @@ func readFile(t *testing.T, path string) string {
 	return string(b)
 }
 
-// Cache is wrong //////////////////////////////////////////////////////////////
-// func markAsRead(t *testing.T, relKey, absPath string) {
-// 	t.Helper()
-// 	info, err := os.Stat(absPath)
-// 	if err != nil {
-// 		t.Fatalf("failed to stat seeded file %s: %v", absPath, err)
-// 	}
-// 	rs := tools.Load(relKey)
-// 	rs.Put(tools.NewLineRanges(1, -1), "", info.ModTime(), 0)
-// }
-// END Cache is wrong ///////////////////////////////////////////////////////////
+func mkInput(t *testing.T, filePath string, startLine, endLine int, newContent string) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(editfiletool.Input{
+		FilePath:   filePath,
+		StartLine:  startLine,
+		EndLine:    endLine,
+		NewContent: newContent,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return b
+}
 
-// Cache is wrong //////////////////////////////////////////////////////////////
-// func TestRun_ReplaceSingleLine_Success(t *testing.T) {
-// 	tool, dir := setupTool(t)
-// 	path := writeTestFile(t, dir, "hello.go", "package main\n\nfunc main() {\n\tprintln(\"hi\")\n}\n")
-// 	markAsRead(t, "hello.go", path)
-//
-// 	input := mustMarshal(t, editfiletool.Input{
-// 		FilePath:   "hello.go",
-// 		StartLine:  4,
-// 		EndLine:    4,
-// 		NewContent: "\tprintln(\"bye\")",
-// 	})
-//
-// 	result, err := tool.Run(context.Background(), input)
-// 	if err != nil {
-// 		t.Fatalf("unexpected code-level error: %v", err)
-// 	}
-// 	if result.IsError {
-// 		t.Fatalf("expected success, got tool error: %s", result.Content)
-// 	}
-//
-// 	got := readFile(t, path)
-// 	want := "package main\n\nfunc main() {\n\tprintln(\"bye\")\n}\n"
-// 	if got != want {
-// 		t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want)
-// 	}
-// }
-// END Cache is wrong ///////////////////////////////////////////////////////////
+func runEdit(t *testing.T, tool testTool, dir, name, content string, startLine, endLine int, newContent string) (string, bool) {
+	t.Helper()
+	writeTestFile(t, dir, name, content)
+	input := mkInput(t, name, startLine, endLine, newContent)
+	result, err := tool.Run(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected code-level error: %v", err)
+	}
+	return result.Content, result.IsError
+}
 
-// Cache is wrong //////////////////////////////////////////////////////////////
-// func TestRun_ReplaceMultiLineRange_WithMultiLineContent(t *testing.T) {
-// 	tool, dir := setupTool(t)
-// 	path := writeTestFile(t, dir, "multi.go", "line1\nline2\nline3\nline4\nline5\n")
-// 	markAsRead(t, "multi.go", path)
-// 	input := mustMarshal(t, editfiletool.Input{
-// 		FilePath: "multi.go", StartLine: 2, EndLine: 4, NewContent: "replacedA\nreplacedB",
-// 	})
-// 	result, err := tool.Run(context.Background(), input)
-// 	if err != nil { t.Fatalf("unexpected code-level error: %v", err) }
-// 	if result.IsError { t.Fatalf("expected success, got tool error: %s", result.Content) }
-// 	got := readFile(t, path)
-// 	want := "line1\nreplacedA\nreplacedB\nline5\n"
-// 	if got != want { t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want) }
-// }
-//
-// func TestRun_InsertWithoutRemoving_EndLineIsStartMinusOne(t *testing.T) {
-// 	tool, dir := setupTool(t)
-// 	path := writeTestFile(t, dir, "insert.go", "line1\nline2\nline3\n")
-// 	markAsRead(t, "insert.go", path)
-// 	input := mustMarshal(t, editfiletool.Input{
-// 		FilePath: "insert.go", StartLine: 2, EndLine: 1, NewContent: "inserted",
-// 	})
-// 	result, err := tool.Run(context.Background(), input)
-// 	if err != nil { t.Fatalf("unexpected code-level error: %v", err) }
-// 	if result.IsError { t.Fatalf("expected success, got tool error: %s", result.Content) }
-// 	got := readFile(t, path)
-// 	want := "line1\ninserted\nline2\nline3\n"
-// 	if got != want { t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want) }
-// }
-//
-// func TestRun_InsertAtEndOfFile(t *testing.T) {
-// 	tool, dir := setupTool(t)
-// 	path := writeTestFile(t, dir, "append.go", "line1\nline2\n")
-// 	markAsRead(t, "append.go", path)
-// 	input := mustMarshal(t, editfiletool.Input{
-// 		FilePath: "append.go", StartLine: 3, EndLine: 2, NewContent: "line3",
-// 	})
-// 	result, err := tool.Run(context.Background(), input)
-// 	if err != nil { t.Fatalf("unexpected code-level error: %v", err) }
-// 	if result.IsError { t.Fatalf("expected success, got tool error: %s", result.Content) }
-// 	got := readFile(t, path)
-// 	want := "line1\nline2\nline3\n"
-// 	if got != want { t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want) }
-// }
-//
-// func TestRun_DeleteLines_EmptyNewContent(t *testing.T) {
-// 	tool, dir := setupTool(t)
-// 	path := writeTestFile(t, dir, "delete.go", "line1\nline2\nline3\nline4\n")
-// 	markAsRead(t, "delete.go", path)
-// 	input := mustMarshal(t, editfiletool.Input{
-// 		FilePath: "delete.go", StartLine: 2, EndLine: 3, NewContent: "",
-// 	})
-// 	result, err := tool.Run(context.Background(), input)
-// 	if err != nil { t.Fatalf("unexpected code-level error: %v", err) }
-// 	if result.IsError { t.Fatalf("expected success, got tool error: %s", result.Content) }
-// 	got := readFile(t, path)
-// 	want := "line1\nline4\n"
-// 	if got != want { t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want) }
-// }
-//
-// func TestRun_ReplaceEntireFile(t *testing.T) {
-// 	tool, dir := setupTool(t)
-// 	path := writeTestFile(t, dir, "whole.go", "old1\nold2\n")
-// 	markAsRead(t, "whole.go", path)
-// 	input := mustMarshal(t, editfiletool.Input{
-// 		FilePath: "whole.go", StartLine: 1, EndLine: 2, NewContent: "new1\nnew2\nnew3",
-// 	})
-// 	result, err := tool.Run(context.Background(), input)
-// 	if err != nil { t.Fatalf("unexpected code-level error: %v", err) }
-// 	if result.IsError { t.Fatalf("expected success, got tool error: %s", result.Content) }
-// 	got := readFile(t, path)
-// 	want := "new1\nnew2\nnew3\n"
-// 	if got != want { t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want) }
-// }
-//
-// func TestRun_InsertIntoEmptyFile(t *testing.T) {
-// 	tool, dir := setupTool(t)
-// 	path := writeTestFile(t, dir, "empty.go", "")
-// 	markAsRead(t, "empty.go", path)
-// 	input := mustMarshal(t, editfiletool.Input{
-// 		FilePath: "empty.go", StartLine: 1, EndLine: 0, NewContent: "package main",
-// 	})
-// 	result, err := tool.Run(context.Background(), input)
-// 	if err != nil { t.Fatalf("unexpected code-level error: %v", err) }
-// 	if result.IsError { t.Fatalf("expected success, got tool error: %s", result.Content) }
-// 	got := readFile(t, path)
-// 	want := "package main\n"
-// 	if got != want { t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want) }
-// }
-//
-// func TestRun_StartLineZero_ReturnsToolError(t *testing.T) {
-// 	tool, dir := setupTool(t)
-// 	path := writeTestFile(t, dir, "hello.go", "line1\nline2\n")
-// 	markAsRead(t, "hello.go", path)
-// 	input := mustMarshal(t, editfiletool.Input{
-// 		FilePath: "hello.go", StartLine: 0, EndLine: 1, NewContent: "x",
-// 	})
-// 	result, err := tool.Run(context.Background(), input)
-// 	if err != nil { t.Fatalf("expected a model-visible failure, not a Go error: %v", err) }
-// 	if !result.IsError { t.Fatalf("expected IsError=true for start_line=0, got success: %s", result.Content) }
-// }
-//
-// func TestRun_EndLineBeforeStartMinusOne_ReturnsToolError(t *testing.T) {
-// 	tool, dir := setupTool(t)
-// 	path := writeTestFile(t, dir, "hello.go", "line1\nline2\nline3\n")
-// 	markAsRead(t, "hello.go", path)
-// 	input := mustMarshal(t, editfiletool.Input{
-// 		FilePath: "hello.go", StartLine: 3, EndLine: 1, NewContent: "x",
-// 	})
-// 	result, err := tool.Run(context.Background(), input)
-// 	if err != nil { t.Fatalf("expected a model-visible failure, not a Go error: %v", err) }
-// 	if !result.IsError { t.Fatalf("expected IsError=true for end_line < start_line - 1, got success: %s", result.Content) }
-// }
-//
-// func TestRun_RangePastEndOfFile_ReturnsToolError(t *testing.T) {
-// 	tool, dir := setupTool(t)
-// 	path := writeTestFile(t, dir, "short.go", "line1\nline2\n")
-// 	markAsRead(t, "short.go", path)
-// 	input := mustMarshal(t, editfiletool.Input{
-// 		FilePath: "short.go", StartLine: 5, EndLine: 6, NewContent: "x",
-// 	})
-// 	result, err := tool.Run(context.Background(), input)
-// 	if err != nil { t.Fatalf("expected a model-visible failure, not a Go error: %v", err) }
-// 	if !result.IsError { t.Fatalf("expected IsError=true for range past EOF, got success: %s", result.Content) }
-// 	got := readFile(t, path)
-// 	if got != "line1\nline2\n" { t.Errorf("file should not have been modified on rejected edit, got: %q", got) }
-// }
-//
-// func TestRun_EndLineExceedsLineCount_ReturnsToolError(t *testing.T) {
-// 	tool, dir := setupTool(t)
-// 	path := writeTestFile(t, dir, "short.go", "line1\nline2\n")
-// 	markAsRead(t, "short.go", path)
-// 	input := mustMarshal(t, editfiletool.Input{
-// 		FilePath: "short.go", StartLine: 1, EndLine: 5, NewContent: "x",
-// 	})
-// 	result, err := tool.Run(context.Background(), input)
-// 	if err != nil { t.Fatalf("expected a model-visible failure, not a Go error: %v", err) }
-// 	if !result.IsError { t.Fatalf("expected IsError=true when end_line exceeds line count, got success: %s", result.Content) }
-// }
-// END Cache is wrong ///////////////////////////////////////////////////////////
+func TestRun_ReplaceSingleLine_Success(t *testing.T) {
+	tool, dir := setupTool(t)
+
+	content, isErr := runEdit(t, tool, dir, "hello.go", "package main\n\nfunc main() {\n\tprintln(\"hi\")\n}\n", 4, 4, "\tprintln(\"bye\")")
+	if isErr {
+		t.Fatalf("expected success, got tool error: %s", content)
+	}
+
+	got := readFile(t, filepath.Join(dir, "hello.go"))
+	want := "package main\n\nfunc main() {\n<<<<<<< old\n\tprintln(\"hi\")\n=======\n\tprintln(\"bye\")\n>>>>>>> Ai change\n}\n"
+	if got != want {
+		t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+func TestRun_ReplaceMultiLineRange_WithMultiLineContent(t *testing.T) {
+	tool, dir := setupTool(t)
+
+	content, isErr := runEdit(t, tool, dir, "multi.go", "line1\nline2\nline3\nline4\nline5\n", 2, 4, "replacedA\nreplacedB")
+	if isErr {
+		t.Fatalf("expected success, got tool error: %s", content)
+	}
+
+	got := readFile(t, filepath.Join(dir, "multi.go"))
+	want := "line1\n<<<<<<< old\nline2\nline3\nline4\n=======\nreplacedA\nreplacedB\n>>>>>>> Ai change\nline5\n"
+	if got != want {
+		t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+func TestRun_InsertWithoutRemoving_EndLineIsStartMinusOne(t *testing.T) {
+	tool, dir := setupTool(t)
+
+	content, isErr := runEdit(t, tool, dir, "insert.go", "line1\nline2\nline3\n", 2, 1, "inserted")
+	if isErr {
+		t.Fatalf("expected success, got tool error: %s", content)
+	}
+
+	got := readFile(t, filepath.Join(dir, "insert.go"))
+	want := "line1\n<<<<<<< old\n=======\ninserted\n>>>>>>> Ai change\nline2\nline3\n"
+	if got != want {
+		t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+func TestRun_InsertAtEndOfFile(t *testing.T) {
+	tool, dir := setupTool(t)
+
+	content, isErr := runEdit(t, tool, dir, "append.go", "line1\nline2\n", 3, 2, "line3")
+	if isErr {
+		t.Fatalf("expected success, got tool error: %s", content)
+	}
+
+	got := readFile(t, filepath.Join(dir, "append.go"))
+	want := "line1\nline2\n<<<<<<< old\n=======\nline3\n>>>>>>> Ai change\n"
+	if got != want {
+		t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+func TestRun_DeleteLines_EmptyNewContent(t *testing.T) {
+	tool, dir := setupTool(t)
+
+	content, isErr := runEdit(t, tool, dir, "delete.go", "line1\nline2\nline3\nline4\n", 2, 3, "")
+	if isErr {
+		t.Fatalf("expected success, got tool error: %s", content)
+	}
+
+	got := readFile(t, filepath.Join(dir, "delete.go"))
+	want := "line1\n<<<<<<< old\nline2\nline3\n=======\n>>>>>>> Ai change\nline4\n"
+	if got != want {
+		t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+func TestRun_ReplaceEntireFile(t *testing.T) {
+	tool, dir := setupTool(t)
+
+	content, isErr := runEdit(t, tool, dir, "whole.go", "old1\nold2\n", 1, 2, "new1\nnew2\nnew3")
+	if isErr {
+		t.Fatalf("expected success, got tool error: %s", content)
+	}
+
+	got := readFile(t, filepath.Join(dir, "whole.go"))
+	want := "<<<<<<< old\nold1\nold2\n=======\nnew1\nnew2\nnew3\n>>>>>>> Ai change\n"
+	if got != want {
+		t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+func TestRun_InsertIntoEmptyFile(t *testing.T) {
+	tool, dir := setupTool(t)
+	writeTestFile(t, dir, "empty.go", "")
+
+	input := mkInput(t, "empty.go", 1, 0, "package main")
+	result, err := tool.Run(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected code-level error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got tool error: %s", result.Content)
+	}
+
+	got := readFile(t, filepath.Join(dir, "empty.go"))
+	want := "<<<<<<< old\n=======\npackage main\n>>>>>>> Ai change\n"
+	if got != want {
+		t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+func TestRun_StartLineZero_ReturnsToolError(t *testing.T) {
+	tool, dir := setupTool(t)
+	writeTestFile(t, dir, "hello.go", "line1\nline2\n")
+
+	input := mkInput(t, "hello.go", 0, 1, "x")
+	result, err := tool.Run(context.Background(), input)
+	if err != nil {
+		t.Fatalf("expected a model-visible failure, not a Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected IsError=true for start_line=0, got success: %s", result.Content)
+	}
+}
+
+func TestRun_EndLineBeforeStartMinusOne_ReturnsToolError(t *testing.T) {
+	tool, dir := setupTool(t)
+	writeTestFile(t, dir, "hello.go", "line1\nline2\nline3\n")
+
+	input := mkInput(t, "hello.go", 3, 1, "x")
+	result, err := tool.Run(context.Background(), input)
+	if err != nil {
+		t.Fatalf("expected a model-visible failure, not a Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected IsError=true for end_line < start_line - 1, got success: %s", result.Content)
+	}
+}
+
+func TestRun_RangePastEndOfFile_ReturnsToolError(t *testing.T) {
+	tool, dir := setupTool(t)
+	writeTestFile(t, dir, "short.go", "line1\nline2\n")
+
+	input := mkInput(t, "short.go", 5, 6, "x")
+	result, err := tool.Run(context.Background(), input)
+	if err != nil {
+		t.Fatalf("expected a model-visible failure, not a Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected IsError=true for range past EOF, got success: %s", result.Content)
+	}
+	got := readFile(t, filepath.Join(dir, "short.go"))
+	if got != "line1\nline2\n" {
+		t.Errorf("file should not have been modified on rejected edit, got: %q", got)
+	}
+}
+
+func TestRun_EndLineExceedsLineCount_ReturnsToolError(t *testing.T) {
+	tool, dir := setupTool(t)
+	writeTestFile(t, dir, "short.go", "line1\nline2\n")
+
+	input := mkInput(t, "short.go", 1, 5, "x")
+	result, err := tool.Run(context.Background(), input)
+	if err != nil {
+		t.Fatalf("expected a model-visible failure, not a Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected IsError=true when end_line exceeds line count, got success: %s", result.Content)
+	}
+}
 
 func TestRun_FileDoesNotExist_ReturnsToolError(t *testing.T) {
 	tool, _ := setupTool(t)
