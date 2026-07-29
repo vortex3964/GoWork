@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 
+	cl "GoWork/Tui/Components/ChangesList"
 	"GoWork/tools"
 )
 
@@ -18,15 +19,15 @@ type Input struct {
 	FilePath string `json:"file_path"`
 	Old string `json:"old_string"`
 	New string `json:"new_string"`
-	ReplaceAll bool   `json:"replace_all_mentions"`
+	ReplaceAll bool `json:"replace_all_mentions"`
 }
 
-type Tool struct {}
+type Tool struct{}
 
-//NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface 
+//NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface
 func New() tools.AgentTool { return &Tool{} }
 
-func (t *Tool) Name() string { return "write_file"}
+func (t *Tool) Name() string { return "write_file" }
 
 func (t *Tool) Kind() tools.Kind { return tools.KindWrite }
 
@@ -44,19 +45,19 @@ func (t *Tool) InputSchema() tools.Schema {
 	return tools.Schema{
 		"type": "object",
 		"properties": map[string]any{
-			"file_path": map[string]any {
+			"file_path": map[string]any{
 				"type":        "string",
 				"description": "Path to the file to edit, relative to the project root.",
 			},
-			"old_string": map[string]any {
+			"old_string": map[string]any{
 				"type":        "string",
 				"description": "The exact text to find and replace. Must match the file content exactly and must be unique unless replace_all_mentions is true.",
 			},
-			"new_string": map[string]any {
+			"new_string": map[string]any{
 				"type":        "string",
 				"description": "The text to replace old_string with.",
 			},
-			"replace_all_mentions": map[string]any {
+			"replace_all_mentions": map[string]any{
 				"type":        "boolean",
 				"description": "If true, replaces every occurrence of old_string. If false (default), old_string must appear exactly once in the file.",
 			},
@@ -65,11 +66,11 @@ func (t *Tool) InputSchema() tools.Schema {
 	}
 }
 
-func count_appearance(file_contents []byte , search string) (int , error){
+func count_appearance(file_contents []byte, search string) (int, error) {
 	if search == "" {
-		return 0 , fmt.Errorf("search string cant be empty")
+		return 0, fmt.Errorf("search string cant be empty")
 	}
-	return bytes.Count(file_contents , []byte(search)) , nil
+	return bytes.Count(file_contents, []byte(search)), nil
 }
 
 //NOTE: this is a simple implementation we dont make any validation checks (for example if the llm actually read the file recently etch)
@@ -77,7 +78,7 @@ func count_appearance(file_contents []byte , search string) (int , error){
 
 //TODO: find a way to have it list changes plus update cache handling with context handling and add that to the test cases
 
-func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs , rawInput json.RawMessage) (tools.ToolResult, error) {
+func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.RawMessage) (tools.ToolResult, error) {
 	var input Input
 	if err := json.Unmarshal(rawInput, &input); err != nil {
 		return tools.ToolResult{}, fmt.Errorf("write_file: invalid input: %w", err)
@@ -114,13 +115,18 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs , rawInput json.
 		return tools.Errf("%s is a directory, not a file", input.FilePath), nil
 	}
 
-	contents, err := io.ReadAll(f)
+	src, err := io.ReadAll(f)
 	f.Close() // close the read handle before reopening for write
 	if err != nil {
 		return tools.ToolResult{}, fmt.Errorf("write_file: reading %s: %w", input.FilePath, err)
 	}
 
-	count, err := count_appearance(contents, input.Old)
+	//same as edit tool
+	changes := args.WatchList.GetChanges(input.FilePath)
+	accepted := cl.AcceptAllChangesBytes(src, changes)
+	rejected := cl.RejectAllChangesBytes(src, changes)
+
+	count, err := count_appearance(accepted, input.Old)
 	if err != nil {
 		return tools.Errf("%s", err.Error()), nil
 	}
@@ -133,10 +139,16 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs , rawInput json.
 
 	var updated []byte
 	if input.ReplaceAll {
-		updated = bytes.ReplaceAll(contents, []byte(input.Old), []byte(input.New))
+		updated = bytes.ReplaceAll(accepted, []byte(input.Old), []byte(input.New))
 	} else {
-		updated = bytes.Replace(contents, []byte(input.Old), []byte(input.New), 1)
+		updated = bytes.Replace(accepted, []byte(input.Old), []byte(input.New), 1)
 	}
+
+	// Merge the edit against the rejected (pre-existing-pending-changes)
+	// baseline, producing fresh <<<<<<< old / >>>>>>> Ai change markers
+	// around this new edit (and preserving any changes that were still
+	// pending before this write ran).
+	merged := cl.MergeMarkerBytes(rejected, updated)
 
 	// Reopen (truncating) through the sandboxed root and write the new contents.
 	wf, err := args.Root.OpenFile(input.FilePath, os.O_WRONLY|os.O_TRUNC, 0)
@@ -145,8 +157,15 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs , rawInput json.
 	}
 	defer wf.Close()
 
-	if _, err := wf.Write(updated); err != nil {
+	args.WatchList.Add(input.FilePath)
+
+	if _, err := wf.Write(merged); err != nil {
 		return tools.ToolResult{}, fmt.Errorf("write_file: writing %s: %w", input.FilePath, err)
+	}
+
+	//NOTE: this will probably be removed same reason as edit tool
+	args.WatchList.Changeslist[input.FilePath] = cl.ChangeList{
+		Changes: cl.GetDiffsBytes(merged, input.FilePath),
 	}
 
 	if count > 1 {
