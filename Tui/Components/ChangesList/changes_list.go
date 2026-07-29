@@ -32,7 +32,7 @@ var (
 )
 
 type Model struct {
-	watch *WatchList
+	Watch *WatchList
 
 	filter   textarea.Model
 	results  viewport.Model
@@ -85,7 +85,7 @@ func New(watch *WatchList) Model {
 		PaddingRight(1)
 
 	m := Model{
-		watch:    watch,
+		Watch:    watch,
 		filter:   ta,
 		results:  rp,
 		explorer: ep,
@@ -116,10 +116,10 @@ func (m *Model) Close() {
 
 func (m *Model) rebuildRows() {
 	m.rows = m.rows[:0]
-	if m.watch != nil {
-		for _, f := range m.watch.Files() {
+	if m.Watch != nil {
+		for _, f := range m.Watch.Files() {
 			m.rows = append(m.rows, row{label: f, isHeader: true, filePath: f})
-			for _, c := range m.watch.GetChanges(f) {
+			for _, c := range m.Watch.GetChanges(f) {
 				m.rows = append(m.rows, row{label: c.Id, change: c, filePath: f})
 			}
 		}
