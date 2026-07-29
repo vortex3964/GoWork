@@ -89,17 +89,12 @@ func (w *WatchList) GetChanges(filepath string) []Change {
 // is the overall match start, so no separate group is needed for it.
 var hunkRe = regexp.MustCompile(`(?ms)^<{3,}[ \t]*old[ \t]*$\n.*?^(={3,}[ \t]*)$\n.*?^(>{3,}[ \t]*[^\n]*)$`)
  
-// GetDiffs scans the file at path for diff hunks and returns a Change
-// for each one found, in order of appearance, with the byte offset of
-// each of the three markers (start, mid separator, end).
+// GetDiffsBytes scans data for diff hunks and returns a Change for each one
+// found, in order of appearance, with the byte offset of each of the three
+// markers (start, mid separator, end). filename is only used to build
+// Change.Id ("filename/Cn"). No disk I/O.
 //NOTE: a malformed marker means we will fail silently
-func GetDiffs(path string) ([]Change, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("reading file %s: %w", path, err)
-	}
-	filename := filepath.Base(path)
- 
+func GetDiffsBytes(data []byte, filename string) []Change {
 	matches := hunkRe.FindAllSubmatchIndex(data, -1)
 	changes := make([]Change, 0, len(matches))
 	for i, m := range matches {
@@ -113,15 +108,25 @@ func GetDiffs(path string) ([]Change, error) {
 			End:   m[4],
 		})
 	}
-	return changes, nil
+	return changes
 }
 
-func Accept_change(path string, start int, middle int, end int) {
+// GetDiffs scans the file at path for diff hunks and returns a Change
+// for each one found, in order of appearance, with the byte offset of
+// each of the three markers (start, mid separator, end).
+//WARN: a malformed marker means we will fail silently
+func GetDiffs(path string) ([]Change, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return
+		return nil, fmt.Errorf("reading file %s: %w", path, err)
 	}
+	return GetDiffsBytes(data, filepath.Base(path)), nil
+}
 
+// AcceptChangeBytes applies an "accept" edit (keep new code, drop old +
+// markers) to an in-memory buffer and returns the resulting bytes.
+// Same marker-scanning logic as Accept_change, but with no disk I/O.
+func AcceptChangeBytes(data []byte, start, middle, end int) []byte {
 	endOfEnd := end
 	for endOfEnd < len(data) && data[endOfEnd] != '\n' {
 		endOfEnd++
@@ -144,16 +149,13 @@ func Accept_change(path string, start int, middle int, end int) {
 	result = append(result, data[:start]...)
 	result = append(result, newCode...)
 	result = append(result, data[endOfEnd:]...)
-
-	os.WriteFile(path, result, 0644)
+	return result
 }
 
-func Reject_change(path string, start int, middle int, end int) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-
+// RejectChangeBytes applies a "reject" edit (keep old code, drop new +
+// markers) to an in-memory buffer and returns the resulting bytes.
+// Same marker-scanning logic as Reject_change, but with no disk I/O.
+func RejectChangeBytes(data []byte, start, middle, end int) []byte {
 	endOfStart := start
 	for endOfStart < len(data) && data[endOfStart] != '\n' {
 		endOfStart++
@@ -176,36 +178,67 @@ func Reject_change(path string, start int, middle int, end int) {
 	result = append(result, data[:start]...)
 	result = append(result, oldCode...)
 	result = append(result, data[endOfEnd:]...)
+	return result
+}
 
-	os.WriteFile(path, result, 0644)
+func Accept_change(path string, start int, middle int, end int) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	os.WriteFile(path, AcceptChangeBytes(data, start, middle, end), 0644)
+}
+
+func Reject_change(path string, start int, middle int, end int) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	os.WriteFile(path, RejectChangeBytes(data, start, middle, end), 0644)
+}
+
+// AcceptAllChangesBytes applies every change to an in-memory buffer, back
+// to front by byte offset (a change's own accept/reject shifts every
+// offset that comes after it, so later changes must be applied first),
+// and returns the final bytes. No disk I/O.
+func AcceptAllChangesBytes(data []byte, changes []Change) []byte {
+	for i := len(changes) - 1; i >= 0; i-- {
+		data = AcceptChangeBytes(data, changes[i].Start, changes[i].Mid, changes[i].End)
+	}
+	return data
+}
+
+// RejectAllChangesBytes is the reject-side analogue of AcceptAllChangesBytes.
+func RejectAllChangesBytes(data []byte, changes []Change) []byte {
+	for i := len(changes) - 1; i >= 0; i-- {
+		data = RejectChangeBytes(data, changes[i].Start, changes[i].Mid, changes[i].End)
+	}
+	return data
 }
 
 func Accept_all_changes(path string, changes []Change) {
-	for i := len(changes) - 1; i >= 0; i-- {
-		Accept_change(path, changes[i].Start, changes[i].Mid, changes[i].End)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
 	}
+	os.WriteFile(path, AcceptAllChangesBytes(data, changes), 0644)
 }
 
 func Reject_all_changes(path string, changes []Change) {
-	for i := len(changes) - 1; i >= 0; i-- {
-		Reject_change(path, changes[i].Start, changes[i].Mid, changes[i].End)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
 	}
+	os.WriteFile(path, RejectAllChangesBytes(data, changes), 0644)
 }
 
-func MergeMarkerFiles(filepath1 string, filepath2 string) {
-	data1, err := os.ReadFile(filepath1)
-	if err != nil {
-		return
-	}
-
-	data2, err := os.ReadFile(filepath2)
-	if err != nil {
-		return
-	}
-
+// MergeMarkerBytes diffs original against modified (line-by-line) and
+// returns the merged text with <<<<<<< old / ======= / >>>>>>> AI change
+// markers inserted around every changed hunk. No disk I/O.
+func MergeMarkerBytes(original []byte, modified []byte) []byte {
 	dmp := diffmatchpatch.New()
-	text1 := string(data1)
-	text2 := string(data2)
+	text1 := string(original)
+	text2 := string(modified)
 
 	chars1, chars2, lineArray := dmp.DiffLinesToChars(text1, text2)
 	diffs := dmp.DiffMain(chars1, chars2, false)
@@ -240,8 +273,26 @@ func MergeMarkerFiles(filepath1 string, filepath2 string) {
 	}
 	flush()
 
-	err = os.WriteFile(filepath1, []byte(result.String()), 0644)
+	return []byte(result.String())
+}
+
+// MergeMarkerFiles reads filepath1 (original) and filepath2 (modified),
+// merges them with MergeMarkerBytes, and writes the marked-up result back
+// to filepath1.
+func MergeMarkerFiles(filepath1 string, filepath2 string) {
+	data1, err := os.ReadFile(filepath1)
 	if err != nil {
+		return
+	}
+
+	data2, err := os.ReadFile(filepath2)
+	if err != nil {
+		return
+	}
+
+	merged := MergeMarkerBytes(data1, data2)
+
+	if err := os.WriteFile(filepath1, merged, 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "writing %s: %v\n", filepath1, err)
 		return
 	}
