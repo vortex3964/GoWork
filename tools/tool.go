@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	ignore "github.com/sabhiram/go-gitignore"
+	cl "GoWork/Tui/Components/ChangesList"
 )
 
 //NOTE: old ReadState/Cache code is removed (Cache is wrong).
@@ -76,9 +77,10 @@ func Errf(format string, args ...any) ToolResult {
 type DispatchArgs struct {
 	Root *os.Root
 	RootPath string
+	WatchList *cl.WatchList
 }
 
-func InitDispatchArgs(projectRoot string) (DispatchArgs , error) {
+func InitDispatchArgs(projectRoot string , wl *cl.WatchList) (DispatchArgs , error) {
 	
 	if projectRoot == "" {
 		return DispatchArgs{} , fmt.Errorf("projectRoot cant be empty")
@@ -96,7 +98,7 @@ func InitDispatchArgs(projectRoot string) (DispatchArgs , error) {
 		return DispatchArgs{} , fmt.Errorf("opening project root failed:%w" , err)
 	}
 
-	return DispatchArgs{Root: root , RootPath: abs} , nil
+	return DispatchArgs{Root: root , RootPath: abs , WatchList: wl} , nil
 }
 
 //DESC: AgentTool is the contract every tool must satisfy. A tool is anything
@@ -127,8 +129,8 @@ type ToolUse struct {
 	Input json.RawMessage `json:"input"`
 }
 
-func InitDispacher(projectRoot string , tools ... AgentTool) ( *Dispatcher , error ) {
-	args , err := InitDispatchArgs(projectRoot)
+func InitDispacher(projectRoot string , wl *cl.WatchList , tools ... AgentTool) ( *Dispatcher , error ) {
+	args , err := InitDispatchArgs(projectRoot,wl)
 
 	if err != nil {
 		return nil , err
