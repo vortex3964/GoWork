@@ -55,7 +55,7 @@ func run(t *testing.T, tool tools.AgentTool, args tools.DispatchArgs, input any)
 
 func rootArgs(t *testing.T) tools.DispatchArgs {
 	t.Helper()
-	args, err := tools.InitDispatchArgs(t.TempDir())
+	args, err := tools.InitDispatchArgs(t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("init dispatch args: %v", err)
 	}
