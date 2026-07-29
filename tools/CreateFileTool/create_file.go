@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"GoWork/tools"
+	cl "GoWork/Tui/Components/ChangesList"
 )
 
 type Input struct {
@@ -48,6 +49,18 @@ func (t *Tool) InputSchema() tools.Schema {
 
 func (t *Tool) Kind() tools.Kind { return tools.KindWrite }
 
+func wrapInMarkers(content string) []byte {
+	var b strings.Builder
+	b.WriteString("<<<<<<< old\n")
+	b.WriteString("=======\n")
+	b.WriteString(content)
+	if !strings.HasSuffix(content, "\n") {
+		b.WriteString("\n")
+	}
+	b.WriteString(">>>>>>> Ai change\n")
+	return []byte(b.String())
+}
+ 
 func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.RawMessage) (tools.ToolResult, error) {
 	var input Input
 	if err := json.Unmarshal(rawInput, &input); err != nil {
@@ -56,7 +69,7 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	if input.Path == "" {
 		return tools.Errf("path is required"), nil
 	}
-
+ 
 	if strings.HasSuffix(input.Path, "/") || strings.HasSuffix(input.Path, "\\") {
 		dir := filepath.Clean(input.Path)
 		if err := tools.MkdirAllInRoot(args.Root, dir); err != nil {
@@ -64,20 +77,28 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		}
 		return tools.Ok(fmt.Sprintf("successfully created directory %s", filepath.Join(args.RootPath, dir))), nil
 	}
-
+ 
 	dir := filepath.Dir(input.Path)
 	if err := tools.MkdirAllInRoot(args.Root, dir); err != nil {
 		return tools.Errf("error creating directories: %s", err), nil
 	}
-
+ 
+	marked := wrapInMarkers(input.Content)
+ 
 	file, err := args.Root.Create(input.Path)
 	if err != nil {
 		return tools.Errf("error writing file: %s", err), nil
 	}
 	defer file.Close()
-	if _, err := file.WriteString(input.Content); err != nil {
+ 
+	if _, err := file.Write(marked); err != nil {
 		return tools.Errf("error writing file: %s", err), nil
 	}
-
+ 
+	args.WatchList.Add(input.Path)
+	args.WatchList.Changeslist[input.Path] = cl.ChangeList{
+		Changes: cl.GetDiffsBytes(marked, input.Path),
+	}
+ 
 	return tools.Ok(fmt.Sprintf("successfully created file at %s", filepath.Join(args.RootPath, input.Path))), nil
 }
