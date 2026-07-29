@@ -2,6 +2,7 @@ package readfiletool
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -60,9 +61,9 @@ func (t *Tool) InputSchema() tools.Schema {
 
 func (t *Tool) Kind() tools.Kind { return tools.KindRead }
 
-// readRange copies relPath from the sandboxed root into a temporary file,
-// applies any pending changes from the WatchList, and scans forward through
-// the copy to return the requested line range.
+// readRange reads relPath from the sandboxed root into memory, applies any
+// pending changes from the WatchList in memory and scans forward through the 
+//buffer to return the requested line range.
 func readRange(root *os.Root, wl *cl.WatchList, relPath string, start, offset int) (content string, truncated bool, ok bool, lastLine int, err error) {
 	//Open the original source file via the sandboxed root
 	src, err := root.Open(relPath)
@@ -70,38 +71,25 @@ func readRange(root *os.Root, wl *cl.WatchList, relPath string, start, offset in
 		return "", false, false, 0, fmt.Errorf("opening source %s: %w", relPath, err)
 	}
 
-	//Create the temp file and ensure disk cleanup
-	tempFile, err := os.CreateTemp("", "sample-*")
-	if err != nil {
-		src.Close()
-		return "", false, false, 0, fmt.Errorf("creating temp file: %w", err)
-	}
-	tempPath := tempFile.Name()
-	defer os.Remove(tempPath) // Automatically clean up from disk when function exits
-
-	//Copy contents from original file to temp file
-	_, copyErr := io.Copy(tempFile, src)
-	src.Close()      // No longer need original file open
-	tempFile.Close() // CLOSE TEMP HANDLE immediately so os.WriteFile can safely modify it
-
-	if copyErr != nil {
-		return "", false, false, 0, fmt.Errorf("copying to temp file: %w", copyErr)
+	//Read the whole file into memory; src is always closed right after,
+	//whether the read succeeded or not
+	data, readErr := io.ReadAll(src)
+	src.Close()
+	if readErr != nil {
+		return "", false, false, 0, fmt.Errorf("reading source %s: %w", relPath, readErr)
 	}
 
-	//Safely accept all pending changes on disk
+	//Apply any pending changes in memory. Only bother if there are any -
+	//this keeps the common case (no pending edits) a single read with
+	//no extra allocation/copy pass over the file.
 	if wl != nil {
-		cl.Accept_all_changes(tempPath, wl.GetChanges(relPath))
+		if changes := wl.GetChanges(relPath); len(changes) > 0 {
+			data = cl.AcceptAllChangesBytes(data, changes)
+		}
 	}
 
-	//Open a fresh read-only handle to the cleaned temp file (starts at byte 0 automatically)
-	cleanFile, err := os.Open(tempPath)
-	if err != nil {
-		return "", false, false, 0, fmt.Errorf("opening cleaned temp file: %w", err)
-	}
-	defer cleanFile.Close()
-
-	//Scan the requested line range from the cleaned temp file
-	scanner := bufio.NewScanner(cleanFile)
+	//Scan the requested line range from the in-memory buffer
+	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024) // Allow up to 10MB per line
 
 	end := start + offset - 1
@@ -126,7 +114,7 @@ func readRange(root *os.Root, wl *cl.WatchList, relPath string, start, offset in
 	}
 
 	if err := scanner.Err(); err != nil {
-		return "", false, false, 0, fmt.Errorf("reading temp file %s: %w", tempPath, err)
+		return "", false, false, 0, fmt.Errorf("reading file %s: %w", relPath, err)
 	}
 
 	if lineNo < start {
