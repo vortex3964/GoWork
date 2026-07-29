@@ -95,10 +95,12 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		return tools.Errf("error writing file: %s", err), nil
 	}
  
-	args.WatchList.Add(input.Path)
-	args.WatchList.Changeslist[input.Path] = cl.ChangeList{
-		Changes: cl.GetDiffsBytes(marked, input.Path),
+	if args.WatchList != nil {
+		args.WatchList.Add(input.Path)
+		args.WatchList.Changeslist[input.Path] = cl.ChangeList{
+			Changes: cl.GetDiffsBytes(marked, input.Path),
+		}
 	}
- 
+
 	return tools.Ok(fmt.Sprintf("successfully created file at %s", filepath.Join(args.RootPath, input.Path))), nil
 }

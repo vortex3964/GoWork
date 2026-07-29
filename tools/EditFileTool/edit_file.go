@@ -198,14 +198,15 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		return tools.ToolResult{}, fmt.Errorf("edit_file: reading %s: %w", input.FilePath, err)
 	}
  
-	// The model only ever sees the "changes accepted" view of the file, so
-	// StartLine/EndLine are coordinates in that view, not in the raw
-	// on-disk bytes (which may still contain pending <<<<<<< old / >>>>>>>
-	// markers). We therefore validate and edit against the accepted view.
-	
-	changes := args.WatchList.GetChanges(input.FilePath)
-	accepted := cl.AcceptAllChangesBytes(src, changes)
-	rejected := cl.RejectAllChangesBytes(src, changes)
+	var accepted, rejected []byte
+	if args.WatchList != nil {
+		changes := args.WatchList.GetChanges(input.FilePath)
+		accepted = cl.AcceptAllChangesBytes(src, changes)
+		rejected = cl.RejectAllChangesBytes(src, changes)
+	} else {
+		accepted = src
+		rejected = src
+	}
  
 	acceptedLines := splitLines(accepted)
 	if err := validateRange(input.StartLine, input.EndLine, len(acceptedLines)); err != nil {
@@ -227,11 +228,11 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	}
 	defer wf.Close()
  
-	args.WatchList.Add(input.FilePath)
-	//set its changes too
-	//WARN: we will use notify on write event not sure if we need to do this here
-	args.WatchList.Changeslist[input.FilePath] = cl.ChangeList{
-		Changes: cl.GetDiffsBytes(merged, input.FilePath),
+	if args.WatchList != nil {
+		args.WatchList.Add(input.FilePath)
+		args.WatchList.Changeslist[input.FilePath] = cl.ChangeList{
+			Changes: cl.GetDiffsBytes(merged, input.FilePath),
+		}
 	}
 
 	if _, err := wf.Write(merged); err != nil {

@@ -121,10 +121,15 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		return tools.ToolResult{}, fmt.Errorf("write_file: reading %s: %w", input.FilePath, err)
 	}
 
-	//same as edit tool
-	changes := args.WatchList.GetChanges(input.FilePath)
-	accepted := cl.AcceptAllChangesBytes(src, changes)
-	rejected := cl.RejectAllChangesBytes(src, changes)
+	var accepted, rejected []byte
+	if args.WatchList != nil {
+		changes := args.WatchList.GetChanges(input.FilePath)
+		accepted = cl.AcceptAllChangesBytes(src, changes)
+		rejected = cl.RejectAllChangesBytes(src, changes)
+	} else {
+		accepted = src
+		rejected = src
+	}
 
 	count, err := count_appearance(accepted, input.Old)
 	if err != nil {
@@ -157,15 +162,15 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	}
 	defer wf.Close()
 
-	args.WatchList.Add(input.FilePath)
+	if args.WatchList != nil {
+		args.WatchList.Add(input.FilePath)
+		args.WatchList.Changeslist[input.FilePath] = cl.ChangeList{
+			Changes: cl.GetDiffsBytes(merged, input.FilePath),
+		}
+	}
 
 	if _, err := wf.Write(merged); err != nil {
 		return tools.ToolResult{}, fmt.Errorf("write_file: writing %s: %w", input.FilePath, err)
-	}
-
-	//NOTE: this will probably be removed same reason as edit tool
-	args.WatchList.Changeslist[input.FilePath] = cl.ChangeList{
-		Changes: cl.GetDiffsBytes(merged, input.FilePath),
 	}
 
 	if count > 1 {

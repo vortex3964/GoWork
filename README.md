@@ -194,3 +194,16 @@ also an autofil window pops up that lazily matches
 
 ## commands to open it
 gowork <project path>
+
+
+
+
+this is probably wrong this pattern in the tools
+we probably need to check if it exists then add watche event
+and then write and on write call dif but leave it till we have the watcher event
+	if args.WatchList != nil {
+		args.WatchList.Add(input.FilePath)
+		args.WatchList.Changeslist[input.FilePath] = cl.ChangeList{
+			Changes: cl.GetDiffsBytes(merged, input.FilePath),
+		}
+	}

@@ -77,7 +77,7 @@ func TestRun_SingleReplace_Success(t *testing.T) {
 	}
 
 	got := readFile(t, filepath.Join(dir, "hello.go"))
-	want := "package main\n\nfunc main() {\n\tprintln(\"bye\")\n}\n"
+	want := "package main\n\nfunc main() {\n<<<<<<< old\n\tprintln(\"hi\")\n=======\n\tprintln(\"bye\")\n>>>>>>> Ai change\n}\n"
 	if got != want {
 		t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want)
 	}
@@ -151,7 +151,7 @@ func TestRun_ReplaceAll_ReplacesEveryOccurrence(t *testing.T) {
 	}
 
 	got := readFile(t, filepath.Join(dir, "dup.go"))
-	want := "bar\nbar\nbar\n"
+	want := "<<<<<<< old\nfoo\nfoo\nfoo\n=======\nbar\nbar\nbar\n>>>>>>> Ai change\n"
 	if got != want {
 		t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want)
 	}

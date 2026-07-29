@@ -53,8 +53,9 @@ func TestCreateFile(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected file to exist: %v", err)
 		}
-		if string(data) != "hello world" {
-			t.Errorf("file content = %q, want %q", string(data), "hello world")
+		want := "<<<<<<< old\n=======\nhello world\n>>>>>>> Ai change\n"
+		if string(data) != want {
+			t.Errorf("file content = %q, want %q", string(data), want)
 		}
 	})
 
@@ -100,12 +101,13 @@ func TestCreateFile(t *testing.T) {
 			t.Fatalf("unexpected error result")
 		}
 
-		info, err := os.Stat(filepath.Join(root, "empty.txt"))
+		data, err := os.ReadFile(filepath.Join(root, "empty.txt"))
 		if err != nil {
 			t.Fatalf("expected file to exist: %v", err)
 		}
-		if info.Size() != 0 {
-			t.Errorf("expected 0-byte file, got size %d", info.Size())
+		want := "<<<<<<< old\n=======\n\n>>>>>>> Ai change\n"
+		if string(data) != want {
+			t.Errorf("file content = %q, want %q", string(data), want)
 		}
 	})
 
@@ -120,8 +122,9 @@ func TestCreateFile(t *testing.T) {
 		}
 
 		data, _ := os.ReadFile(filepath.Join(root, "overwrite.txt"))
-		if string(data) != "second" {
-			t.Errorf("file content = %q, want %q", string(data), "second")
+		want := "<<<<<<< old\n=======\nsecond\n>>>>>>> Ai change\n"
+		if string(data) != want {
+			t.Errorf("file content = %q, want %q", string(data), want)
 		}
 	})
 
