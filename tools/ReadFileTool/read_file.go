@@ -7,11 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"io"
 	"path/filepath"
 	"strings"
 
 	"GoWork/tools"
-	//cl "GoWork/Tui/Components/ChangesList"
+	cl "GoWork/Tui/Components/ChangesList"
 )
 
 const DEFAULT_MAX_BYTES int = 50 * 1024
@@ -33,9 +34,7 @@ func (t *Tool) Name() string { return "read_file" }
 func (t *Tool) Description() string {
 	return `Read a range of lines from a text file.
 
-Returns the requested lines with 1-indexed line numbers prefixed, so you can reference exact locations in later edits. Large files are not returned in full use starting_line and offset_lines to page through them.
-If you already read this exact range and the file hasn't changed since, this returns a short notice telling you that instead of repeating the content reuse what you already have in context.
-If the file has changed since you last read it, the returned content reflects the current state on disk so use later code blocks for edits as they are more reliable to not be stale`
+Returns the requested lines with 1-indexed line numbers prefixed, so you can reference exact locations in later edits. Large files are not returned in full use starting_line and offset_lines to page through them.`
 }
 
 func (t *Tool) InputSchema() tools.Schema {
@@ -61,63 +60,80 @@ func (t *Tool) InputSchema() tools.Schema {
 
 func (t *Tool) Kind() tools.Kind { return tools.KindRead }
 
-// readAllLines opens relPath through the sandboxed project root and scans
-// every line into memory, along with the file's ModTime so the caller can
-// populate the read-state cache after a real disk read.
-func readAllLines(root *os.Root, relPath string) ([]string, os.FileInfo, error) {
-	f, err := root.Open(relPath)
+// readRange copies relPath from the sandboxed root into a temporary file,
+// applies any pending changes from the WatchList, and scans forward through
+// the copy to return the requested line range.
+func readRange(root *os.Root, wl *cl.WatchList, relPath string, start, offset int) (content string, truncated bool, ok bool, lastLine int, err error) {
+	//Open the original source file via the sandboxed root
+	src, err := root.Open(relPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("opening %s: %w", relPath, err)
+		return "", false, false, 0, fmt.Errorf("opening source %s: %w", relPath, err)
 	}
-	defer f.Close()
 
-	info, err := f.Stat()
+	//Create the temp file and ensure disk cleanup
+	tempFile, err := os.CreateTemp("", "sample-*")
 	if err != nil {
-		return nil, nil, fmt.Errorf("stat %s: %w", relPath, err)
+		src.Close()
+		return "", false, false, 0, fmt.Errorf("creating temp file: %w", err)
+	}
+	tempPath := tempFile.Name()
+	defer os.Remove(tempPath) // Automatically clean up from disk when function exits
+
+	//Copy contents from original file to temp file
+	_, copyErr := io.Copy(tempFile, src)
+	src.Close()      // No longer need original file open
+	tempFile.Close() // CLOSE TEMP HANDLE immediately so os.WriteFile can safely modify it
+
+	if copyErr != nil {
+		return "", false, false, 0, fmt.Errorf("copying to temp file: %w", copyErr)
 	}
 
-	scanner := bufio.NewScanner(f)
-	// default max token (line) size is 64KB; bump it so long lines
-	// (minified JS, long JSON, etc.) don't trip bufio.ErrTooLong
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 10*1024*1024) // allow up to 10MB per line
-
-	var lines []string
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, nil, fmt.Errorf("reading %s: %w", relPath, err)
+	//Safely accept all pending changes on disk
+	if wl != nil {
+		cl.Accept_all_changes(tempPath, wl.GetChanges(relPath))
 	}
 
-	return lines, info, nil
-}
-
-// formatRange renders the 1-indexed, inclusive line range
-// [start, start+offset-1] with "N." prefixes, stopping early if the
-// output would exceed DEFAULT_MAX_BYTES. ok is false when start falls
-// past the end of the file.
-func formatRange(lines []string, start, offset int) (content string, truncated bool, ok bool) {
-	total := len(lines)
-	if start > total {
-		return "", false, false
+	//Open a fresh read-only handle to the cleaned temp file (starts at byte 0 automatically)
+	cleanFile, err := os.Open(tempPath)
+	if err != nil {
+		return "", false, false, 0, fmt.Errorf("opening cleaned temp file: %w", err)
 	}
+	defer cleanFile.Close()
+
+	//Scan the requested line range from the cleaned temp file
+	scanner := bufio.NewScanner(cleanFile)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024) // Allow up to 10MB per line
 
 	end := start + offset - 1
-	if end > total {
-		end = total
-	}
-
 	var sb strings.Builder
-	for i := start; i <= end; i++ {
-		line := fmt.Sprintf("%d.%s\n", i, lines[i-1])
+	lineNo := 0
+
+	for scanner.Scan() {
+		lineNo++
+		if lineNo < start {
+			continue
+		}
+		if lineNo > end {
+			break
+		}
+
+		line := fmt.Sprintf("%d.%s\n", lineNo, scanner.Text())
 		if sb.Len()+len(line) > DEFAULT_MAX_BYTES {
 			truncated = true
 			break
 		}
 		sb.WriteString(line)
 	}
-	return sb.String(), truncated, true
+
+	if err := scanner.Err(); err != nil {
+		return "", false, false, 0, fmt.Errorf("reading temp file %s: %w", tempPath, err)
+	}
+
+	if lineNo < start {
+		return "", false, false, lineNo, nil
+	}
+
+	return sb.String(), truncated, true, lineNo, nil
 }
 
 func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.RawMessage) (tools.ToolResult, error) {
@@ -126,7 +142,6 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	}
 
 	var input Input
-
 	if err := json.Unmarshal(rawInput, &input); err != nil {
 		return tools.ToolResult{}, fmt.Errorf("read_file: invalid input: %w", err)
 	}
@@ -155,6 +170,9 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	if info.IsDir() {
 		return tools.Errf("path %v is a directory, not a file", input.Path), nil
 	}
+	if info.Size() == 0 {
+		return tools.Ok("(file is empty)"), nil
+	}
 
 	start := input.Start
 	if start < 1 {
@@ -167,24 +185,12 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	}
 	offset = min(offset, DEFAULT_MAX_LINES)
 
-	
-	//NOTE: for future there is the non zero posibility that when we read since context window is finite
-	//even if in read state we have markded that the llm read one range maybe the conversation was long
-	//and the file was not toutched in a while so when we see that the context window is
-	//almost full or a percent full then maybe we should allow the read to pass investigate further when we start dealling properly with the context window
-
-	lines, _, err := readAllLines(args.Root, relPath)
+	content, truncated, ok, lastLine, err := readRange(args.Root, args.WatchList ,relPath, start, offset)
 	if err != nil {
 		return tools.Errf("reading %v: %v", input.Path, err), nil
 	}
-
-	if len(lines) == 0 {
-		return tools.Ok("(file is empty)"), nil
-	}
-
-	content, truncated, ok := formatRange(lines, start, offset)
 	if !ok {
-		return tools.Errf("starting_line %d is past the end of the file (%d lines)", start, len(lines)), nil
+		return tools.Errf("starting_line %d is past the end of the file (%d lines)", start, lastLine), nil
 	}
 	if truncated {
 		content += fmt.Sprintf("\n...output truncated at %d bytes, raise starting_line to keep paging\n", DEFAULT_MAX_BYTES)
