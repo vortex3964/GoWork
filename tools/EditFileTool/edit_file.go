@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"GoWork/tools"
+	cl "GoWork/Tui/Components/ChangesList"
 )
 
 type Input struct {
@@ -67,6 +68,7 @@ func (t *Tool) InputSchema() tools.Schema {
 	}
 }
 
+// splitLines splits contents into lines, treating a single trailing
 func splitLines(contents []byte) []string {
 	if len(contents) == 0 {
 		return nil
@@ -87,32 +89,43 @@ func splitLines(contents []byte) []string {
 	}
 	return lines
 }
-
+ 
+// joinLines re-joins lines into file bytes, adding exactly one trailing
+// newline (or nil for zero lines).
 func joinLines(lines []string) []byte {
 	if len(lines) == 0 {
 		return nil
 	}
-	return []byte(joinWithNewline(lines) + "\n")
-}
-
-func joinWithNewline(lines []string) string {
-	out := lines[0]
-	for _, l := range lines[1:] {
-		out += "\n" + l
+	// len(lines)-1 separators of len 1, plus a final "\n" of len 1,
+	// plus the lines themselves avoids the string-builder growing
+	// past its estimate for typical text.
+	n := len(lines) // trailing "\n"
+	for _, l := range lines {
+		n += len(l)
 	}
-	return out
+	n += len(lines) - 1 // "\n" separators between lines
+ 
+	var b strings.Builder
+	b.Grow(n)
+	b.WriteString(lines[0])
+	for _, l := range lines[1:] {
+		b.WriteByte('\n')
+		b.WriteString(l)
+	}
+	b.WriteByte('\n')
+	return []byte(b.String())
 }
-
-func replaceLineRange(contents []byte, startLine, endLine int, newContent string) ([]byte, int) {
-	lines := splitLines(contents)
-
+ 
+// replaceLineRange replaces the 1-indexed inclusive line range
+// [startLine, endLine] with newContent's lines. 
+func replaceLineRange(lines []string, startLine, endLine int, newContent string) ([]byte, int) {
 	var replacement []string
 	if newContent == "" {
 		replacement = nil // deleting the range / inserting nothing
 	} else {
 		replacement = strings.Split(newContent, "\n")
 	}
-
+ 
 	before := lines[:startLine-1]
 	var after []string
 	if endLine >= startLine {
@@ -121,15 +134,17 @@ func replaceLineRange(contents []byte, startLine, endLine int, newContent string
 		// insertion point, nothing removed
 		after = lines[startLine-1:]
 	}
-
+ 
 	result := make([]string, 0, len(before)+len(replacement)+len(after))
 	result = append(result, before...)
 	result = append(result, replacement...)
 	result = append(result, after...)
-
+ 
 	return joinLines(result), len(result)
 }
-
+ 
+// validateRange checks that [startLine, endLine] is a sane, in-bounds
+// range (or insertion point) for a file with lineCount lines.
 func validateRange(startLine, endLine, lineCount int) error {
 	if startLine < 1 {
 		return fmt.Errorf("start_line must be >= 1, got %d", startLine)
@@ -145,9 +160,7 @@ func validateRange(startLine, endLine, lineCount int) error {
 	}
 	return nil
 }
-
-//TODO: find a way to have it list changes plus update cache handling with context handling and add that to the test cases
-
+ 
 func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.RawMessage) (tools.ToolResult, error) {
 	var input Input
 	if err := json.Unmarshal(rawInput, &input); err != nil {
@@ -159,7 +172,7 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	if input.FilePath == "." {
 		return tools.Errf("file_path must point to a file, not the project root"), nil
 	}
-
+ 
 	// Open and stat the existing file through the sandboxed root.
 	f, err := args.Root.Open(input.FilePath)
 	if err != nil {
@@ -168,7 +181,7 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		}
 		return tools.ToolResult{}, fmt.Errorf("edit_file: opening %s: %w", input.FilePath, err)
 	}
-
+ 
 	info, err := f.Stat()
 	if err != nil {
 		f.Close()
@@ -178,30 +191,53 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		f.Close()
 		return tools.Errf("%s is a directory, not a file", input.FilePath), nil
 	}
-
-	contents, err := io.ReadAll(f)
+ 
+	src, err := io.ReadAll(f)
 	f.Close() // close the read handle before reopening for write
 	if err != nil {
 		return tools.ToolResult{}, fmt.Errorf("edit_file: reading %s: %w", input.FilePath, err)
 	}
-
-	lineCount := len(splitLines(contents))
-	if err := validateRange(input.StartLine, input.EndLine, lineCount); err != nil {
+ 
+	// The model only ever sees the "changes accepted" view of the file, so
+	// StartLine/EndLine are coordinates in that view, not in the raw
+	// on-disk bytes (which may still contain pending <<<<<<< old / >>>>>>>
+	// markers). We therefore validate and edit against the accepted view.
+	
+	changes := args.WatchList.GetChanges(input.FilePath)
+	accepted := cl.AcceptAllChangesBytes(src, changes)
+	rejected := cl.RejectAllChangesBytes(src, changes)
+ 
+	acceptedLines := splitLines(accepted)
+	if err := validateRange(input.StartLine, input.EndLine, len(acceptedLines)); err != nil {
 		return tools.Errf("%s", err.Error()), nil
 	}
-
-	updated, _ := replaceLineRange(contents, input.StartLine, input.EndLine, input.NewContent)
-
+ 
+	// make the edit
+	updated, _ := replaceLineRange(acceptedLines, input.StartLine, input.EndLine, input.NewContent)
+ 
+	// merge the edit against the rejected (pre-existing-pending-changes)
+	// baseline, producing fresh <<<<<<< old / >>>>>>> Ai change markers
+	// around this new edit.
+	merged := cl.MergeMarkerBytes(rejected, updated)
+ 
 	// Reopen (truncating) through the sandboxed root and write the new contents.
 	wf, err := args.Root.OpenFile(input.FilePath, os.O_WRONLY|os.O_TRUNC, 0)
 	if err != nil {
 		return tools.ToolResult{}, fmt.Errorf("edit_file: opening %s for write: %w", input.FilePath, err)
 	}
 	defer wf.Close()
-
-	if _, err := wf.Write(updated); err != nil {
-		return tools.ToolResult{}, fmt.Errorf("edit_file: writing %s: %w", input.FilePath, err)
+ 
+	args.WatchList.Add(input.FilePath)
+	//set its changes too
+	//WARN: we will use notify on write event not sure if we need to do this here
+	args.WatchList.Changeslist[input.FilePath] = cl.ChangeList{
+		Changes: cl.GetDiffsBytes(merged, input.FilePath),
 	}
 
+	if _, err := wf.Write(merged); err != nil {
+		return tools.ToolResult{}, fmt.Errorf("edit_file: writing %s: %w", input.FilePath, err)
+	}
+ 
 	return tools.Ok(fmt.Sprintf("successfully edited lines %d-%d in %s", input.StartLine, input.EndLine, input.FilePath)), nil
 }
+ 
