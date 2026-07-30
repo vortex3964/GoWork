@@ -53,11 +53,13 @@ func InitChangeList(path string) *ChangeList {
 
 type WatchList struct {
 	WatchedFiles map[string]struct{}//this is go's way of having a set
+	absWatched   map[string]string  // abs path -> original path, for O(1) hasWatchedFile
 	Changeslist  map[string]ChangeList
 	//tracks the ai
-	aiThink   *bool
-	Watcher   *fsnotify.Watcher
+	aiThink    *bool
+	Watcher    *fsnotify.Watcher
 	WatchedDirs map[string]struct{}
+	events     chan WatcherEventMsg
 }
 
 func NewWatchList(aiThink *bool) (*WatchList , error) {
@@ -67,13 +69,32 @@ func NewWatchList(aiThink *bool) (*WatchList , error) {
 		return nil , err
 	}
 
-	return &WatchList{
+	wl := &WatchList{
 		WatchedFiles: make(map[string]struct{}),
+		absWatched:   make(map[string]string),
 		Changeslist:  make(map[string]ChangeList),
 		aiThink:      aiThink,
 		Watcher:      w,
 		WatchedDirs:  make(map[string]struct{}),
-	},nil
+		events:       make(chan WatcherEventMsg, 32),
+	}
+	go wl.pump()
+	return wl, nil
+}
+
+// pump is the only reader of w.Watcher.Events for the program's lifetime.
+// It forwards relevant events into the buffered events channel so no
+// watcher events are dropped between command re-arms.
+func (w *WatchList) pump() {
+	for event := range w.Watcher.Events {
+		if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) == 0 {
+			continue
+		}
+		select {
+		case w.events <- WatcherEventMsg{FilePath: event.Name}:
+		default:
+		}
+	}
 }
 
 func (w *WatchList) SetThink(t *bool) {
@@ -83,6 +104,7 @@ func (w *WatchList) SetThink(t *bool) {
 // Add adds a file to the watch list.
 func (w *WatchList) Add(path string) {
 	w.WatchedFiles[path] = struct{}{}
+	w.absWatched[absPath(path)] = path
 }
 
 // Has reports whether path is currently watched.
@@ -94,9 +116,10 @@ func (w *WatchList) Has(path string) bool {
 // Remove stops watching path.
 func (w *WatchList) Remove(path string) {
 	delete(w.WatchedFiles, path)
+	delete(w.absWatched, absPath(path))
 }
 
-// Files returns all currently watched file paths.
+// Files returns all currently watched file paths (original form).
 func (w *WatchList) Files() []string {
 	files := make([]string, 0, len(w.WatchedFiles))
 	for f := range w.WatchedFiles {
@@ -121,13 +144,8 @@ func (w *WatchList) addDirToWatcher(path string) {
 }
 
 func (w *WatchList) hasWatchedFile(eventPath string) (string, bool) {
-	absEvent := absPath(eventPath)
-	for watched := range w.WatchedFiles {
-		if absPath(watched) == absEvent {
-			return watched, true
-		}
-	}
-	return "", false
+	orig, ok := w.absWatched[absPath(eventPath)]
+	return orig, ok
 }
 
 func (w *WatchList) removeWatchedDirs() {

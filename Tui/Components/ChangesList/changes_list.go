@@ -8,12 +8,8 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/fsnotify/fsnotify"
 
 	"GoWork/Tui/Style"
-
-	//remove in future
-	//"unsafe"
 )
 
 type WatcherEventMsg struct {
@@ -27,6 +23,7 @@ type row struct {
 	isHeader bool
 	change   Change
 	filePath string
+	lowerFile string
 }
 
 const (
@@ -66,6 +63,8 @@ type Model struct {
 
 	watchCtx    context.Context
 	watchCancel context.CancelFunc
+
+	lastQuery string
 }
 
 func (w *WatchList) add_test_file() {
@@ -171,19 +170,11 @@ func (m *Model) WatchCmd() tea.Cmd {
 
 func watcherCmd(w *WatchList, ctx context.Context) tea.Cmd {
 	return func() tea.Msg {
-		for {
-			select {
-			case event, ok := <-w.Watcher.Events:
-				if !ok {
-					return nil
-				}
-				if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) == 0 {
-					continue
-				}
-				return WatcherEventMsg{FilePath: event.Name}
-			case <-ctx.Done():
-				return nil
-			}
+		select {
+		case msg := <-w.events:
+			return msg
+		case <-ctx.Done():
+			return nil
 		}
 	}
 }
@@ -231,12 +222,13 @@ func (m *Model) Close() {
 }
 
 func (m *Model) rebuildRows() {
+	m.lastQuery = "\x00"
 	m.rows = m.rows[:0]
 	if m.Watch != nil {
 		for _, f := range m.Watch.Files() {
-			m.rows = append(m.rows, row{label: f, isHeader: true, filePath: f})
+			m.rows = append(m.rows, row{label: f, isHeader: true, filePath: f, lowerFile: strings.ToLower(f)})
 			for _, c := range m.Watch.GetChanges(f) {
-				m.rows = append(m.rows, row{label: c.Id, change: c, filePath: f})
+				m.rows = append(m.rows, row{label: c.Id, change: c, filePath: f, lowerFile: strings.ToLower(f)})
 			}
 		}
 	}
@@ -245,12 +237,18 @@ func (m *Model) rebuildRows() {
 
 func (m *Model) applyFilter() {
 	q := strings.TrimSpace(m.filter.Value())
+	if q == m.lastQuery {
+		return
+	}
+	m.lastQuery = q
+
 	if q == "" {
 		m.filtered = m.rows
 	} else {
+		lowerQ := strings.ToLower(q)
 		m.filtered = m.filtered[:0]
 		for _, r := range m.rows {
-			if strings.Contains(strings.ToLower(r.filePath), strings.ToLower(q)) {
+			if strings.Contains(r.lowerFile, lowerQ) {
 				m.filtered = append(m.filtered, r)
 			}
 		}
