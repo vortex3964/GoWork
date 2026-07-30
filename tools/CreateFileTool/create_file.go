@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"GoWork/tools"
-	cl "GoWork/Tui/Components/ChangesList"
 )
 
 type Input struct {
@@ -97,9 +96,6 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
  
 	if args.WatchList != nil {
 		args.WatchList.Add(input.Path)
-		args.WatchList.Changeslist[input.Path] = cl.ChangeList{
-			Changes: cl.GetDiffsBytes(marked, input.Path),
-		}
 	}
 
 	return tools.Ok(fmt.Sprintf("successfully created file at %s", filepath.Join(args.RootPath, input.Path))), nil
