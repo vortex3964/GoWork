@@ -48,6 +48,11 @@ func NewFileExplorer() *FileExplorer {
 }
 
 func (fe *FileExplorer) Load(path string, change *Change) {
+	if path == fe.filePath && fe.lines != nil {
+		fe.jumpTo(change)
+		return
+	}
+
 	fe.filePath = path
 	fe.lines = nil
 	fe.lineStates = nil
@@ -77,29 +82,32 @@ func (fe *FileExplorer) Load(path string, change *Change) {
 	fe.totalLines = len(fe.lines)
 
 	fe.computeLineStates()
+	fe.jumpTo(change)
+}
 
-	if change != nil {
-		offset := change.Start
-		lineNum := 0
-		pos := 0
-		for i, line := range fe.lines {
-			if pos >= offset {
-				lineNum = i
-				break
-			}
-			pos += len(line) + 1
-			lineNum = i + 1
-		}
-		if lineNum >= fe.totalLines {
-			lineNum = fe.totalLines - 1
-		}
-		fe.jumpLine = lineNum
-		fe.viewStart = lineNum - fe.height/3
-		if fe.viewStart < 0 {
-			fe.viewStart = 0
-		}
-	} else {
+func (fe *FileExplorer) jumpTo(change *Change) {
+	if change == nil {
 		fe.jumpLine = -1
+		fe.viewStart = 0
+		return
+	}
+	offset := change.Start
+	lineNum := 0
+	pos := 0
+	for i, line := range fe.lines {
+		if pos >= offset {
+			lineNum = i
+			break
+		}
+		pos += len(line) + 1
+		lineNum = i + 1
+	}
+	if lineNum >= fe.totalLines {
+		lineNum = fe.totalLines - 1
+	}
+	fe.jumpLine = lineNum
+	fe.viewStart = lineNum - fe.height/3
+	if fe.viewStart < 0 {
 		fe.viewStart = 0
 	}
 }
