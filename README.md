@@ -76,6 +76,10 @@ llama.cpp
 - make an installer
 - probably will delete move tools feature to delete the dir if its empty after the move
 - add a prompt message queue or block while the ai is generating (would prefer the first solution)
+- mcp support?
+- excell support
+- handling permisions for tool calls from ai
+- make docs
 
 ## common errors we check for 
 invalid request\

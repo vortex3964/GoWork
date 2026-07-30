@@ -148,15 +148,6 @@ func (w *WatchList) hasWatchedFile(eventPath string) (string, bool) {
 	return orig, ok
 }
 
-func (w *WatchList) removeWatchedDirs() {
-	if w.Watcher == nil {
-		return
-	}
-	for dir := range w.WatchedDirs {
-		_ = w.Watcher.Remove(dir)
-	}
-	clear(w.WatchedDirs)
-}
 
 // hunkRe matches a whole diff hunk in one shot and captures the mid
 // (separator) and end marker lines as groups 1 and 2. The start marker
