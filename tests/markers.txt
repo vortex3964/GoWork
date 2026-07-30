@@ -26,17 +26,10 @@ type User struct {
 
 func NewUser(id int, name, email, role string) *User {
 	return &User{
-<<<<<<< old
 		ID:        id,
 		Name:      name,
 		Email:     email,
 		Role:      role,
-=======
-		ID:        id,
-		Name:      name,
-		Email:     email,
-		Role:      "viewer",
->>>>>>> Ai change
 		IsActive:  true,
 		CreatedAt: time.Now(),
 	}
@@ -51,24 +44,14 @@ func (u *User) Deactivate() {
 }
 
 func (u *User) ValidateEmail() error {
-<<<<<<< old
-	if !strings.Contains(u.Email, "@") {
-		return errors.New("invalid email")
-	}
-=======
 	if !strings.Contains(u.Email, "@") || !strings.Contains(u.Email, ".") {
 		return errors.New("invalid email format: missing domain")
 	}
->>>>>>> Ai change
 	return nil
 }
 
 func (u *User) String() string {
-<<<<<<< old
 	return fmt.Sprintf("User %s (ID: %d)", u.Name, u.ID)
-=======
-	return fmt.Sprintf("User: %s | ID: %d | Role: %s", u.Name, u.ID, u.Role)
->>>>>>> Ai change
 }
 
 // ==============================================================================
@@ -152,13 +135,8 @@ func (o *Order) Checkout() error {
 	if len(o.Items) == 0 {
 		return errors.New("cannot checkout empty order")
 	}
-<<<<<<< old
 	o.Status = "Shipped"
 	o.UpdatedAt = time.Now()
-=======
-	o.Status = "Pending_Payment"
-	o.UpdatedAt = time.Now().UTC()
->>>>>>> Ai change
 	return nil
 }
 
