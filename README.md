@@ -51,10 +51,6 @@ ollama\
 llama.cpp
 
 ## FOLLOWING COMMITS FOCUS
-- add a < elents which will be used in the future to hold the changes list in general it will handle all write kind tools(can be opened with cntrl e and cntr a accepts a change cntr r rejects one (and they can accept all or reject all from a file with the same binds))
-- make preparations for updating the write tools with a changeState list
-- update write and edit tools and their tests to acommodate for the new changeState
-- implement the functionality of the change_list tab
 - add system prompt with the tools
 - wire and init the tools in main and make a prompt with tool calls
 - add a way to copy text from promptbar and message area
@@ -65,8 +61,6 @@ llama.cpp
 - designing skills
 - actually test tool calls with the llm
 - interupt handling and time excited error handling in tool calls (so that when the user wants to interupt a tool call they can or if a tool call is taking too long)
-- extend the edit and write tools maybe to allow for keeping temp changes to a file
-- if we do these edits to them then the tests should also change for them
 - sql db for storing stats and messages and session data etch
 - add slash commands (with window for autocomplete)
 - implement skills area
@@ -80,6 +74,8 @@ llama.cpp
 - add pdf support
 - handle images
 - make an installer
+- probably will delete move tools feature to delete the dir if its empty after the move
+- add a prompt message queue or block while the ai is generating (would prefer the first solution)
 
 ## common errors we check for 
 invalid request\
@@ -161,18 +157,24 @@ make test
 
 some of the basic keybinds may we will add more
 
+cntrl i -> interupt(global)\
+
 tab -> next tab (idle)\
 shift tab -> previous tab (idle)
 
-cntr j -> new line in prompt mode (prompt mode)\
-cntrl i -> interupt\
-cntrl p -> select provider and model (any mode)\
-cntrl fa ->accept all changes on the file\
-cntrl a -> accept current change\
-cntrl r -> reject current change\
-cntrl fr -> reject the file
+cntr j -> new line in prompt mode (prompt mode)
 
-cntrl a -> copy prompt content to clipboard (works in any mode)\
+cntrl p -> select provider and model (any mode)
+
+NOTE: accept and reject fail if the user wants to accept something as the ai is making changes
+
+cntrl l -> enter changes mode\
+cntrl a -> accept current change (if on header accepts all changes from file)\
+cntrl r -> reject current change (if on header rejects all changes from file)\
+cntrl f -> accept all changes from the ai\
+cntrl d -> reject all changes from the ai
+
+cntrl a -> copy prompt content to clipboard (prompt mode)\
 cntrl v -> paste into promptbar (prompt mode)\
 cntrl u -> clear the prompt bar (prompt mode)
 
@@ -195,15 +197,3 @@ also an autofil window pops up that lazily matches
 ## commands to open it
 gowork <project path>
 
-
-
-
-this is probably wrong this pattern in the tools
-we probably need to check if it exists then add watche event
-and then write and on write call dif but leave it till we have the watcher event
-	if args.WatchList != nil {
-		args.WatchList.Add(input.FilePath)
-		args.WatchList.Changeslist[input.FilePath] = cl.ChangeList{
-			Changes: cl.GetDiffsBytes(merged, input.FilePath),
-		}
-	}
