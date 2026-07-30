@@ -150,10 +150,12 @@ func initialModel(provider providers.Provider, modelID string, providerName stri
 }
 
 func (m model) Init() tea.Cmd {
-	if m.model == nil {
-		return nil
+	var cmds []tea.Cmd
+	if m.model != nil {
+		cmds = append(cmds, fetchModelInfoCmd(m.model, m.status.modelID))
 	}
-	return fetchModelInfoCmd(m.model, m.status.modelID)
+	cmds = append(cmds, m.changesList.WatchCmd())
+	return tea.Batch(cmds...)
 }
 
 // tea.Cmd that actually calls the AI provider - runs off the main update loop
@@ -536,13 +538,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case changeslist.WatcherEventMsg:
-		if m.mode == modeChangeHandling && m.changesList.Open() && !*m.aiThink {
+		if m.changesList.Open() && !*m.aiThink {
 			if m.changesList.HandleWatcherEvent(msg.FilePath) {
 				m.changesList.RebuildRows()
 			}
-			return m, m.changesList.WatchCmd()
 		}
-		return m, nil
+		return m, m.changesList.WatchCmd()
 	case aiResponseMsg:
 		*m.aiThink = false
 		m.changesList.RefreshDiffs()

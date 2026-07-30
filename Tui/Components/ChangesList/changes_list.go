@@ -73,25 +73,6 @@ type Model struct {
 	lastWatcherData []byte
 }
 
-func (w *WatchList) add_test_file() {
-	const path  string = "tests/markers.txt"
-	const path2  string = "tests/markers2.txt"
-	w.Add(path)
-	w.Add(path2)
-
-	hi , err := GetDiffs(path)
-	if err != nil {
-		return
-	}
-	hi2 , err := GetDiffs(path2)
-	if err != nil {
-		return
-	}
-
-	w.Changeslist[path] = ChangeList{ hi }
-	w.Changeslist[path2] = ChangeList{ hi2 }
-}
-
 func New(watch *WatchList) Model {
 	ta := textarea.New()
 	ta.Placeholder = "filter files ..."
@@ -121,9 +102,6 @@ func New(watch *WatchList) Model {
 		PaddingLeft(1).
 		PaddingRight(1)
 
-	//WARN: this is here for testing remove when the commit is ready and tested by the user
-	watch.add_test_file()
-
 	m := Model{
 		Watch:    watch,
 		filter:   ta,
@@ -150,35 +128,18 @@ func (m *Model) RefreshDiffs() {
 	}
 }
 
-func (m *Model) PauseWatching() {
-	if m.Watch == nil || m.Watch.Watcher == nil {
-		return
-	}
-	if m.watchCancel != nil {
-		m.watchCancel()
-		m.watchCancel = nil
-	}
-	m.Watch.removeWatchedDirs()
-	for {
-		select {
-		case <-m.Watch.events:
-		default:
-			return
-		}
-	}
-}
+func (m *Model) PauseWatching() {}
 
 func (m *Model) WatchCmd() tea.Cmd {
 	if m.Watch == nil || m.Watch.Watcher == nil {
 		return nil
 	}
-	if m.watchCancel != nil {
-		m.watchCancel()
+	if m.watchCtx == nil || m.watchCtx.Err() != nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		m.watchCtx = ctx
+		m.watchCancel = cancel
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	m.watchCtx = ctx
-	m.watchCancel = cancel
-	return watcherCmd(m.Watch, ctx)
+	return watcherCmd(m.Watch, m.watchCtx)
 }
 
 func watcherCmd(w *WatchList, ctx context.Context) tea.Cmd {
