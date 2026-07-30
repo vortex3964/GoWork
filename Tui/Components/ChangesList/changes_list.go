@@ -2,6 +2,9 @@ package changeslist
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"charm.land/bubbles/v2/textarea"
@@ -65,6 +68,9 @@ type Model struct {
 	watchCancel context.CancelFunc
 
 	lastQuery string
+
+	lastWatcherPath string
+	lastWatcherData []byte
 }
 
 func (w *WatchList) add_test_file() {
@@ -134,8 +140,8 @@ func (m *Model) RefreshDiffs() {
 	}
 	for file := range m.Watch.WatchedFiles {
 		difs, err := GetDiffs(file)
-		if err != nil || len(difs) == 0 {
-			delete(m.Watch.WatchedFiles, file)
+		if err != nil {
+			m.Watch.Remove(file)
 			delete(m.Watch.Changeslist, file)
 			continue
 		}
@@ -153,6 +159,13 @@ func (m *Model) PauseWatching() {
 		m.watchCancel = nil
 	}
 	m.Watch.removeWatchedDirs()
+	for {
+		select {
+		case <-m.Watch.events:
+		default:
+			return
+		}
+	}
 }
 
 func (m *Model) WatchCmd() tea.Cmd {
@@ -184,11 +197,14 @@ func (m *Model) HandleWatcherEvent(eventPath string) bool {
 	if !ok {
 		return false
 	}
-	difs, err := GetDiffs(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return true
 	}
+	difs := GetDiffsBytes(data, filepath.Base(path))
 	m.Watch.Changeslist[path] = ChangeList{difs}
+	m.lastWatcherPath = path
+	m.lastWatcherData = data
 	return true
 }
 
@@ -225,13 +241,17 @@ func (m *Model) rebuildRows() {
 	m.lastQuery = "\x00"
 	m.rows = m.rows[:0]
 	if m.Watch != nil {
-		for _, f := range m.Watch.Files() {
+		files := m.Watch.Files()
+		sort.Strings(files)
+		for _, f := range files {
 			m.rows = append(m.rows, row{label: f, isHeader: true, filePath: f, lowerFile: strings.ToLower(f)})
 			for _, c := range m.Watch.GetChanges(f) {
 				m.rows = append(m.rows, row{label: c.Id, change: c, filePath: f, lowerFile: strings.ToLower(f)})
 			}
 		}
 	}
+	m.lastWatcherPath = ""
+	m.lastWatcherData = nil
 	m.applyFilter()
 }
 
@@ -355,10 +375,14 @@ func (m *Model) renderExplorer() {
 		return
 	}
 	sel := m.filtered[m.cursor]
+	var cached []byte
+	if sel.filePath == m.lastWatcherPath {
+		cached = m.lastWatcherData
+	}
 	if sel.change.Id != "" {
-		m.explorer.Load(sel.filePath, &sel.change)
+		m.explorer.Load(sel.filePath, &sel.change, cached)
 	} else {
-		m.explorer.Load(sel.filePath, nil)
+		m.explorer.Load(sel.filePath, nil, cached)
 	}
 }
 
@@ -390,7 +414,7 @@ func (m *Model) acceptChange(path string, c Change) {
 	Accept_change(path, c.Start, c.Mid, c.End)
 	difs, err := GetDiffs(path)
 	if err != nil || len(difs) == 0 {
-		delete(m.Watch.WatchedFiles, path)
+		m.Watch.Remove(path)
 		delete(m.Watch.Changeslist, path)
 	} else {
 		m.Watch.Changeslist[path] = ChangeList{difs}
@@ -401,7 +425,7 @@ func (m *Model) rejectChange(path string, c Change) {
 	Reject_change(path, c.Start, c.Mid, c.End)
 	difs, err := GetDiffs(path)
 	if err != nil || len(difs) == 0 {
-		delete(m.Watch.WatchedFiles, path)
+		m.Watch.Remove(path)
 		delete(m.Watch.Changeslist, path)
 	} else {
 		m.Watch.Changeslist[path] = ChangeList{difs}
@@ -419,13 +443,13 @@ func (m *Model) AcceptSelected() {
 	}
 	if sel.isHeader {
 		Accept_all_changes(sel.filePath, cl.Changes)
-		delete(m.Watch.WatchedFiles, sel.filePath)
+		m.Watch.Remove(sel.filePath)
 		delete(m.Watch.Changeslist, sel.filePath)
 	} else {
 		m.acceptChange(sel.filePath, sel.change)
 	}
 	if len(m.Watch.Changeslist[sel.filePath].Changes) == 0 {
-		delete(m.Watch.WatchedFiles, sel.filePath)
+		m.Watch.Remove(sel.filePath)
 		delete(m.Watch.Changeslist, sel.filePath)
 	}
 	if m.cursor >= len(m.filtered) {
@@ -445,13 +469,13 @@ func (m *Model) RejectSelected() {
 	}
 	if sel.isHeader {
 		Reject_all_changes(sel.filePath, cl.Changes)
-		delete(m.Watch.WatchedFiles, sel.filePath)
+		m.Watch.Remove(sel.filePath)
 		delete(m.Watch.Changeslist, sel.filePath)
 	} else {
 		m.rejectChange(sel.filePath, sel.change)
 	}
 	if len(m.Watch.Changeslist[sel.filePath].Changes) == 0 {
-		delete(m.Watch.WatchedFiles, sel.filePath)
+		m.Watch.Remove(sel.filePath)
 		delete(m.Watch.Changeslist, sel.filePath)
 	}
 	if m.cursor >= len(m.filtered) {
@@ -468,6 +492,7 @@ func (m *Model) AcceptAll() {
 	}
 	m.Watch.Changeslist = make(map[string]ChangeList)
 	m.Watch.WatchedFiles = make(map[string]struct{})
+	m.Watch.absWatched = make(map[string]string)
 	m.rebuildRows()
 }
 
@@ -479,6 +504,7 @@ func (m *Model) RejectAll() {
 	}
 	m.Watch.Changeslist = make(map[string]ChangeList)
 	m.Watch.WatchedFiles = make(map[string]struct{})
+	m.Watch.absWatched = make(map[string]string)
 	m.rebuildRows()
 }
 
