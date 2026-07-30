@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 
@@ -78,7 +79,7 @@ type model struct {
 	//ai related
 	model   providers.Provider
 	context []providers.Message
-	aiThink bool
+	aiThink *bool
 
 	// provider/model picker (ctrl+p)
 	providerSelect providerselect.Model
@@ -118,6 +119,20 @@ func initialModel(provider providers.Provider, modelID string, providerName stri
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 
+	think := false
+
+	wl, err := changeslist.NewWatchList(&think)
+	if err != nil {
+		log.Printf("failed to create file watcher: %v; file watching disabled", err)
+		wl = &changeslist.WatchList{
+			WatchedFiles: make(map[string]struct{}),
+			Changeslist:  make(map[string]changeslist.ChangeList),
+			Watcher:      nil,
+			WatchedDirs:  make(map[string]struct{}),
+		}
+		wl.SetThink(&think)
+	}
+
 	return model{
 		tabs:         tabs.New("code", "skills", "stats"),
 		prompt:       promptbar.New(),
@@ -126,11 +141,11 @@ func initialModel(provider providers.Provider, modelID string, providerName stri
 		spinner:      sp,
 		context:      []providers.Message{},
 		model:        provider,
-		aiThink:      false,
+		aiThink:      &think,
 		status:       newStatusLine(providerName, modelID),
 		logoLines:    loadLogo(),
 		popUp:        popup.New(),
-		changesList:  changeslist.New(changeslist.NewWatchList()),
+		changesList:  changeslist.New(wl),
 	}
 }
 
@@ -182,7 +197,8 @@ func (m *model) submitPrompt() []tea.Cmd {
 		m.prompt.Blur()
 		return cmds
 	}
-	m.aiThink = true
+	*m.aiThink = true
+	m.changesList.PauseWatching()
 	m.message_area.AppendMessage(val, true)
 	m.context = append(m.context, providers.Message{Role: "user", Content: val})
 	m.prompt.Reset()
@@ -302,19 +318,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.openProviderSelect()
 		}
 
-		if msg_str == "ctrl+a" {
-			val := m.prompt.Value()
-			if val != "" {
-				return m, func() tea.Msg {
-					if err := clipboard.WriteAll(val); err != nil {
-						return popup.ShowMsg{Message: "Copy failed: " + err.Error()}
-					}
-					return popup.ShowMsg{Message: popupCopyMessage(val)}
-				}
-			}
-			return m, nil
-		}
-
 		if m.mode == modeProviderSelect {
 			var cmd tea.Cmd
 			m.providerSelect, cmd = m.providerSelect.Update(msg)
@@ -329,7 +332,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.prompt.Blur()
 			m.mode = modeChangeHandling
-			return m, m.changesList.Toggle()
+			return m, tea.Batch(m.changesList.Toggle(), m.changesList.WatchCmd())
 		}
 
 		if m.mode == modeChangeHandling {
@@ -343,6 +346,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "down":
 				m.changesList.CursorDown()
+				return m, nil
+			case "ctrl+a":
+				m.changesList.AcceptSelected()
+				return m, nil
+			case "ctrl+r":
+				m.changesList.RejectSelected()
+				return m, nil
+			case "ctrl+f":
+				m.changesList.AcceptAll()
+				return m, nil
+			case "ctrl+d":
+				m.changesList.RejectAll()
 				return m, nil
 			default:
 				var cmd tea.Cmd
@@ -415,6 +430,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var cmd tea.Cmd
 				m.prompt, cmd = m.prompt.Update(msg)
 				return m, cmd
+			case "ctrl+a":
+				val := m.prompt.Value()
+				if val != "" {
+					return m, func() tea.Msg {
+						if err := clipboard.WriteAll(val); err != nil {
+							return popup.ShowMsg{Message: "Copy failed: " + err.Error()}
+						}
+						return popup.ShowMsg{Message: popupCopyMessage(val)}
+					}
+				}
+				return m, nil
 			case "ctrl+u":
 				m.prompt.Reset()
 				m.historyIdx = 0
@@ -505,12 +531,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// otherwise the spinner would spin forever in the background.
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
-		if m.aiThink {
+		if *m.aiThink {
 			return m, cmd
 		}
 		return m, nil
+	case changeslist.WatcherEventMsg:
+		if m.mode == modeChangeHandling && m.changesList.Open() && !*m.aiThink {
+			if m.changesList.HandleWatcherEvent(msg.FilePath) {
+				m.changesList.RebuildRows()
+			}
+			return m, m.changesList.WatchCmd()
+		}
+		return m, nil
 	case aiResponseMsg:
-		m.aiThink = false
+		*m.aiThink = false
+		m.changesList.RefreshDiffs()
 		if msg.err != nil {
 			var perr *providers.ProviderError
 			if errors.As(msg.err, &perr) {
@@ -532,6 +567,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.context = append(m.context, providers.Message{Role: "assistant", Content: msg.content})
 			m.status.sessionTokens += msg.usage.TotalTokens
 			m.status.lastPromptTokens = msg.usage.PromptTokens
+		}
+		if m.changesList.Open() {
+			return m, m.changesList.WatchCmd()
 		}
 		return m, nil
 	case modelInfoMsg:
@@ -618,7 +656,7 @@ func (m model) View() tea.View {
 			content += m.message_area.View()
 		}
 		content += "\n"
-		if m.aiThink {
+		if *m.aiThink {
 			content += lipgloss.NewStyle().Margin(0, 3).Foreground(style.Info).Render(m.spinner.View() + " thinking....")
 		}
 		content += "\n"

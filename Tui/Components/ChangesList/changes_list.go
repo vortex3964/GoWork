@@ -1,15 +1,24 @@
 package changeslist
 
 import (
+	"context"
 	"strings"
 
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/fsnotify/fsnotify"
 
 	"GoWork/Tui/Style"
+
+	//remove in future
+	//"unsafe"
 )
+
+type WatcherEventMsg struct {
+	FilePath string
+}
 
 // row is either a file header line or one of its changes (Id is
 // already "file/Cn" from GetDiffs).
@@ -28,7 +37,13 @@ const (
 var (
 	headerColor = lipgloss.Color("111")
 	rowColor    = style.Text
-	mutedColor  = style.Muted
+)
+
+const (
+	keyAccept = "cntrl+a"
+	keyReject = "cntrl+r"
+	keyAcceptAll = "ctrl+f"
+	keyRejectAll = "cntrl+d"
 )
 
 type Model struct {
@@ -36,7 +51,7 @@ type Model struct {
 
 	filter   textarea.Model
 	results  viewport.Model
-	explorer viewport.Model
+	explorer *FileExplorer
 
 	rows     []row
 	filtered []row
@@ -44,8 +59,32 @@ type Model struct {
 
 	open bool
 
-	width  int
-	height int
+	width          int
+	height         int
+	explorerWidth  int
+	explorerHeight int
+
+	watchCtx    context.Context
+	watchCancel context.CancelFunc
+}
+
+func (w *WatchList) add_test_file() {
+	const path  string = "tests/markers.txt"
+	const path2  string = "tests/markers2.txt"
+	w.Add(path)
+	w.Add(path2)
+
+	hi , err := GetDiffs(path)
+	if err != nil {
+		return
+	}
+	hi2 , err := GetDiffs(path2)
+	if err != nil {
+		return
+	}
+
+	w.Changeslist[path] = ChangeList{ hi }
+	w.Changeslist[path2] = ChangeList{ hi2 }
 }
 
 func New(watch *WatchList) Model {
@@ -77,27 +116,100 @@ func New(watch *WatchList) Model {
 		PaddingLeft(1).
 		PaddingRight(1)
 
-	ep := viewport.New()
-	ep.Style = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(style.Muted).
-		PaddingLeft(1).
-		PaddingRight(1)
+	//WARN: this is here for testing remove when the commit is ready and tested by the user
+	watch.add_test_file()
 
 	m := Model{
 		Watch:    watch,
 		filter:   ta,
 		results:  rp,
-		explorer: ep,
+		explorer: NewFileExplorer(),
 	}
 	m.rebuildRows()
 	return m
+}
+
+func (m *Model) RefreshDiffs() {
+	if m.Watch == nil {
+		return
+	}
+	for file := range m.Watch.WatchedFiles {
+		difs, err := GetDiffs(file)
+		if err != nil || len(difs) == 0 {
+			delete(m.Watch.WatchedFiles, file)
+			delete(m.Watch.Changeslist, file)
+			continue
+		}
+		m.Watch.Changeslist[file] = ChangeList{difs}
+		m.Watch.addDirToWatcher(file)
+	}
+}
+
+func (m *Model) PauseWatching() {
+	if m.Watch == nil || m.Watch.Watcher == nil {
+		return
+	}
+	if m.watchCancel != nil {
+		m.watchCancel()
+		m.watchCancel = nil
+	}
+	m.Watch.removeWatchedDirs()
+}
+
+func (m *Model) WatchCmd() tea.Cmd {
+	if m.Watch == nil || m.Watch.Watcher == nil {
+		return nil
+	}
+	if m.watchCancel != nil {
+		m.watchCancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.watchCtx = ctx
+	m.watchCancel = cancel
+	return watcherCmd(m.Watch, ctx)
+}
+
+func watcherCmd(w *WatchList, ctx context.Context) tea.Cmd {
+	return func() tea.Msg {
+		for {
+			select {
+			case event, ok := <-w.Watcher.Events:
+				if !ok {
+					return nil
+				}
+				if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) == 0 {
+					continue
+				}
+				return WatcherEventMsg{FilePath: event.Name}
+			case <-ctx.Done():
+				return nil
+			}
+		}
+	}
+}
+
+func (m *Model) HandleWatcherEvent(eventPath string) bool {
+	path, ok := m.Watch.hasWatchedFile(eventPath)
+	if !ok {
+		return false
+	}
+	difs, err := GetDiffs(path)
+	if err != nil {
+		return true
+	}
+	m.Watch.Changeslist[path] = ChangeList{difs}
+	return true
+}
+
+func (m *Model) RebuildRows() {
+	m.rebuildRows()
 }
 
 func (m *Model) Toggle() tea.Cmd {
 	m.open = !m.open
 	if m.open {
 		m.filter.Reset()
+		m.RefreshDiffs()
 		m.rebuildRows()
 		return m.filter.Focus()
 	}
@@ -112,6 +224,10 @@ func (m Model) Open() bool {
 func (m *Model) Close() {
 	m.open = false
 	m.filter.Blur()
+	if m.watchCancel != nil {
+		m.watchCancel()
+		m.watchCancel = nil
+	}
 }
 
 func (m *Model) rebuildRows() {
@@ -189,8 +305,8 @@ func (m *Model) SetSize(outerWidth, outerHeight int) {
 
 	m.results.SetWidth(paneWidth)
 	m.results.SetHeight(resultsContentHeight)
-	m.explorer.SetWidth(inner - paneWidth - gapWidth)
-	m.explorer.SetHeight(explorerContentHeight)
+	m.explorerWidth = inner - paneWidth - gapWidth
+	m.explorerHeight = explorerContentHeight
 
 	filterInner := paneWidth - 2 - 2
 	if filterInner < 1 {
@@ -218,7 +334,7 @@ func (m *Model) renderResults() {
 			lineStyle = lineStyle.Foreground(rowColor).PaddingLeft(2)
 			line = "▸ " + shortChangeLabel(r)
 		}
-		if !r.isHeader && i == m.cursor {
+		if i == m.cursor {
 			lineStyle = lineStyle.Background(style.Highlight)
 		}
 		b.WriteString(lineStyle.Render(line))
@@ -235,46 +351,137 @@ func shortChangeLabel(r row) string {
 	return r.change.Id
 }
 
-// just a placeholder for now, shows the path of whatever's selected
 func (m *Model) renderExplorer() {
 	if len(m.filtered) == 0 {
-		m.explorer.SetContent(lipgloss.NewStyle().Foreground(mutedColor).Render("no file selected"))
+		m.explorer.Clear()
 		return
 	}
 	sel := m.filtered[m.cursor]
-	body := lipgloss.NewStyle().Foreground(mutedColor).Render(sel.filePath)
-	m.explorer.SetContent(body)
+	if sel.change.Id != "" {
+		m.explorer.Load(sel.filePath, &sel.change)
+	} else {
+		m.explorer.Load(sel.filePath, nil)
+	}
 }
 
-// skip header rows, only changes are selectable
 func (m *Model) CursorUp() {
-	for i := m.cursor - 1; i >= 0; i-- {
-		if !m.filtered[i].isHeader {
-			m.cursor = i
-			m.renderResults()
-			m.renderExplorer()
-			return
-		}
+	if m.cursor > 0 {
+		m.cursor--
+		m.renderResults()
+		m.renderExplorer()
 	}
 }
 
 func (m *Model) CursorDown() {
-	for i := m.cursor + 1; i < len(m.filtered); i++ {
-		if !m.filtered[i].isHeader {
-			m.cursor = i
-			m.renderResults()
-			m.renderExplorer()
-			return
-		}
+	if m.cursor < len(m.filtered)-1 {
+		m.cursor++
+		m.renderResults()
+		m.renderExplorer()
 	}
 }
 
 func (m *Model) ExplorerScrollUp() {
-	m.explorer.ScrollUp(m.explorer.MouseWheelDelta)
+	m.explorer.ScrollUp(3)
 }
 
 func (m *Model) ExplorerScrollDown() {
-	m.explorer.ScrollDown(m.explorer.MouseWheelDelta)
+	m.explorer.ScrollDown(3)
+}
+
+func (m *Model) acceptChange(path string, c Change) {
+	Accept_change(path, c.Start, c.Mid, c.End)
+	difs, err := GetDiffs(path)
+	if err != nil || len(difs) == 0 {
+		delete(m.Watch.WatchedFiles, path)
+		delete(m.Watch.Changeslist, path)
+	} else {
+		m.Watch.Changeslist[path] = ChangeList{difs}
+	}
+}
+
+func (m *Model) rejectChange(path string, c Change) {
+	Reject_change(path, c.Start, c.Mid, c.End)
+	difs, err := GetDiffs(path)
+	if err != nil || len(difs) == 0 {
+		delete(m.Watch.WatchedFiles, path)
+		delete(m.Watch.Changeslist, path)
+	} else {
+		m.Watch.Changeslist[path] = ChangeList{difs}
+	}
+}
+
+func (m *Model) AcceptSelected() {
+	if len(m.filtered) == 0 || m.Watch == nil {
+		return
+	}
+	sel := m.filtered[m.cursor]
+	cl, ok := m.Watch.Changeslist[sel.filePath]
+	if !ok {
+		return
+	}
+	if sel.isHeader {
+		Accept_all_changes(sel.filePath, cl.Changes)
+		delete(m.Watch.WatchedFiles, sel.filePath)
+		delete(m.Watch.Changeslist, sel.filePath)
+	} else {
+		m.acceptChange(sel.filePath, sel.change)
+	}
+	if len(m.Watch.Changeslist[sel.filePath].Changes) == 0 {
+		delete(m.Watch.WatchedFiles, sel.filePath)
+		delete(m.Watch.Changeslist, sel.filePath)
+	}
+	if m.cursor >= len(m.filtered) {
+		m.cursor = len(m.filtered) - 1
+	}
+	m.rebuildRows()
+}
+
+func (m *Model) RejectSelected() {
+	if len(m.filtered) == 0 || m.Watch == nil {
+		return
+	}
+	sel := m.filtered[m.cursor]
+	cl, ok := m.Watch.Changeslist[sel.filePath]
+	if !ok {
+		return
+	}
+	if sel.isHeader {
+		Reject_all_changes(sel.filePath, cl.Changes)
+		delete(m.Watch.WatchedFiles, sel.filePath)
+		delete(m.Watch.Changeslist, sel.filePath)
+	} else {
+		m.rejectChange(sel.filePath, sel.change)
+	}
+	if len(m.Watch.Changeslist[sel.filePath].Changes) == 0 {
+		delete(m.Watch.WatchedFiles, sel.filePath)
+		delete(m.Watch.Changeslist, sel.filePath)
+	}
+	if m.cursor >= len(m.filtered) {
+		m.cursor = len(m.filtered) - 1
+	}
+	m.rebuildRows()
+}
+
+func (m *Model) AcceptAll() {
+	for path, cl := range m.Watch.Changeslist {
+		if len(cl.Changes) > 0 {
+			Accept_all_changes(path, cl.Changes)
+		}
+	}
+	m.Watch.Changeslist = make(map[string]ChangeList)
+	m.Watch.WatchedFiles = make(map[string]struct{})
+	m.rebuildRows()
+}
+
+func (m *Model) RejectAll() {
+	for path, cl := range m.Watch.Changeslist {
+		if len(cl.Changes) > 0 {
+			Reject_all_changes(path, cl.Changes)
+		}
+	}
+	m.Watch.Changeslist = make(map[string]ChangeList)
+	m.Watch.WatchedFiles = make(map[string]struct{})
+	m.rebuildRows()
 }
 
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
@@ -297,11 +504,27 @@ func (m Model) View() string {
 
 	leftColumn := lipgloss.JoinVertical(lipgloss.Left, m.results.View(), filterBar)
 
+	expWidth := m.explorerWidth - 4
+	expHeight := m.explorerHeight - 2
+	if expWidth < 1 {
+		expWidth = 1
+	}
+	if expHeight < 1 {
+		expHeight = 1
+	}
+	expView := m.explorer.View(expWidth, expHeight)
+	expPane := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(style.Muted).
+		PaddingLeft(1).
+		PaddingRight(1).
+		Render(expView)
+
 	content := lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		leftColumn,
 		strings.Repeat(" ", gapWidth),
-		m.explorer.View(),
+		expPane,
 	)
 
 	return lipgloss.NewStyle().Margin(0, padSide).Render(content)

@@ -7,8 +7,17 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/sergi/go-diff/diffmatchpatch"
 )
+
+func absPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return abs
+}
 
 //TODO: add a function the write edit create tools will use to write dif markers in files
 // they will follow the format bellow:
@@ -34,7 +43,6 @@ type ChangeList struct {
 	//will be used to avoid race conditions (later will consider it when the architecture is more complete)
 	//mu sync.Mutex
 	Changes []Change
-	//this will also probably have the watcher here
 }
 
 func InitChangeList(path string) *ChangeList {
@@ -46,13 +54,30 @@ func InitChangeList(path string) *ChangeList {
 type WatchList struct {
 	WatchedFiles map[string]struct{}//this is go's way of having a set
 	Changeslist  map[string]ChangeList
+	//tracks the ai
+	aiThink   *bool
+	Watcher   *fsnotify.Watcher
+	WatchedDirs map[string]struct{}
 }
 
-func NewWatchList() *WatchList {
+func NewWatchList(aiThink *bool) (*WatchList , error) {
+	w , err := fsnotify.NewWatcher()
+	
+	if err != nil {
+		return nil , err
+	}
+
 	return &WatchList{
 		WatchedFiles: make(map[string]struct{}),
 		Changeslist:  make(map[string]ChangeList),
-	}
+		aiThink:      aiThink,
+		Watcher:      w,
+		WatchedDirs:  make(map[string]struct{}),
+	},nil
+}
+
+func (w *WatchList) SetThink(t *bool) {
+	w.aiThink = t
 }
 
 // Add adds a file to the watch list.
@@ -82,6 +107,37 @@ func (w *WatchList) Files() []string {
 
 func (w *WatchList) GetChanges(filepath string) []Change {
 	return w.Changeslist[filepath].Changes
+}
+
+func (w *WatchList) addDirToWatcher(path string) {
+	if w.Watcher == nil {
+		return
+	}
+	dir := absPath(filepath.Dir(path))
+	if _, ok := w.WatchedDirs[dir]; !ok {
+		_ = w.Watcher.Add(dir)
+		w.WatchedDirs[dir] = struct{}{}
+	}
+}
+
+func (w *WatchList) hasWatchedFile(eventPath string) (string, bool) {
+	absEvent := absPath(eventPath)
+	for watched := range w.WatchedFiles {
+		if absPath(watched) == absEvent {
+			return watched, true
+		}
+	}
+	return "", false
+}
+
+func (w *WatchList) removeWatchedDirs() {
+	if w.Watcher == nil {
+		return
+	}
+	for dir := range w.WatchedDirs {
+		_ = w.Watcher.Remove(dir)
+	}
+	clear(w.WatchedDirs)
 }
 
 // hunkRe matches a whole diff hunk in one shot and captures the mid
@@ -197,23 +253,71 @@ func Reject_change(path string, start int, middle int, end int) {
 	os.WriteFile(path, RejectChangeBytes(data, start, middle, end), 0644)
 }
 
-// AcceptAllChangesBytes applies every change to an in-memory buffer, back
-// to front by byte offset (a change's own accept/reject shifts every
-// offset that comes after it, so later changes must be applied first),
-// and returns the final bytes. No disk I/O.
+// AcceptAllChangesBytes applies every change in a single left-to-right pass.
+// For each marker block it keeps the new code (between ======= and >>>>>>>)
+// and skips the old code and markers. Since we walk forward using the
+// pre-computed offsets, subsequent markers aren't shifted by earlier edits.
 func AcceptAllChangesBytes(data []byte, changes []Change) []byte {
-	for i := len(changes) - 1; i >= 0; i-- {
-		data = AcceptChangeBytes(data, changes[i].Start, changes[i].Mid, changes[i].End)
+	var b strings.Builder
+	b.Grow(len(data))
+	pos := 0
+	for _, c := range changes {
+		b.Write(data[pos:c.Start])
+
+		// advance past =======\n to reach new code
+		s := c.Mid
+		for s < len(data) && data[s] != '\n' {
+			s++
+		}
+		if s < len(data) {
+			s++
+		}
+		b.Write(data[s:c.End])
+
+		// advance past >>>>>>>\n
+		pos = c.End
+		for pos < len(data) && data[pos] != '\n' {
+			pos++
+		}
+		if pos < len(data) {
+			pos++
+		}
 	}
-	return data
+	b.Write(data[pos:])
+	return []byte(b.String())
 }
 
-// RejectAllChangesBytes is the reject-side analogue of AcceptAllChangesBytes.
+// RejectAllChangesBytes applies every change in a single left-to-right pass.
+// For each marker block it keeps the old code (between <<<<<<< and =======)
+// and skips the new code and markers.
 func RejectAllChangesBytes(data []byte, changes []Change) []byte {
-	for i := len(changes) - 1; i >= 0; i-- {
-		data = RejectChangeBytes(data, changes[i].Start, changes[i].Mid, changes[i].End)
+	var b strings.Builder
+	b.Grow(len(data))
+	pos := 0
+	for _, c := range changes {
+		b.Write(data[pos:c.Start])
+
+		// advance past <<<<<<< old\n to reach old code
+		s := c.Start
+		for s < len(data) && data[s] != '\n' {
+			s++
+		}
+		if s < len(data) {
+			s++
+		}
+		b.Write(data[s:c.Mid])
+
+		// advance past >>>>>>>\n
+		pos = c.End
+		for pos < len(data) && data[pos] != '\n' {
+			pos++
+		}
+		if pos < len(data) {
+			pos++
+		}
 	}
-	return data
+	b.Write(data[pos:])
+	return []byte(b.String())
 }
 
 func Accept_all_changes(path string, changes []Change) {

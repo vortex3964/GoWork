@@ -230,9 +230,6 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
  
 	if args.WatchList != nil {
 		args.WatchList.Add(input.FilePath)
-		args.WatchList.Changeslist[input.FilePath] = cl.ChangeList{
-			Changes: cl.GetDiffsBytes(merged, input.FilePath),
-		}
 	}
 
 	if _, err := wf.Write(merged); err != nil {
