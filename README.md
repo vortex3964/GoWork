@@ -56,7 +56,20 @@ llama.cpp
 - add a way to copy text from promptbar and message area
 
 ## TODO
+- proper registry for tools
+- architect tools so they can effeciently be wired to main
 - update read and edit so that we handle pdfs and images we will ignore images and read pdfs with the new tool we will make in the future
+- update move delete tools to also track files with the changes list command and the watcer
+- update move delete websearch webfetch to have a permision window from the user before running
+- fix bugs in file explorer it expands beyond it size when we run on smaller windows
+- file explorer doesnt have stylized text for code
+- stylize file explorers border with filename and % identation
+- changes list has pending issues
+- reject accept changes should be displayed in message stylized
+- changes list doesnt wrap around when we reach the final changes
+- no render logic on smaller windows its displayed poorly
+- needs to have a section for explaining the key binds
+- proper resizing for changes list
 - context handling
 - designing skills
 - actually test tool calls with the llm
@@ -80,6 +93,7 @@ llama.cpp
 - excell support
 - handling permisions for tool calls from ai
 - make docs
+- generate in tools rebuilds the messages context from scratch all the time when it doesnt have to (i think)
 
 ## common errors we check for 
 invalid request\
@@ -105,11 +119,6 @@ move_file(srcpath , dstpath) - moves a file from one dir to another (it can also
 delete_file(path) - deletes a file.\
 list_directory(path, recursive?) - lists files and folders, recursive flag for full project tree.\
 get_file_info(path , subpath) - get usefull info about the file 
-
-### Excel
-read_excel(path, sheet?) - reads a sheet and returns it as a grid the agent can reason about. Defaults to first sheet if none specified.\
-read_excel_range(path, sheet, start_row, start_col, end_row, end_col) - reads a specific range instead of the whole sheet. Critical for large spreadsheets where reading everything wastes context.\
-edit_excel() - edit the contents of an excel sheet
 
 ### Skills
 list_skills() - returns all available skill files so the agent can pick which ones are relevant for the current task.\
