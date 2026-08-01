@@ -1,10 +1,7 @@
 package main
 
-//TODO: fix context its always 0 for some reason i think its a bug
-
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -23,16 +20,16 @@ type statusLine struct {
 	sessionTokens    int // running total of prompt+completion tokens for the whole session
 }
 
-func newStatusLine(providerName string, modelID string) statusLine {
-	root := "?"
-	if cwd, err := os.Getwd(); err == nil {
-		root = filepath.Base(cwd)
+func newStatusLine(root string, providerName string, modelID string) statusLine {
+	name := "?"
+	if root != "" {
+		name = filepath.Base(root)
 	}
 
 	return statusLine{
 		modelID:      modelID,
 		providerName: providerName,
-		projectRoot:  root,
+		projectRoot:  name,
 	}
 }
 

@@ -93,6 +93,7 @@ llama.cpp
 - generate in tools rebuilds the messages context from scratch all the time when it doesnt have to (i think)
 - have atatchments like images pdfs or copied and pasted text on the promptbar so that a large copied text doesnt take up the entire screen
 - add a way to copy text from promptbar and message area
+- multithread (probably) what we do in main to avoid slugish start times
 
 ## common errors we check for 
 invalid request\
