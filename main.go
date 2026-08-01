@@ -8,8 +8,8 @@ import (
 	"os"
 	"strings"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/atotto/clipboard"
 	"github.com/joho/godotenv"
@@ -23,6 +23,7 @@ import (
 	"GoWork/Tui/Components/Stats"
 	"GoWork/Tui/Components/Tabs"
 	"GoWork/Tui/Style"
+	"GoWork/tools"
 
 	"GoWork/providers"
 )
@@ -77,7 +78,7 @@ type model struct {
 	winHeight int
 
 	//ai related
-	model   providers.Provider
+	model   *tools.ProviderHolder
 	context []providers.Message
 	aiThink *bool
 
@@ -133,6 +134,9 @@ func initialModel(provider providers.Provider, modelID string, providerName stri
 		wl.SetThink(&think)
 	}
 
+	holder := &tools.ProviderHolder{}
+	holder.Set(provider)
+
 	return model{
 		tabs:         tabs.New("code", "skills", "stats"),
 		prompt:       promptbar.New(),
@@ -140,7 +144,7 @@ func initialModel(provider providers.Provider, modelID string, providerName stri
 		mode:         modeIdle,
 		spinner:      sp,
 		context:      []providers.Message{},
-		model:        provider,
+		model:        holder,
 		aiThink:      &think,
 		status:       newStatusLine(providerName, modelID),
 		logoLines:    loadLogo(),
@@ -152,7 +156,9 @@ func initialModel(provider providers.Provider, modelID string, providerName stri
 func (m model) Init() tea.Cmd {
 	var cmds []tea.Cmd
 	if m.model != nil {
-		cmds = append(cmds, fetchModelInfoCmd(m.model, m.status.modelID))
+		if p := m.model.Get(); p != nil {
+			cmds = append(cmds, fetchModelInfoCmd(p, m.status.modelID))
+		}
 	}
 	cmds = append(cmds, m.changesList.WatchCmd())
 	return tea.Batch(cmds...)
@@ -191,7 +197,11 @@ func (m *model) submitPrompt() []tea.Cmd {
 	if val == "" {
 		return cmds
 	}
-	if m.model == nil {
+	var p providers.Provider
+	if m.model != nil {
+		p = m.model.Get()
+	}
+	if p == nil {
 		m.message_area.AppendMessage(">**ERROR** No provider selected press ctrl+p to pick one.", false)
 		m.prompt.Reset()
 		m.historyIdx = 0
@@ -205,7 +215,7 @@ func (m *model) submitPrompt() []tea.Cmd {
 	m.context = append(m.context, providers.Message{Role: "user", Content: val})
 	m.prompt.Reset()
 	m.historyIdx = 0
-	cmds = append(cmds, generateCmd(m.model, val, m.context))
+	cmds = append(cmds, generateCmd(p, val, m.context))
 	cmds = append(cmds, m.spinner.Tick)
 	return cmds
 }
@@ -274,7 +284,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.message_area.AppendMessage("Failed to switch provider: "+err.Error(), false)
 			return m, nil
 		}
-		m.model = p
+		if m.model == nil {
+			m.model = &tools.ProviderHolder{}
+		}
+		m.model.Set(p)
 		m.status.providerName = msg.Provider
 		m.status.modelID = msg.ModelID
 		m.status.contextWindow = 0
@@ -295,7 +308,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			fmt.Sprintf("Switched to %s / %s", msg.Provider, msg.ModelID),
 			false,
 		)
-		return m, fetchModelInfoCmd(m.model, m.status.modelID)
+		return m, fetchModelInfoCmd(p, m.status.modelID)
 
 	case providerselect.CancelledMsg:
 		m.mode = modeIdle
