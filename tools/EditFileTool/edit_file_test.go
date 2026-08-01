@@ -24,7 +24,7 @@ func setupTool(t *testing.T) (testTool, string) {
 	t.Helper()
 	dir := t.TempDir()
 	tool := editfiletool.New()
-	args, err := tools.InitDispatchArgs(dir, nil)
+	args, err := tools.InitDispatchArgs(dir, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to init dispatch args: %v", err)
 	}

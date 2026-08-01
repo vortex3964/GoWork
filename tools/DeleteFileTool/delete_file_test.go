@@ -23,7 +23,7 @@ func (tt testTool) Run(ctx context.Context, input json.RawMessage) (tools.ToolRe
 func newTool(t *testing.T, root string) testTool {
 	t.Helper()
 	tool := deletefiletool.New()
-	args, err := tools.InitDispatchArgs(root, nil)
+	args, err := tools.InitDispatchArgs(root, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to init dispatch args: %v", err)
 	}

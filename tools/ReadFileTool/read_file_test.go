@@ -17,7 +17,7 @@ import (
 // the test ends.
 func newArgs(t *testing.T, dir string) tools.DispatchArgs {
 	t.Helper()
-	args, err := tools.InitDispatchArgs(dir, nil)
+	args, err := tools.InitDispatchArgs(dir, nil, nil)
 	if err != nil {
 		t.Fatalf("InitDispatchArgs: %v", err)
 	}
