@@ -26,7 +26,7 @@ func run(t *testing.T, tool tools.AgentTool, root string, path, content string) 
 	}
 	
 	// Initialize dispatch args so we can pass it to tool.Run
-	args, err := tools.InitDispatchArgs(root, nil)
+	args, err := tools.InitDispatchArgs(root, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to init dispatch args: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestCreateFile(t *testing.T) {
 		root := t.TempDir()
 		tool := newTool(t, root)
 		
-		args, err := tools.InitDispatchArgs(root, nil)
+		args, err := tools.InitDispatchArgs(root, nil, nil)
 		if err != nil {
 			t.Fatalf("failed to init dispatch args: %v", err)
 		}

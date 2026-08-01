@@ -50,13 +50,10 @@ lmStudio\
 ollama\
 llama.cpp
 
-## FOLLOWING COMMITS FOCUS
-- add system prompt with the tools
-- wire and init the tools in main and make a prompt with tool calls
-- add a way to copy text from promptbar and message area
-
 ## TODO
 - proper registry for tools
+- wire and init the tools in main and make a prompt with tool calls
+- add system prompt with the tools
 - architect tools so they can effeciently be wired to main
 - update read and edit so that we handle pdfs and images we will ignore images and read pdfs with the new tool we will make in the future
 - update move delete tools to also track files with the changes list command and the watcer
@@ -94,6 +91,8 @@ llama.cpp
 - handling permisions for tool calls from ai
 - make docs
 - generate in tools rebuilds the messages context from scratch all the time when it doesnt have to (i think)
+- have atatchments like images pdfs or copied and pasted text on the promptbar so that a large copied text doesnt take up the entire screen
+- add a way to copy text from promptbar and message area
 
 ## common errors we check for 
 invalid request\

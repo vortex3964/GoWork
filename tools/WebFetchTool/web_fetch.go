@@ -52,21 +52,20 @@ type Input struct {
 
 type Tool struct {
 	client               *http.Client
-	provider             providers.Provider // may be nil - large pages get truncated/persisted instead of summarized
 	blockPrivateNetworks bool
 }
 
-func New(provider providers.Provider) tools.AgentTool {
+func New() tools.AgentTool {
 	c := &http.Client{Timeout: fetchTimeout}
 	c.CheckRedirect = makeRedirectGuard(true)
-	return &Tool{client: c, provider: provider, blockPrivateNetworks: true}
+	return &Tool{client: c, blockPrivateNetworks: true}
 }
 
-func NewWithClient(client *http.Client, provider providers.Provider, blockPrivateNetworks bool) tools.AgentTool {
+func NewWithClient(client *http.Client, blockPrivateNetworks bool) tools.AgentTool {
 	if client.CheckRedirect == nil {
 		client.CheckRedirect = makeRedirectGuard(blockPrivateNetworks)
 	}
-	return &Tool{client: client, provider: provider, blockPrivateNetworks: blockPrivateNetworks}
+	return &Tool{client: client, blockPrivateNetworks: blockPrivateNetworks}
 }
 
 func (t *Tool) Name() string { return "web_fetch" }
@@ -134,8 +133,14 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 
 	// content is long: prefer a focused summary from the model, and fall
 	// back to persisting-to-disk-plus-preview if that isn't possible or fails.
-	if input.Prompt != "" && t.provider != nil {
-		summary, err := t.summarize(ctx, trimmed, input.Prompt, text)
+	// the provider is resolved here (not at construction) so a mid-session or
+	// even mid-call provider switch is picked up instead of using a stale one.
+	var provider providers.Provider
+	if args.Provider != nil {
+		provider = args.Provider()
+	}
+	if input.Prompt != "" && provider != nil {
+		summary, err := t.summarize(ctx, provider, trimmed, input.Prompt, text)
 		if err == nil {
 			return tools.Ok(summary), nil
 		}
@@ -233,7 +238,7 @@ func collapseBlankLines(s string) string {
 // summarize asks the configured provider to extract whats relevant to
 // prompt from text, capping how much raw page content we hand over so a
 // single fetch cant balloon into a giant model call.
-func (t *Tool) summarize(ctx context.Context, sourceURL, prompt, text string) (string, error) {
+func (t *Tool) summarize(ctx context.Context, p providers.Provider, sourceURL, prompt, text string) (string, error) {
 	input := text
 	if len(input) > maxSummaryInputChars {
 		input = input[:maxSummaryInputChars]
@@ -247,7 +252,7 @@ func (t *Tool) summarize(ctx context.Context, sourceURL, prompt, text string) (s
 		),
 	}
 
-	result, err := t.provider.Generate(ctx, []providers.Message{msg})
+	result, err := p.Generate(ctx, []providers.Message{msg})
 	if err != nil {
 		return "", err
 	}

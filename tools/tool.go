@@ -10,8 +10,10 @@ import (
 	"strings"
 	"os"
 	"path/filepath"
+	"sync"
 	ignore "github.com/sabhiram/go-gitignore"
 	cl "GoWork/Tui/Components/ChangesList"
+	"GoWork/providers"
 )
 
 //NOTE: old ReadState/Cache code is removed (Cache is wrong).
@@ -72,15 +74,39 @@ func Errf(format string, args ...any) ToolResult {
 	return ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }
 
+// ProviderGetter returns whichever Provider is currently used 
+// used for tools that directly need to talk to the llm (specificaly web fetch tool)
+type ProviderGetter func() providers.Provider
+
+// ProviderHolder is the single, concurrency-safe source of truth for "the
+// currently selected provider." 
+type ProviderHolder struct {
+	mu sync.RWMutex
+	p providers.Provider
+}
+
+func (h *ProviderHolder) Get() providers.Provider {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.p
+}
+
+func (h *ProviderHolder) Set(p providers.Provider) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.p = p
+}
+
 //DESC: DispatchArgs holds run-wide context that's the same for every tool call.
 // Built once by the dispatcher at startup and passed into every Run call.
 type DispatchArgs struct {
 	Root *os.Root
 	RootPath string
 	WatchList *cl.WatchList
+	Provider ProviderGetter
 }
 
-func InitDispatchArgs(projectRoot string , wl *cl.WatchList) (DispatchArgs , error) {
+func InitDispatchArgs(projectRoot string , wl *cl.WatchList , getProvider ProviderGetter) (DispatchArgs , error) {
 	
 	if projectRoot == "" {
 		return DispatchArgs{} , fmt.Errorf("projectRoot cant be empty")
@@ -98,7 +124,7 @@ func InitDispatchArgs(projectRoot string , wl *cl.WatchList) (DispatchArgs , err
 		return DispatchArgs{} , fmt.Errorf("opening project root failed:%w" , err)
 	}
 
-	return DispatchArgs{Root: root , RootPath: abs , WatchList: wl} , nil
+	return DispatchArgs{Root: root , RootPath: abs , WatchList: wl , Provider: getProvider} , nil
 }
 
 //DESC: AgentTool is the contract every tool must satisfy. A tool is anything
@@ -129,8 +155,8 @@ type ToolUse struct {
 	Input json.RawMessage `json:"input"`
 }
 
-func InitDispacher(projectRoot string , wl *cl.WatchList , tools ... AgentTool) ( *Dispatcher , error ) {
-	args , err := InitDispatchArgs(projectRoot,wl)
+func InitDispacher(projectRoot string , wl *cl.WatchList , getProvider ProviderGetter ,tools ... AgentTool) ( *Dispatcher , error ) {
+	args , err := InitDispatchArgs(projectRoot,wl,getProvider)
 
 	if err != nil {
 		return nil , err
