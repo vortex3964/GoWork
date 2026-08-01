@@ -37,6 +37,16 @@ import (
 	"time"
 )
 
+//structure to know whitch tool the ai needs
+//responses will be returned to main main will forward
+//it to the registry , main is going to be the midleware
+//for the tools and the ai to comunicate
+type ToolCall struct {
+	Tool_call_id string // asigned by the ai model
+	Tool_name string
+	Input json.RawMessage
+}
+
 //used to model the messages in the context window may change in the future
 //to be better suited for messages for code
 type Message struct{
@@ -45,9 +55,9 @@ type Message struct{
 }
 
 type ModelInfo struct {
-	ID              string
-	DisplayName     string
-	ContextWindow   int
+	ID string
+	DisplayName string
+	ContextWindow int
 	MaxOutputTokens int
 }
 
@@ -59,6 +69,8 @@ type Usage struct {
 
 type GenerateResult struct {
     Content string
+	ToolCalls []ToolCall
+	StopReason string // "end_turn" | "tool_use" | ...
     Usage Usage
 }
 
@@ -237,7 +249,7 @@ func Select_provider(providerName string, model string, api_key string) (Provide
 			return nil, fmt.Errorf("empty api key")
 		}
 		return WithRetries(newGemini(model, api_key), 3), nil
-	case "anthropic":
+	case "anthropic" , "claude":
 		if api_key == "" {
 			return nil, fmt.Errorf("empty api key")
 		}
@@ -247,16 +259,16 @@ func Select_provider(providerName string, model string, api_key string) (Provide
 			return nil, fmt.Errorf("empty api key")
 		}
 		return WithRetries(newGroq(model, api_key), 3), nil
-	case "openai", "openAi":
+	case "openai", "gpt":
 		if api_key == "" {
 			return nil, fmt.Errorf("empty api key")
 		}
 		return WithRetries(newOpenAI(model, api_key), 3), nil
 	case "ollama":
 		return newOllama(model), nil
-	case "llamacpp", "llamaCpp":
+	case "llamacpp":
 		return newLlamaCpp(model), nil
-	case "lmstudio", "lmStudio":
+	case "lmstudio":
 		return newLMStudio(model), nil
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", providerName)

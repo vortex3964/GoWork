@@ -23,7 +23,19 @@ import (
 	"GoWork/Tui/Components/Stats"
 	"GoWork/Tui/Components/Tabs"
 	"GoWork/Tui/Style"
+	
+	//import all the tool packages
 	"GoWork/tools"
+	"GoWork/tools/CreateFileTool"
+	"GoWork/tools/DeleteFileTool"
+	"GoWork/tools/EditFileTool"
+	"GoWork/tools/FilesInfoTool"
+	"GoWork/tools/GrepFileTool"
+	"GoWork/tools/MoveFileTool"
+	"GoWork/tools/ReadFileTool"
+	"GoWork/tools/WebFetchTool"
+	"GoWork/tools/WebSearchTool"
+	"GoWork/tools/WriteFileTool"
 
 	"GoWork/providers"
 )
@@ -63,12 +75,13 @@ const (
 )
 
 type model struct {
-	tabs         tabs.Model
-	stats        stats.Model
-	skills       skills.Model
-	prompt       promptbar.Model
+	tabs tabs.Model
+	stats stats.Model
+	skills skills.Model
+	prompt promptbar.Model
 	message_area messagearea.Model
-	spinner      spinner.Model
+	spinner spinner.Model
+	changesList changeslist.Model
 
 	// which UI mode we're in (idle, prompt entry, provider select, ...)
 	mode uiMode
@@ -82,6 +95,9 @@ type model struct {
 	context []providers.Message
 	aiThink *bool
 
+	//tool call
+	tool_dispatcher *tools.Dispatcher
+
 	// provider/model picker (ctrl+p)
 	providerSelect providerselect.Model
 
@@ -94,12 +110,8 @@ type model struct {
 	// our logo
 	logoLines []string
 
-	// popup notification 
+	// error popup notification 
 	popUp popup.Model
-
-	// changes list overlay (ctrl+l), replaces message_area in place
-	// when open; the prompt bar underneath is untouched either way
-	changesList changeslist.Model
 }
 
 func loadLogo() []string {
@@ -116,7 +128,23 @@ func loadLogo() []string {
 	return strings.Split(text, "\n")
 }
 
-func initialModel(provider providers.Provider, modelID string, providerName string) model {
+//call new on all of our tools
+func initTools() []tools.AgentTool {
+	return []tools.AgentTool{
+		createfiletool.New(),
+		deletefiletool.New(),
+		editfiletool.New(),
+		fileinfo.New(),
+		grepfiletool.New(),
+		movefiletool.New(),
+		readfiletool.New(),
+		webfetchtool.New(),
+		websearchtool.New(),
+		writefiletool.New(),
+	}
+}
+
+func initialModel(root string, provider providers.Provider, modelID string, providerName string) model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 
@@ -137,6 +165,11 @@ func initialModel(provider providers.Provider, modelID string, providerName stri
 	holder := &tools.ProviderHolder{}
 	holder.Set(provider)
 
+	dispatcher, err := tools.InitDispacher(root, wl, holder.Get, initTools()...)
+	if err != nil {
+		log.Printf("failed to init dispatcher: %v", err)
+	}
+
 	return model{
 		tabs:         tabs.New("code", "skills", "stats"),
 		prompt:       promptbar.New(),
@@ -146,10 +179,11 @@ func initialModel(provider providers.Provider, modelID string, providerName stri
 		context:      []providers.Message{},
 		model:        holder,
 		aiThink:      &think,
-		status:       newStatusLine(providerName, modelID),
+		status:       newStatusLine(root, providerName, modelID),
 		logoLines:    loadLogo(),
 		popUp:        popup.New(),
 		changesList:  changeslist.New(wl),
+		tool_dispatcher: dispatcher,
 	}
 }
 
@@ -734,7 +768,13 @@ func main() {
 		}
 	}
 
-	p := tea.NewProgram(initialModel(provider, modelName, providerName))
+	root, err := os.Getwd()
+	if err != nil {
+		fmt.Println("Warning: couldn't determine project root:", err)
+		root = ""
+	}
+
+	p := tea.NewProgram(initialModel(root, provider, modelName, providerName))
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Oof: %v\n", err)
 		os.Exit(1)
