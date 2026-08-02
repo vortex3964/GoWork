@@ -28,7 +28,15 @@ type lmStudioProvider struct {
 }
 
 func newLMStudio(model string) *lmStudioProvider {
-	return &lmStudioProvider{model: model, baseURL: lmStudioBaseURL(), toolsEnabled: ModelSupportsTools("lmstudio", model)}
+	l := &lmStudioProvider{model: model, baseURL: lmStudioBaseURL()}
+	// Info reads the server's per-model capabilities first, only falling back
+	// to assume-yes when they're absent - use that, not the name list, to gate.
+	if info, err := l.Info(context.Background(), model); err == nil {
+		l.toolsEnabled = info.SupportsTools
+	} else {
+		l.toolsEnabled = ModelSupportsTools("lmstudio", model)
+	}
+	return l
 }
 
 func NewLMStudio(model string) Provider {
@@ -118,13 +126,20 @@ func (l *lmStudioProvider) EstimateTokens(ctx context.Context, messages []Messag
 
 type lmStudioModel struct {
 	ID string `json:"id"`
+	// Capabilities (lm studio >= 0.3.16) reports e.g. "tool_use"; absent on
+	// older servers, where we fall back to assuming yes.
+	Capabilities []string `json:"capabilities"`
 }
 
 func (m lmStudioModel) toModelInfo() ModelInfo {
+	supportsTools := true
+	if len(m.Capabilities) > 0 {
+		supportsTools = hasToolCapability(m.Capabilities)
+	}
 	return ModelInfo{
 		ID:            m.ID,
 		DisplayName:   m.ID,
-		SupportsTools: true,
+		SupportsTools: supportsTools,
 	}
 }
 

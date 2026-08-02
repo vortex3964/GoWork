@@ -52,6 +52,7 @@ llama.cpp
 
 ## TODO
 - proper registry for tools
+- need to re add read state to check mmtime to stop ai from reading stale files
 - wire and init the tools in main and make a prompt with tool calls
 - add system prompt with the tools
 - architect tools so they can effeciently be wired to main
