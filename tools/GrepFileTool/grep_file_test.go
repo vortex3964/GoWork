@@ -67,12 +67,16 @@ func TestInterfaceConformance(t *testing.T) {
 		t.Errorf("Kind() = %v, want %v", tool.Kind(), tools.KindSearch)
 	}
 	schema := tool.InputSchema()
-	if schema["type"] != "object" {
-		t.Errorf(`InputSchema()["type"] = %v, want "object"`, schema["type"])
+	var m map[string]any
+	if err := json.Unmarshal(schema, &m); err != nil {
+		t.Fatalf("InputSchema() is not valid JSON: %v", err)
 	}
-	required, ok := schema["required"].([]string)
+	if m["type"] != "object" {
+		t.Errorf(`InputSchema()["type"] = %v, want "object"`, m["type"])
+	}
+	required, ok := m["required"].([]any)
 	if !ok || len(required) != 1 || required[0] != "pattern" {
-		t.Errorf(`InputSchema()["required"] = %v, want ["pattern"]`, schema["required"])
+		t.Errorf(`InputSchema()["required"] = %v, want ["pattern"]`, m["required"])
 	}
 }
 

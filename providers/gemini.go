@@ -27,24 +27,79 @@ func (g *geminiProvider) doRequest(ctx context.Context, method, url string, reqB
 	return doJSONRequest(ctx, method, url, map[string]string{"x-goog-api-key": g.api_key}, reqBody)
 }
 
-// toContents turns our provider-agnostic Message slice into gemini's
-// "contents" shape, flipping "assistant" -> "model" since that's what
-// gemini calls it.
+// toContents turns our Message slice into gemini's "contents" shape,
+// flipping "assistant" -> "model". Tool calls become functionCall parts on a
+// model turn; results become functionResponse parts on a user turn (gemini
+// keys results by tool name, so the result message's ToolCallID holds it).
 func toContents(messages []Message) []map[string]interface{} {
 	contents := make([]map[string]interface{}, 0, len(messages))
 	for _, msg := range messages {
-		role := msg.Role
-		if role == "assistant" {
-			role = "model"
+		switch msg.Role {
+		case "assistant":
+			role := "model"
+			if len(msg.ToolCalls) == 0 {
+				contents = append(contents, map[string]interface{}{
+					"role":  role,
+					"parts": []map[string]interface{}{{"text": msg.Content}},
+				})
+				continue
+			}
+			parts := make([]map[string]interface{}, 0, len(msg.ToolCalls)+1)
+			if msg.Content != "" {
+				parts = append(parts, map[string]interface{}{"text": msg.Content})
+			}
+			for _, tc := range msg.ToolCalls {
+				parts = append(parts, map[string]interface{}{
+					"functionCall": map[string]interface{}{
+						"name": tc.Tool_name,
+						"args": tc.Input,
+					},
+				})
+			}
+			contents = append(contents, map[string]interface{}{"role": role, "parts": parts})
+		case "tool":
+			// functionResponse lives in a user turn, keyed by tool name.
+			contents = append(contents, map[string]interface{}{
+				"role": "user",
+				"parts": []map[string]interface{}{
+					{
+						"functionResponse": map[string]interface{}{
+							"name": msg.ToolCallID,
+							"response": map[string]interface{}{
+								"output": msg.Content,
+							},
+						},
+					},
+				},
+			})
+		default:
+			role := msg.Role
+			if role == "assistant" {
+				role = "model"
+			}
+			contents = append(contents, map[string]interface{}{
+				"role": role,
+				"parts": []map[string]string{
+					{"text": msg.Content},
+				},
+			})
 		}
-		contents = append(contents, map[string]interface{}{
-			"role": role,
-			"parts": []map[string]string{
-				{"text": msg.Content},
-			},
-		})
 	}
 	return contents
+}
+
+// toGeminiTools wraps each ToolDef into gemini's {functionDeclarations:[...]}
+// shape, each declaration's parameters being a JSON schema.
+func toGeminiTools() []map[string]interface{} {
+	decls := make([]map[string]interface{}, 0, len(tools_def))
+	for _, td := range tools_def {
+		decls = append(decls, map[string]interface{}{
+			"name":        td.Name,
+			"description": td.Description,
+			"parameters":  td.InputSchema,
+		})
+	}
+	return []map[string]interface{}{{"functionDeclarations": decls}}
 }
 
 // implementations of the Provider interface
@@ -52,6 +107,12 @@ func toContents(messages []Message) []map[string]interface{} {
 func (g *geminiProvider) Generate(ctx context.Context, messages []Message) (GenerateResult, error) {
 	reqBody := map[string]interface{}{
 		"contents": toContents(messages),
+	}
+	if len(tools_def) > 0 {
+		reqBody["tools"] = toGeminiTools()
+		reqBody["toolConfig"] = map[string]interface{}{
+			"functionCallingConfig": map[string]interface{}{"mode": "AUTO"},
+		}
 	}
 
 	url := geminiBaseURL + "/models/" + g.model + ":generateContent"
@@ -64,9 +125,15 @@ func (g *geminiProvider) Generate(ctx context.Context, messages []Message) (Gene
 		Candidates []struct {
 			Content struct {
 				Parts []struct {
-					Text string `json:"text"`
+					Text     string `json:"text"`
+					FuncCall *struct {
+						Name string          `json:"name"`
+						Args json.RawMessage `json:"args"`
+						ID   string          `json:"id"`
+					} `json:"functionCall"`
 				} `json:"parts"`
 			} `json:"content"`
+			FinishReason string `json:"finishReason"`
 		} `json:"candidates"`
 		UsageMetadata struct {
 			PromptTokenCount     int `json:"promptTokenCount"`
@@ -82,8 +149,31 @@ func (g *geminiProvider) Generate(ctx context.Context, messages []Message) (Gene
 		return GenerateResult{}, fmt.Errorf("empty response from gemini")
 	}
 
+	var sb strings.Builder
+	toolCalls := make([]ToolCall, 0, len(parsed.Candidates[0].Content.Parts))
+	for _, part := range parsed.Candidates[0].Content.Parts {
+		if part.FuncCall != nil {
+			name := part.FuncCall.Name
+			// gemini has no stable call id, so fall back to the tool name -
+			// that's also what the functionResponse round-trip keys on.
+			id := name
+			if part.FuncCall.ID != "" {
+				id = part.FuncCall.ID
+			}
+			toolCalls = append(toolCalls, ToolCall{
+				Tool_call_id: id,
+				Tool_name:    name,
+				Input:        part.FuncCall.Args,
+			})
+			continue
+		}
+		sb.WriteString(part.Text)
+	}
+
 	return GenerateResult{
-		Content: parsed.Candidates[0].Content.Parts[0].Text,
+		Content:    sb.String(),
+		ToolCalls:  toolCalls,
+		StopReason: parsed.Candidates[0].FinishReason,
 		Usage: Usage{
 			PromptTokens:     parsed.UsageMetadata.PromptTokenCount,
 			CompletionTokens: parsed.UsageMetadata.CandidatesTokenCount,
@@ -131,6 +221,7 @@ func (gm geminiModel) toModelInfo() ModelInfo {
 		DisplayName:     gm.DisplayName,
 		ContextWindow:   gm.InputTokenLimit,
 		MaxOutputTokens: gm.OutputTokenLimit,
+		SupportsTools:   true,
 	}
 }
 

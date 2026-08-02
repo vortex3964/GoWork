@@ -47,8 +47,8 @@ Returns matching lines as "path:line: text", the same format ripgrep prints to a
 Output is capped at %d matches or %d bytes, whichever is hit first. If you hit the match cap, raise limit or narrow pattern/include. If you hit the byte cap, narrow the search instead - raising limit won't help.`, DEFAULT_LIMIT, DEFAULT_MAX_BYTES)
 }
 
-func (t *Tool) InputSchema() tools.Schema {
-	return tools.Schema{
+func (t *Tool) InputSchema() json.RawMessage {
+	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"pattern": map[string]any{
@@ -82,6 +82,8 @@ func (t *Tool) InputSchema() tools.Schema {
 		},
 		"required": []string{"pattern"},
 	}
+	b, _ := json.Marshal(schema)
+	return b
 }
 
 func (t *Tool) Kind() tools.Kind { return tools.KindSearch }

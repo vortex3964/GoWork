@@ -38,8 +38,8 @@ func (t *Tool) Description() string {
 Returns the requested lines with 1-indexed line numbers prefixed, so you can reference exact locations in later edits. Large files are not returned in full use starting_line and offset_lines to page through them.`
 }
 
-func (t *Tool) InputSchema() tools.Schema {
-	return tools.Schema{
+func (t *Tool) InputSchema() json.RawMessage {
+	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"path": map[string]any{
@@ -57,6 +57,8 @@ func (t *Tool) InputSchema() tools.Schema {
 		},
 		"required": []string{"path"},
 	}
+	b, _ := json.Marshal(schema)
+	return b
 }
 
 func (t *Tool) Kind() tools.Kind { return tools.KindRead }

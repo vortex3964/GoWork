@@ -23,10 +23,12 @@ func lmStudioBaseURL() string {
 type lmStudioProvider struct {
 	model   string
 	baseURL string
+	// whether the loaded model supports tools; only then send a tools array.
+	toolsEnabled bool
 }
 
 func newLMStudio(model string) *lmStudioProvider {
-	return &lmStudioProvider{model: model, baseURL: lmStudioBaseURL()}
+	return &lmStudioProvider{model: model, baseURL: lmStudioBaseURL(), toolsEnabled: ModelSupportsTools("lmstudio", model)}
 }
 
 func NewLMStudio(model string) Provider {
@@ -37,15 +39,8 @@ func (l *lmStudioProvider) doRequest(ctx context.Context, method, endpoint strin
 	return doJSONRequest(ctx, method, endpoint, nil, reqBody)
 }
 
-func toLMStudioMessages(messages []Message) []map[string]string {
-	out := make([]map[string]string, 0, len(messages))
-	for _, msg := range messages {
-		out = append(out, map[string]string{
-			"role":    msg.Role,
-			"content": msg.Content,
-		})
-	}
-	return out
+func toLMStudioMessages(messages []Message) []map[string]interface{} {
+	return openAICompatMessages(messages)
 }
 
 func (l *lmStudioProvider) Generate(ctx context.Context, messages []Message) (GenerateResult, error) {
@@ -53,6 +48,9 @@ func (l *lmStudioProvider) Generate(ctx context.Context, messages []Message) (Ge
 		"model":    l.model,
 		"messages": toLMStudioMessages(messages),
 		"stream":   false,
+	}
+	if l.toolsEnabled && len(tools_def) > 0 {
+		reqBody["tools"] = openAICompatTools()
 	}
 
 	body, err := l.doRequest(ctx, http.MethodPost, l.baseURL+"/chat/completions", reqBody)
@@ -63,8 +61,16 @@ func (l *lmStudioProvider) Generate(ctx context.Context, messages []Message) (Ge
 	var parsed struct {
 		Choices []struct {
 			Message struct {
-				Content string `json:"content"`
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					ID       string `json:"id"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
 			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Usage struct {
 			PromptTokens     int `json:"prompt_tokens"`
@@ -80,8 +86,20 @@ func (l *lmStudioProvider) Generate(ctx context.Context, messages []Message) (Ge
 		return GenerateResult{}, fmt.Errorf("empty response from lm studio")
 	}
 
+	msg := parsed.Choices[0].Message
+	toolCalls := make([]ToolCall, 0, len(msg.ToolCalls))
+	for _, tc := range msg.ToolCalls {
+		toolCalls = append(toolCalls, ToolCall{
+			Tool_call_id: tc.ID,
+			Tool_name:    tc.Function.Name,
+			Input:        rawArgs(tc.Function.Arguments),
+		})
+	}
+
 	return GenerateResult{
-		Content: parsed.Choices[0].Message.Content,
+		Content:    msg.Content,
+		ToolCalls:  toolCalls,
+		StopReason: parsed.Choices[0].FinishReason,
 		Usage: Usage{
 			PromptTokens:     parsed.Usage.PromptTokens,
 			CompletionTokens: parsed.Usage.CompletionTokens,
@@ -104,8 +122,9 @@ type lmStudioModel struct {
 
 func (m lmStudioModel) toModelInfo() ModelInfo {
 	return ModelInfo{
-		ID:          m.ID,
-		DisplayName: m.ID,
+		ID:            m.ID,
+		DisplayName:   m.ID,
+		SupportsTools: true,
 	}
 }
 

@@ -80,8 +80,8 @@ func (t *Tool) Description() string {
 Results are capped at %d by default and never more than %d, and every snippet is trimmed to keep the response small - this is a discovery tool, not a way to read full pages. Use the web_fetch tool on a specific url from the results if you need the actual content of a page.`, defaultMaxResults, maxResultsHardCap)
 }
 
-func (t *Tool) InputSchema() tools.Schema {
-	return tools.Schema{
+func (t *Tool) InputSchema() json.RawMessage {
+	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"query": map[string]any{
@@ -95,6 +95,8 @@ func (t *Tool) InputSchema() tools.Schema {
 		},
 		"required": []string{"query"},
 	}
+	b, _ := json.Marshal(schema)
+	return b
 }
 
 func (t *Tool) Kind() tools.Kind { return tools.KindWebSearch }
