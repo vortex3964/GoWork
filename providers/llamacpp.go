@@ -25,10 +25,12 @@ func llamaCppBaseURL() string {
 type llamaCppProvider struct {
 	model   string
 	baseURL string
+	// whether the loaded model supports tools; only then send a tools array.
+	toolsEnabled bool
 }
 
 func newLlamaCpp(model string) *llamaCppProvider {
-	return &llamaCppProvider{model: model, baseURL: llamaCppBaseURL()}
+	return &llamaCppProvider{model: model, baseURL: llamaCppBaseURL(), toolsEnabled: ModelSupportsTools("llamacpp", model)}
 }
 
 func NewLlamaCpp(model string) Provider {
@@ -39,18 +41,10 @@ func (l *llamaCppProvider) doRequest(ctx context.Context, method, endpoint strin
 	return doJSONRequest(ctx, method, endpoint, nil, reqBody)
 }
 
-// toLlamaCppMessages converts our provider-agnostic Message slice into the
-// OpenAI-style shape llama.cpp's server expects - same shape as ollama, so
-// no role translation is needed here either.
-func toLlamaCppMessages(messages []Message) []map[string]string {
-	out := make([]map[string]string, 0, len(messages))
-	for _, msg := range messages {
-		out = append(out, map[string]string{
-			"role":    msg.Role,
-			"content": msg.Content,
-		})
-	}
-	return out
+// toLlamaCppMessages is llama.cpp's alias for the shared OpenAI-compatible
+// lowering.
+func toLlamaCppMessages(messages []Message) []map[string]interface{} {
+	return openAICompatMessages(messages)
 }
 
 // implementations of the Provider interface
@@ -61,6 +55,9 @@ func (l *llamaCppProvider) Generate(ctx context.Context, messages []Message) (Ge
 		"messages": toLlamaCppMessages(messages),
 		"stream":   false,
 	}
+	if l.toolsEnabled && len(tools_def) > 0 {
+		reqBody["tools"] = openAICompatTools()
+	}
 
 	body, err := l.doRequest(ctx, http.MethodPost, l.baseURL+"/v1/chat/completions", reqBody)
 	if err != nil {
@@ -70,8 +67,16 @@ func (l *llamaCppProvider) Generate(ctx context.Context, messages []Message) (Ge
 	var parsed struct {
 		Choices []struct {
 			Message struct {
-				Content string `json:"content"`
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					ID       string `json:"id"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
 			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Usage struct {
 			PromptTokens     int `json:"prompt_tokens"`
@@ -87,8 +92,20 @@ func (l *llamaCppProvider) Generate(ctx context.Context, messages []Message) (Ge
 		return GenerateResult{}, fmt.Errorf("empty response from llama.cpp")
 	}
 
+	msg := parsed.Choices[0].Message
+	toolCalls := make([]ToolCall, 0, len(msg.ToolCalls))
+	for _, tc := range msg.ToolCalls {
+		toolCalls = append(toolCalls, ToolCall{
+			Tool_call_id: tc.ID,
+			Tool_name:    tc.Function.Name,
+			Input:        rawArgs(tc.Function.Arguments),
+		})
+	}
+
 	return GenerateResult{
-		Content: parsed.Choices[0].Message.Content,
+		Content:    msg.Content,
+		ToolCalls:  toolCalls,
+		StopReason: parsed.Choices[0].FinishReason,
 		Usage: Usage{
 			PromptTokens:     parsed.Usage.PromptTokens,
 			CompletionTokens: parsed.Usage.CompletionTokens,
@@ -159,6 +176,7 @@ func (l *llamaCppProvider) Info(ctx context.Context, model string) (ModelInfo, e
 		DisplayName:     model,
 		ContextWindow:   ctxLen,
 		MaxOutputTokens: ctxLen,
+		SupportsTools:   true,
 	}, nil
 }
 

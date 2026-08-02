@@ -28,8 +28,8 @@ func (t *Tool) Description() string {
 	return "Deletes a file. If deleting it leaves its immediate parent directory empty, the parent directory is deleted too (never more than one level up)."
 }
 
-func (t *Tool) InputSchema() tools.Schema {
-	return tools.Schema{
+func (t *Tool) InputSchema() json.RawMessage {
+	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"path": map[string]any{
@@ -39,6 +39,8 @@ func (t *Tool) InputSchema() tools.Schema {
 		},
 		"required": []string{"path"},
 	}
+	b, _ := json.Marshal(schema)
+	return b
 }
 
 func (t *Tool) Kind() tools.Kind { return tools.KindDelete }

@@ -15,6 +15,7 @@ import (
 	"github.com/joho/godotenv"
 
 	changeslist "GoWork/Tui/Components/ChangesList"
+	dialog "GoWork/Tui/Components/Dialog"
 	"GoWork/Tui/Components/MessageArea"
 	popup "GoWork/Tui/Components/PopUp"
 	"GoWork/Tui/Components/Promptbar"
@@ -23,7 +24,7 @@ import (
 	"GoWork/Tui/Components/Stats"
 	"GoWork/Tui/Components/Tabs"
 	"GoWork/Tui/Style"
-	
+
 	//import all the tool packages
 	"GoWork/tools"
 	"GoWork/tools/CreateFileTool"
@@ -75,13 +76,13 @@ const (
 )
 
 type model struct {
-	tabs tabs.Model
-	stats stats.Model
-	skills skills.Model
-	prompt promptbar.Model
+	tabs         tabs.Model
+	stats        stats.Model
+	skills       skills.Model
+	prompt       promptbar.Model
 	message_area messagearea.Model
-	spinner spinner.Model
-	changesList changeslist.Model
+	spinner      spinner.Model
+	changesList  changeslist.Model
 
 	// which UI mode we're in (idle, prompt entry, provider select, ...)
 	mode uiMode
@@ -110,8 +111,11 @@ type model struct {
 	// our logo
 	logoLines []string
 
-	// error popup notification 
+	// error popup notification
 	popUp popup.Model
+
+	// generic centered modal (tool-support warnings, future confirmations)
+	modal dialog.Model
 }
 
 func loadLogo() []string {
@@ -128,7 +132,7 @@ func loadLogo() []string {
 	return strings.Split(text, "\n")
 }
 
-//call new on all of our tools
+// call new on all of our tools
 func initTools() []tools.AgentTool {
 	return []tools.AgentTool{
 		createfiletool.New(),
@@ -165,24 +169,35 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 	holder := &tools.ProviderHolder{}
 	holder.Set(provider)
 
-	dispatcher, err := tools.InitDispacher(root, wl, holder.Get, initTools()...)
+	t := initTools()
+
+	arr := make([]providers.ToolDef, len(t))
+
+	for i, tool := range t {
+		arr[i] = providers.ToolDef{Name: tool.Name(), Description: tool.Description(), InputSchema: tool.InputSchema()}
+	}
+
+	providers.InitToolsDef(arr)
+
+	dispatcher, err := tools.InitDispacher(root, wl, holder.Get, t...)
 	if err != nil {
 		log.Printf("failed to init dispatcher: %v", err)
 	}
 
 	return model{
-		tabs:         tabs.New("code", "skills", "stats"),
-		prompt:       promptbar.New(),
+		tabs: tabs.New("code", "skills", "stats"),
+		prompt: promptbar.New(),
 		message_area: messagearea.New(),
-		mode:         modeIdle,
-		spinner:      sp,
-		context:      []providers.Message{},
-		model:        holder,
-		aiThink:      &think,
-		status:       newStatusLine(root, providerName, modelID),
-		logoLines:    loadLogo(),
-		popUp:        popup.New(),
-		changesList:  changeslist.New(wl),
+		mode: modePrompt,
+		spinner: sp,
+		context: []providers.Message{},
+		model: holder,
+		aiThink: &think,
+		status: newStatusLine(root, providerName, modelID),
+		logoLines: loadLogo(),
+		popUp: popup.New(),
+		modal: dialog.New(),
+		changesList: changeslist.New(wl),
 		tool_dispatcher: dispatcher,
 	}
 }
@@ -218,13 +233,32 @@ func fetchModelInfoCmd(p providers.Provider, model string) tea.Cmd {
 	}
 }
 
+// toolSupportWarningCmd opens the centered modal when the selected model can't
+// call tools. No-op if the provider/model is "None" (i.e. nothing was picked).
+func toolSupportWarningCmd(modelName, providerName string) tea.Cmd {
+	if providerName == "" || modelName == "" ||
+		strings.EqualFold(providerName, "None") || strings.EqualFold(modelName, "None") {
+		return nil
+	}
+	if providers.ModelSupportsTools(providerName, modelName) {
+		return nil
+	}
+	return func() tea.Msg {
+		return dialog.ShowMsg{
+			Title:   "Tool calling unsupported",
+			Message: fmt.Sprintf("%s doesn't support tool calling.", modelName),
+			Buttons: []string{"OK"},
+		}
+	}
+}
+
 func (m model) promptTop() int {
 	return m.winHeight - statusLineHeight - promptbar.Height
 }
 
 // submitPrompt sends whatever's currently in the prompt bar as a user
 // message (if non-empty), resets the prompt and history state, and kicks
-// off the AI generation. 
+// off the AI generation.
 func (m *model) submitPrompt() []tea.Cmd {
 	var cmds []tea.Cmd
 	val := m.prompt.Value()
@@ -302,6 +336,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.message_area.SetSize(m.winWidth, msgAreaHeight)
 		m.changesList.SetSize(m.winWidth, msgAreaHeight)
 		m.popUp.SetSize(m.winWidth, m.winHeight)
+		m.modal.SetSize(m.winWidth, m.winHeight)
 		if m.mode == modeProviderSelect {
 			m.providerSelect.SetSize(m.winWidth, m.winHeight)
 		}
@@ -342,7 +377,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			fmt.Sprintf("Switched to %s / %s", msg.Provider, msg.ModelID),
 			false,
 		)
-		return m, fetchModelInfoCmd(p, m.status.modelID)
+		return m, tea.Batch(fetchModelInfoCmd(p, m.status.modelID))
 
 	case providerselect.CancelledMsg:
 		m.mode = modeIdle
@@ -365,6 +400,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, m.openProviderSelect()
+		}
+
+		// A visible modal swallows all keys so the user has to dismiss it
+		// (Enter confirms its focused button, Escape cancels).
+		if m.modal.IsVisible() {
+			var cmd tea.Cmd
+			m.modal, cmd = m.modal.Update(msg)
+			return m, cmd
 		}
 
 		if m.mode == modeProviderSelect {
@@ -630,6 +673,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.popUp, cmd = m.popUp.Update(msg)
 		cmds = append(cmds, cmd)
+
+	case dialog.ShowMsg:
+		var cmd tea.Cmd
+		m.modal, cmd = m.modal.Update(msg)
+		cmds = append(cmds, cmd)
 	}
 
 	if m.mode == modeProviderSelect {
@@ -718,6 +766,10 @@ func (m model) View() tea.View {
 
 	if m.popUp.IsVisible() {
 		content = m.popUp.Overlay(content)
+	}
+
+	if m.modal.IsVisible() {
+		content = m.modal.Overlay(content)
 	}
 
 	v := tea.NewView(content)

@@ -223,16 +223,19 @@ func TestRun_OldEqualsNew_NoOp(t *testing.T) {
 
 func TestInputSchema_HasRequiredFields(t *testing.T) {
 	tool, _ := setupTool(t)
-	schema := tool.InputSchema()
+	var m map[string]any
+	if err := json.Unmarshal(tool.InputSchema(), &m); err != nil {
+		t.Fatalf("InputSchema() is not valid JSON: %v", err)
+	}
 
-	required, ok := schema["required"].([]string)
+	required, ok := m["required"].([]any)
 	if !ok {
-		t.Fatalf("expected schema[\"required\"] to be []string, got %T", schema["required"])
+		t.Fatalf("expected schema[\"required\"] to be []any, got %T", m["required"])
 	}
 
 	want := map[string]bool{"file_path": true, "old_string": true, "new_string": true}
 	for _, r := range required {
-		delete(want, r)
+		delete(want, r.(string))
 	}
 	if len(want) != 0 {
 		t.Errorf("schema is missing required fields: %v", want)

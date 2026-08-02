@@ -41,8 +41,8 @@ Before using this tool:
 This tool performs a plain text substitution, not a diff/patch. It does not create new files (old_string must already be present in the file) and does not check whether the file was modified since it was last read.`
 }
 
-func (t *Tool) InputSchema() tools.Schema {
-	return tools.Schema{
+func (t *Tool) InputSchema() json.RawMessage {
+	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"file_path": map[string]any{
@@ -64,6 +64,8 @@ func (t *Tool) InputSchema() tools.Schema {
 		},
 		"required": []string{"file_path", "old_string", "new_string"},
 	}
+	b, _ := json.Marshal(schema)
+	return b
 }
 
 func count_appearance(file_contents []byte, search string) (int, error) {

@@ -23,10 +23,13 @@ func ollamaBaseURL() string {
 type ollamaProvider struct {
 	model   string
 	baseURL string
+	// toolsEnabled is false for models that can't act on tools, so we don't
+	// send a tools array the server would reject with a 400.
+	toolsEnabled bool
 }
 
 func newOllama(model string) *ollamaProvider {
-	return &ollamaProvider{model: model, baseURL: ollamaBaseURL()}
+	return &ollamaProvider{model: model, baseURL: ollamaBaseURL(), toolsEnabled: ModelSupportsTools("ollama", model)}
 }
 
 // NewOllama is a temporary exported escape hatch so callers outside this
@@ -43,18 +46,48 @@ func (o *ollamaProvider) doRequest(ctx context.Context, method, url string, reqB
 	return doJSONRequest(ctx, method, url, nil, reqBody)
 }
 
-// toOllamaMessages converts our provider-agnostic Message slice into
-// ollama's chat message shape. Unlike gemini, ollama already calls the
-// model's turns "assistant", so there's no role translation needed here.
-func toOllamaMessages(messages []Message) []map[string]string {
-	out := make([]map[string]string, 0, len(messages))
+// toOllamaMessages turns our Message slice into ollama's chat shape.
+// Assistant tool calls echo back as tool_calls; results go out as "tool".
+func toOllamaMessages(messages []Message) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(messages))
 	for _, msg := range messages {
-		out = append(out, map[string]string{
-			"role":    msg.Role,
-			"content": msg.Content,
-		})
+		switch msg.Role {
+		case "assistant":
+			m := map[string]interface{}{"role": "assistant", "content": msg.Content}
+			if len(msg.ToolCalls) > 0 {
+				calls := make([]map[string]interface{}, 0, len(msg.ToolCalls))
+				for _, tc := range msg.ToolCalls {
+					calls = append(calls, map[string]interface{}{
+						"id":       tc.Tool_call_id,
+						"function": map[string]interface{}{"name": tc.Tool_name, "arguments": tc.Input},
+					})
+				}
+				m["tool_calls"] = calls
+			}
+			out = append(out, m)
+		case "tool":
+			out = append(out, map[string]interface{}{"role": "tool", "content": msg.Content})
+		default:
+			out = append(out, map[string]interface{}{"role": msg.Role, "content": msg.Content})
+		}
 	}
 	return out
+}
+
+// toOllamaTools wraps each ToolDef into ollama's openai-style tools array.
+func toOllamaTools() []map[string]interface{} {
+	tools := make([]map[string]interface{}, 0, len(tools_def))
+	for _, td := range tools_def {
+		tools = append(tools, map[string]interface{}{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":        td.Name,
+				"description": td.Description,
+				"parameters":  td.InputSchema,
+			},
+		})
+	}
+	return tools
 }
 
 // implementations of the Provider interface
@@ -65,6 +98,9 @@ func (o *ollamaProvider) Generate(ctx context.Context, messages []Message) (Gene
 		"messages": toOllamaMessages(messages),
 		"stream":   false,
 	}
+	if o.toolsEnabled && len(tools_def) > 0 {
+		reqBody["tools"] = toOllamaTools()
+	}
 
 	url := o.baseURL + "/api/chat"
 	body, err := o.doRequest(ctx, http.MethodPost, url, reqBody)
@@ -74,18 +110,35 @@ func (o *ollamaProvider) Generate(ctx context.Context, messages []Message) (Gene
 
 	var parsed struct {
 		Message struct {
-			Content string `json:"content"`
+			Content   string `json:"content"`
+			ToolCalls []struct {
+				Function struct {
+					Name      string          `json:"name"`
+					Arguments json.RawMessage `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
 		} `json:"message"`
-		PromptEvalCount int `json:"prompt_eval_count"`
-		EvalCount       int `json:"eval_count"`
+		DoneReason      string `json:"done_reason"`
+		PromptEvalCount int    `json:"prompt_eval_count"`
+		EvalCount       int    `json:"eval_count"`
 	}
 
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return GenerateResult{}, fmt.Errorf("failed to parse response: %w", err)
 	}
 
+	toolCalls := make([]ToolCall, 0, len(parsed.Message.ToolCalls))
+	for _, tc := range parsed.Message.ToolCalls {
+		toolCalls = append(toolCalls, ToolCall{
+			Tool_name: tc.Function.Name,
+			Input:     tc.Function.Arguments,
+		})
+	}
+
 	return GenerateResult{
-		Content: parsed.Message.Content,
+		Content:    parsed.Message.Content,
+		ToolCalls:  toolCalls,
+		StopReason: parsed.DoneReason,
 		Usage: Usage{
 			PromptTokens:     parsed.PromptEvalCount,
 			CompletionTokens: parsed.EvalCount,
@@ -169,9 +222,10 @@ func (o *ollamaProvider) Info(ctx context.Context, model string) (ModelInfo, err
 	ctxLen := parsed.contextLength()
 
 	return ModelInfo{
-		ID:          model,
-		DisplayName: model,
+		ID:            model,
+		DisplayName:   model,
 		ContextWindow: ctxLen,
+		SupportsTools: ModelSupportsTools("ollama", model),
 		// ollama doesn't cap output tokens separately from the context
 		// window - generation just keeps going until it fills whatever
 		// context room is left, so we report the same number here.
@@ -200,7 +254,7 @@ func (o *ollamaProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 		// Names only - calling /api/show per model made the picker hang
 		// (and used to abort the whole list on a single failure). Context
 		// window is filled later via Info when a model is selected.
-		models = append(models, ModelInfo{ID: m.Name, DisplayName: m.Name})
+		models = append(models, ModelInfo{ID: m.Name, DisplayName: m.Name, SupportsTools: ModelSupportsTools("ollama", m.Name)})
 	}
 
 	return models, nil

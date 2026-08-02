@@ -28,8 +28,8 @@ func (t *Tool) Description() string {
 	return "Lists the immediate (non-recursive) contents of a directory: whether each entry is a file or a directory, and file size in bytes. Respects .gitignore and .agentignore."
 }
 
-func (t *Tool) InputSchema() tools.Schema {
-	return tools.Schema{
+func (t *Tool) InputSchema() json.RawMessage {
+	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"path": map[string]any{
@@ -39,6 +39,8 @@ func (t *Tool) InputSchema() tools.Schema {
 		},
 		"required": []string{"path"},
 	}
+	b, _ := json.Marshal(schema)
+	return b
 }
 
 func (t *Tool) Kind() tools.Kind { return tools.KindRead }
