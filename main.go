@@ -184,9 +184,12 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 		log.Printf("failed to init dispatcher: %v", err)
 	}
 
+	p := promptbar.New()
+	p.Focus()
+
 	return model{
 		tabs: tabs.New("code", "skills", "stats"),
-		prompt: promptbar.New(),
+		prompt: p,
 		message_area: messagearea.New(),
 		mode: modePrompt,
 		spinner: sp,
@@ -210,6 +213,9 @@ func (m model) Init() tea.Cmd {
 		}
 	}
 	cmds = append(cmds, m.changesList.WatchCmd())
+	if m.status.providerName != "" && m.status.modelID != "" {
+		cmds = append(cmds, toolSupportWarningCmd(m.status.modelID, m.status.providerName))
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -343,7 +349,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case providerselect.SelectedMsg:
-		m.mode = modeIdle
+		m.mode = modePrompt
+		m.prompt.Focus()
 		apiKey := msg.APIKey
 		if apiKey == "" {
 			apiKey = os.Getenv("API_KEY")
@@ -377,10 +384,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			fmt.Sprintf("Switched to %s / %s", msg.Provider, msg.ModelID),
 			false,
 		)
-		return m, tea.Batch(fetchModelInfoCmd(p, m.status.modelID))
+		warnCmd := toolSupportWarningCmd(msg.ModelID, msg.Provider)
+		return m, tea.Batch(fetchModelInfoCmd(p, m.status.modelID), warnCmd)
 
 	case providerselect.CancelledMsg:
-		m.mode = modeIdle
+		m.mode = modePrompt
+		m.prompt.Focus()
 		return m, nil
 
 	case tea.KeyPressMsg:

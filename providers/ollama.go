@@ -29,7 +29,17 @@ type ollamaProvider struct {
 }
 
 func newOllama(model string) *ollamaProvider {
-	return &ollamaProvider{model: model, baseURL: ollamaBaseURL(), toolsEnabled: ModelSupportsTools("ollama", model)}
+	o := &ollamaProvider{model: model, baseURL: ollamaBaseURL()}
+	// Ask the server for real capabilities; Info already prefers the
+	// /api/show "capabilities" array and only falls back to the name
+	// allowlist when the server doesn't report one. Don't gate tools on the
+	// static list alone.
+	if info, err := o.Info(context.Background(), model); err == nil {
+		o.toolsEnabled = info.SupportsTools
+	} else {
+		o.toolsEnabled = ModelSupportsTools("ollama", model)
+	}
+	return o
 }
 
 // NewOllama is a temporary exported escape hatch so callers outside this
@@ -185,6 +195,9 @@ type ollamaShowResponse struct {
 		Family            string `json:"family"`
 	} `json:"details"`
 	ModelInfo map[string]interface{} `json:"model_info"`
+	// Capabilities is ollama's authoritative tool-calling signal (present
+	// after the model has been loaded once).
+	Capabilities []string `json:"capabilities"`
 }
 
 // contextLength digs the context window out of model_info. The key is
@@ -221,11 +234,19 @@ func (o *ollamaProvider) Info(ctx context.Context, model string) (ModelInfo, err
 
 	ctxLen := parsed.contextLength()
 
+	supportsTools := hasToolCapability(parsed.Capabilities)
+	// Older ollama servers (or freshly-pulled, not-yet-loaded models) may not
+	// report capabilities yet; fall back to the family allowlist then, so we
+	// don't wrongly claim a model can't use tools.
+	if !supportsTools && len(parsed.Capabilities) == 0 {
+		supportsTools = ModelSupportsTools("ollama", model)
+	}
+
 	return ModelInfo{
 		ID:            model,
 		DisplayName:   model,
 		ContextWindow: ctxLen,
-		SupportsTools: ModelSupportsTools("ollama", model),
+		SupportsTools: supportsTools,
 		// ollama doesn't cap output tokens separately from the context
 		// window - generation just keeps going until it fills whatever
 		// context room is left, so we report the same number here.
@@ -243,6 +264,9 @@ func (o *ollamaProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	var parsed struct {
 		Models []struct {
 			Name string `json:"name"`
+			// Capabilities is authoritative when present; absent on older
+			// servers, where we fall back to the family allowlist.
+			Capabilities []string `json:"capabilities"`
 		} `json:"models"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
@@ -254,7 +278,11 @@ func (o *ollamaProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 		// Names only - calling /api/show per model made the picker hang
 		// (and used to abort the whole list on a single failure). Context
 		// window is filled later via Info when a model is selected.
-		models = append(models, ModelInfo{ID: m.Name, DisplayName: m.Name, SupportsTools: ModelSupportsTools("ollama", m.Name)})
+		supportsTools := hasToolCapability(m.Capabilities)
+		if !supportsTools && len(m.Capabilities) == 0 {
+			supportsTools = ModelSupportsTools("ollama", m.Name)
+		}
+		models = append(models, ModelInfo{ID: m.Name, DisplayName: m.Name, SupportsTools: supportsTools})
 	}
 
 	return models, nil

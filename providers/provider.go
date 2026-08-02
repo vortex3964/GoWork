@@ -99,20 +99,25 @@ func ModelSupportsTools(providerName, model string) bool {
 // ollamaModelTools is an allowlist of tool-capable Ollama model families, so
 // we don't offer tools to models that can't act on them (and would 400).
 func ollamaModelTools(m string) bool {
-	// Code-completion / base / embedding variants don't do tool calling.
-	if strings.Contains(m, "coder") || strings.Contains(m, "embed") ||
+	// Code-completion / embedding variants don't do tool calling. Note: we
+	// deliberately do NOT ban "-coder" here -- instruct coder models (e.g.
+	// qwen2.5-coder) DO support tools and are matched by the family cases
+	// below. Only genuinely non-tool-capable variants are filtered out.
+	if strings.Contains(m, "embed") ||
 		strings.Contains(m, "minilm") || strings.HasSuffix(strings.TrimSpace(m), "-base") {
 		return false
 	}
 	switch {
-	case strings.Contains(m, "qwen3"), strings.Contains(m, "qwen2"), strings.Contains(m, "qwen2.5"):
+	case strings.Contains(m, "qwen3"), strings.Contains(m, "qwen2"),
+		strings.Contains(m, "qwen1.5"), strings.Contains(m, "deepseek"):
 		return true
 	case strings.HasPrefix(m, "llama3.1"), strings.HasPrefix(m, "llama3.2"),
 		strings.HasPrefix(m, "llama3.3"), strings.HasPrefix(m, "llama4"):
 		return true
-	case strings.Contains(m, "gemma4"), strings.Contains(m, "functiongemma"),
+	case strings.Contains(m, "gemma"), strings.Contains(m, "functiongemma"),
 		strings.Contains(m, "groq-tool-use"), strings.Contains(m, "command-r"),
-		strings.Contains(m, "hermes"), strings.Contains(m, "mistral"):
+		strings.Contains(m, "phi3"), strings.Contains(m, "hermes"),
+		strings.Contains(m, "mistral"), strings.Contains(m, "mixtral"):
 		return true
 	case strings.Contains(m, "instruct"):
 		return true
@@ -147,6 +152,18 @@ var tools_def []ToolDef
 
 func InitToolsDef(t []ToolDef) {
 	tools_def = t
+}
+
+// hasToolCapability reports whether a server-reported capabilities list
+// (ollama/lm studio) includes tool calling. Accepts the common spellings.
+func hasToolCapability(caps []string) bool {
+	for _, c := range caps {
+		switch strings.ToLower(strings.TrimSpace(c)) {
+		case "tools", "tool_use", "tool":
+			return true
+		}
+	}
+	return false
 }
 
 // rawArgs normalizes tool-call arguments (a JSON string or raw object) into a

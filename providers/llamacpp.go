@@ -30,7 +30,15 @@ type llamaCppProvider struct {
 }
 
 func newLlamaCpp(model string) *llamaCppProvider {
-	return &llamaCppProvider{model: model, baseURL: llamaCppBaseURL(), toolsEnabled: ModelSupportsTools("llamacpp", model)}
+	l := &llamaCppProvider{model: model, baseURL: llamaCppBaseURL()}
+	// Info reads /props chat_template_caps.tools first (the supported way to
+	// tell), falling back to assume-yes when the field is absent.
+	if info, err := l.Info(context.Background(), model); err == nil {
+		l.toolsEnabled = info.SupportsTools
+	} else {
+		l.toolsEnabled = ModelSupportsTools("llamacpp", model)
+	}
+	return l
 }
 
 func NewLlamaCpp(model string) Provider {
@@ -164,6 +172,12 @@ func (l *llamaCppProvider) Info(ctx context.Context, model string) (ModelInfo, e
 		DefaultGenerationSettings struct {
 			NCtx int `json:"n_ctx"`
 		} `json:"default_generation_settings"`
+		// chat_template_caps declares what the loaded model's template can
+		// do (e.g. "tools":true, "parallel_tool_calls":true) - the supported
+		// way to detect tool support instead of guessing by model name.
+		ChatTemplateCaps struct {
+			Tools *bool `json:"tools"`
+		} `json:"chat_template_caps"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return ModelInfo{}, fmt.Errorf("failed to parse response: %w", err)
@@ -171,12 +185,17 @@ func (l *llamaCppProvider) Info(ctx context.Context, model string) (ModelInfo, e
 
 	ctxLen := parsed.DefaultGenerationSettings.NCtx
 
+	supportsTools := true
+	if parsed.ChatTemplateCaps.Tools != nil {
+		supportsTools = *parsed.ChatTemplateCaps.Tools
+	}
+
 	return ModelInfo{
 		ID:              model,
 		DisplayName:     model,
 		ContextWindow:   ctxLen,
 		MaxOutputTokens: ctxLen,
-		SupportsTools:   true,
+		SupportsTools:   supportsTools,
 	}, nil
 }
 
