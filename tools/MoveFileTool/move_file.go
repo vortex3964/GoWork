@@ -33,8 +33,8 @@ func (t *Tool) Description() string {
 	return "Moves a file from one path to another, relative to the project root. If the source and destination are in the same directory but have different filenames, this performs a rename. Missing destination directories are created automatically. Overwrites the destination file if one already exists."
 }
 
-func (t *Tool) InputSchema() tools.Schema {
-	return tools.Schema{
+func (t *Tool) InputSchema() json.RawMessage {
+	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"source_path": map[string]any{
@@ -48,6 +48,8 @@ func (t *Tool) InputSchema() tools.Schema {
 		},
 		"required": []string{"source_path", "destination_path"},
 	}
+	b, _ := json.Marshal(schema)
+	return b
 }
 
 func (t *Tool) Kind() tools.Kind { return tools.KindWrite }

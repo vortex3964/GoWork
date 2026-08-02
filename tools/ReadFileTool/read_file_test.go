@@ -79,11 +79,14 @@ func TestMetadata(t *testing.T) {
 		t.Error("Description() is empty")
 	}
 
-	schema := tool.InputSchema()
+	var m map[string]any
+	if err := json.Unmarshal(tool.InputSchema(), &m); err != nil {
+		t.Fatalf("InputSchema() is not valid JSON: %v", err)
+	}
 
-	props, ok := schema["properties"].(map[string]any)
+	props, ok := m["properties"].(map[string]any)
 	if !ok {
-		t.Fatalf("schema[\"properties\"] is %T, want map[string]any", schema["properties"])
+		t.Fatalf("schema[\"properties\"] is %T, want map[string]any", m["properties"])
 	}
 	for _, key := range []string{"path", "starting_line", "offset_lines"} {
 		if _, ok := props[key]; !ok {
@@ -91,9 +94,9 @@ func TestMetadata(t *testing.T) {
 		}
 	}
 
-	required, ok := schema["required"].([]string)
+	required, ok := m["required"].([]any)
 	if !ok {
-		t.Fatalf("schema[\"required\"] is %T, want []string", schema["required"])
+		t.Fatalf("schema[\"required\"] is %T, want []any", m["required"])
 	}
 	if len(required) != 1 || required[0] != "path" {
 		t.Errorf("schema required = %v, want [\"path\"]", required)

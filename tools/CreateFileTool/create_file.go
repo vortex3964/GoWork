@@ -29,13 +29,13 @@ func (t *Tool) Description() string {
 	return `Creates a file with the given content, relative to the project root, creating any missing parent directories. To create an empty directory without a file, pass a "path" ending in "/" (e.g. "src/newdir/").`
 }
 
-func (t *Tool) InputSchema() tools.Schema {
-	return tools.Schema{
+func (t *Tool) InputSchema() json.RawMessage {
+	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
-				"description": `Path of the file to create, relative to the project root (e.g. "src/foo.go"). End with "/" to create only a directory, with no file.`,
+				"description": `Path of the file to create, relative to the project root (e.g. "src/foo.go"). End with "/" to create a directory only, with no file.`,
 			},
 			"content": map[string]any{
 				"type":        "string",
@@ -44,6 +44,8 @@ func (t *Tool) InputSchema() tools.Schema {
 		},
 		"required": []string{"path", "content"},
 	}
+	b, _ := json.Marshal(schema)
+	return b
 }
 
 func (t *Tool) Kind() tools.Kind { return tools.KindWrite }

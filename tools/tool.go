@@ -19,9 +19,6 @@ import (
 //NOTE: old ReadState/Cache code is removed (Cache is wrong).
 // it needs a rewrite after more of the app is made is you wanna see old logic.
 
-//NOTE: Schema represents a JSON schema describing a tool's input, sent to the LLM so it knows what arguments to provide and in what shape.
-type Schema map[string]any
-
 //NOTE: Kind categorizes what a tool does, independent of its name or logic.
 // This isn't used by the LLM it's for the dispatcher/TUI to make (like how to render the results).
 type Kind int
@@ -135,7 +132,7 @@ func InitDispatchArgs(projectRoot string , wl *cl.WatchList , getProvider Provid
 type AgentTool interface {
 	Name() string //Name is the identifier the LLM uses to call this tool (unique across every tool)
 	Description() string //Description explains what the tool does and when to use it.
-	InputSchema() Schema // InputSchema is the JSON schema describing this tool's expected input
+	InputSchema() json.RawMessage // InputSchema is the JSON schema describing this tool's expected input
 	Kind() Kind // Kind categorizes this tool for dispatcher/UI purposes.
 
 	//NOTE: Run executes the tool with the given raw JSON input.

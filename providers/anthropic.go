@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 const anthropicBaseURL = "https://api.anthropic.com/v1"
@@ -37,23 +38,68 @@ func (a *anthropicProvider) doRequest(ctx context.Context, method, url string, r
 	}, reqBody)
 }
 
-// toAnthropicMessages turns our provider-agnostic Message slice into
-// anthropic's messages shape. Unlike gemini/groq, anthropic has no
-// "system" role in the messages array - system prompts go in a separate
-// top-level field - so system messages get filtered out here and would
-// need to be threaded through separately if/when we start using them.
-func toAnthropicMessages(messages []Message) []map[string]string {
-	out := make([]map[string]string, 0, len(messages))
+// toAnthropicMessages turns our Message slice into anthropic's messages shape.
+// Anthropic has no "system" role (system prompt is a separate top-level field),
+// no "tool" results, and no assistant tool_calls - a call is an assistant
+// "tool_use" content block and its result is a "tool_result" block in a user
+// message. We lower both back to that shape.
+func toAnthropicMessages(messages []Message) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(messages))
 	for _, msg := range messages {
-		if msg.Role == "system" {
+		switch msg.Role {
+		case "system":
 			continue
+		case "assistant":
+			// Echo tool calls as tool_use blocks (text must come first).
+			if len(msg.ToolCalls) == 0 {
+				out = append(out, map[string]interface{}{"role": "assistant", "content": msg.Content})
+				continue
+			}
+			blocks := make([]map[string]interface{}, 0, len(msg.ToolCalls)+1)
+			if msg.Content != "" {
+				blocks = append(blocks, map[string]interface{}{"type": "text", "text": msg.Content})
+			}
+			for _, tc := range msg.ToolCalls {
+				blocks = append(blocks, map[string]interface{}{
+					"type":  "tool_use",
+					"id":    tc.Tool_call_id,
+					"name":  tc.Tool_name,
+					"input": tc.Input,
+				})
+			}
+			out = append(out, map[string]interface{}{"role": "assistant", "content": blocks})
+		case "tool":
+			// Generic "tool" result lowers into a user-role tool_result block
+			// tied to the call by tool_use_id.
+			out = append(out, map[string]interface{}{
+				"role": "user",
+				"content": []map[string]interface{}{
+					{
+						"type":        "tool_result",
+						"tool_use_id": msg.ToolCallID,
+						"content":     []map[string]string{{"type": "text", "text": msg.Content}},
+					},
+				},
+			})
+		default:
+			out = append(out, map[string]interface{}{"role": msg.Role, "content": msg.Content})
 		}
-		out = append(out, map[string]string{
-			"role":    msg.Role,
-			"content": msg.Content,
-		})
 	}
 	return out
+}
+
+// toAnthropicTools maps ToolDefs into anthropic's flat {name, description,
+// input_schema} tools array (no "type"/"function" wrapper).
+func toAnthropicTools() []map[string]interface{} {
+	tools := make([]map[string]interface{}, 0, len(tools_def))
+	for _, td := range tools_def {
+		tools = append(tools, map[string]interface{}{
+			"name":         td.Name,
+			"description":  td.Description,
+			"input_schema": td.InputSchema,
+		})
+	}
+	return tools
 }
 
 // implementations of the Provider interface
@@ -64,6 +110,9 @@ func (a *anthropicProvider) Generate(ctx context.Context, messages []Message) (G
 		"max_tokens": anthropicDefaultMaxTokens,
 		"messages":   toAnthropicMessages(messages),
 	}
+	if len(tools_def) > 0 {
+		reqBody["tools"] = toAnthropicTools()
+	}
 
 	url := anthropicBaseURL + "/messages"
 	body, err := a.doRequest(ctx, http.MethodPost, url, reqBody)
@@ -73,9 +122,14 @@ func (a *anthropicProvider) Generate(ctx context.Context, messages []Message) (G
 
 	var parsed struct {
 		Content []struct {
-			Text string `json:"text"`
+			Type  string          `json:"type"`
+			Text  string          `json:"text"`
+			ID    string          `json:"id"`
+			Name  string          `json:"name"`
+			Input json.RawMessage `json:"input"`
 		} `json:"content"`
-		Usage struct {
+		StopReason string `json:"stop_reason"`
+		Usage      struct {
 			InputTokens  int `json:"input_tokens"`
 			OutputTokens int `json:"output_tokens"`
 		} `json:"usage"`
@@ -88,8 +142,26 @@ func (a *anthropicProvider) Generate(ctx context.Context, messages []Message) (G
 		return GenerateResult{}, fmt.Errorf("empty response from anthropic")
 	}
 
+	var sb strings.Builder
+	toolCalls := make([]ToolCall, 0, len(parsed.Content))
+	for _, block := range parsed.Content {
+		switch block.Type {
+		case "tool_use":
+			toolCalls = append(toolCalls, ToolCall{
+				Tool_call_id: block.ID,
+				Tool_name:    block.Name,
+				// anthropic sends args as an already-parsed JSON object.
+				Input: block.Input,
+			})
+		default: // "text"
+			sb.WriteString(block.Text)
+		}
+	}
+
 	return GenerateResult{
-		Content: parsed.Content[0].Text,
+		Content:    sb.String(),
+		ToolCalls:  toolCalls,
+		StopReason: parsed.StopReason,
 		Usage: Usage{
 			PromptTokens:     parsed.Usage.InputTokens,
 			CompletionTokens: parsed.Usage.OutputTokens,
@@ -137,6 +209,7 @@ func (am anthropicModel) toModelInfo() ModelInfo {
 		DisplayName:     am.ID,
 		ContextWindow:   am.MaxInputTokens,
 		MaxOutputTokens: am.MaxTokens,
+		SupportsTools:   true,
 	}
 }
 

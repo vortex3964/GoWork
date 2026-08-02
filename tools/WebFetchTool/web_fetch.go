@@ -76,8 +76,8 @@ func (t *Tool) Description() string {
 Guardrails: downloads are capped at %d bytes and converted to plain text first. Short pages (under ~%d characters) come back as-is. Longer pages are either summarized against your "prompt" (if you gave one and a model is configured) or saved to a file in the project and returned as a short preview plus the file path - use a read tool on that path if you need the rest. This tool does not execute javascript, so content thats rendered client-side wont appear.`, maxDownloadBytes, inlineThreshold)
 }
 
-func (t *Tool) InputSchema() tools.Schema {
-	return tools.Schema{
+func (t *Tool) InputSchema() json.RawMessage {
+	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"url": map[string]any{
@@ -91,6 +91,8 @@ func (t *Tool) InputSchema() tools.Schema {
 		},
 		"required": []string{"url"},
 	}
+	b, _ := json.Marshal(schema)
+	return b
 }
 
 func (t *Tool) Kind() tools.Kind { return tools.KindWebSearch }

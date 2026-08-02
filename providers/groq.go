@@ -26,18 +26,9 @@ func (g *groqProvider) doRequest(ctx context.Context, method, url string, reqBod
 	return doJSONRequest(ctx, method, url, map[string]string{"Authorization": "Bearer " + g.api_key}, reqBody)
 }
 
-// toGroqMessages turns our provider-agnostic Message slice into groq's
-// OpenAI-compatible messages shape, which is a straight passthrough since
-// groq already uses "system"/"user"/"assistant" role names.
-func toGroqMessages(messages []Message) []map[string]string {
-	out := make([]map[string]string, 0, len(messages))
-	for _, msg := range messages {
-		out = append(out, map[string]string{
-			"role":    msg.Role,
-			"content": msg.Content,
-		})
-	}
-	return out
+// toGroqMessages is groq's alias for the shared OpenAI-compatible lowering.
+func toGroqMessages(messages []Message) []map[string]interface{} {
+	return openAICompatMessages(messages)
 }
 
 // implementations of the Provider interface
@@ -46,6 +37,9 @@ func (g *groqProvider) Generate(ctx context.Context, messages []Message) (Genera
 	reqBody := map[string]interface{}{
 		"model":    g.model,
 		"messages": toGroqMessages(messages),
+	}
+	if len(tools_def) > 0 {
+		reqBody["tools"] = openAICompatTools()
 	}
 
 	url := groqBaseURL + "/chat/completions"
@@ -57,8 +51,16 @@ func (g *groqProvider) Generate(ctx context.Context, messages []Message) (Genera
 	var parsed struct {
 		Choices []struct {
 			Message struct {
-				Content string `json:"content"`
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					ID       string `json:"id"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
 			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Usage struct {
 			PromptTokens     int `json:"prompt_tokens"`
@@ -74,8 +76,20 @@ func (g *groqProvider) Generate(ctx context.Context, messages []Message) (Genera
 		return GenerateResult{}, fmt.Errorf("empty response from groq")
 	}
 
+	msg := parsed.Choices[0].Message
+	toolCalls := make([]ToolCall, 0, len(msg.ToolCalls))
+	for _, tc := range msg.ToolCalls {
+		toolCalls = append(toolCalls, ToolCall{
+			Tool_call_id: tc.ID,
+			Tool_name:    tc.Function.Name,
+			Input:        rawArgs(tc.Function.Arguments),
+		})
+	}
+
 	return GenerateResult{
-		Content: parsed.Choices[0].Message.Content,
+		Content:    msg.Content,
+		ToolCalls:  toolCalls,
+		StopReason: parsed.Choices[0].FinishReason,
 		Usage: Usage{
 			PromptTokens:     parsed.Usage.PromptTokens,
 			CompletionTokens: parsed.Usage.CompletionTokens,
@@ -101,9 +115,9 @@ func (g *groqProvider) EstimateTokens(ctx context.Context, messages []Message) (
 // (single model) and ListModels (all models) parse into this and convert
 // it into our own ModelInfo.
 type groqModel struct {
-	ID                 string `json:"id"`
-	ContextWindow      int    `json:"context_window"`
-	MaxCompletionTokens int   `json:"max_completion_tokens"`
+	ID                  string `json:"id"`
+	ContextWindow       int    `json:"context_window"`
+	MaxCompletionTokens int    `json:"max_completion_tokens"`
 }
 
 func (gm groqModel) toModelInfo() ModelInfo {
@@ -112,6 +126,7 @@ func (gm groqModel) toModelInfo() ModelInfo {
 		DisplayName:     gm.ID,
 		ContextWindow:   gm.ContextWindow,
 		MaxOutputTokens: gm.MaxCompletionTokens,
+		SupportsTools:   ModelSupportsTools("groq", gm.ID),
 	}
 }
 

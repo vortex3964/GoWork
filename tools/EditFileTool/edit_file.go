@@ -43,8 +43,8 @@ Before using this tool:
 This tool operates on line numbers, not text matching it does not verify that the lines being replaced contain any particular content, so incorrect line numbers will silently edit the wrong lines.`
 }
 
-func (t *Tool) InputSchema() tools.Schema {
-	return tools.Schema{
+func (t *Tool) InputSchema() json.RawMessage {
+	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"file_path": map[string]any{
@@ -66,6 +66,8 @@ func (t *Tool) InputSchema() tools.Schema {
 		},
 		"required": []string{"file_path", "start_line", "end_line", "new_content"},
 	}
+	b, _ := json.Marshal(schema)
+	return b
 }
 
 // splitLines splits contents into lines, treating a single trailing
