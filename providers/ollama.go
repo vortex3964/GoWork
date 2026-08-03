@@ -59,7 +59,10 @@ func (o *ollamaProvider) doRequest(ctx context.Context, method, url string, reqB
 // toOllamaMessages turns our Message slice into ollama's chat shape.
 // Assistant tool calls echo back as tool_calls; results go out as "tool".
 func toOllamaMessages(messages []Message) []map[string]interface{} {
-	out := make([]map[string]interface{}, 0, len(messages))
+	out := make([]map[string]interface{}, 0, len(messages)+1)
+	if sm := systemMessage(); sm != nil {
+		out = append(out, map[string]interface{}{"role": "system", "content": sm.Content})
+	}
 	for _, msg := range messages {
 		switch msg.Role {
 		case "assistant":

@@ -110,6 +110,9 @@ func (a *anthropicProvider) Generate(ctx context.Context, messages []Message) (G
 		"max_tokens": anthropicDefaultMaxTokens,
 		"messages":   toAnthropicMessages(messages),
 	}
+	if system_prompt != "" {
+		reqBody["system"] = system_prompt
+	}
 	if len(tools_def) > 0 {
 		reqBody["tools"] = toAnthropicTools()
 	}
@@ -174,6 +177,9 @@ func (a *anthropicProvider) EstimateTokens(ctx context.Context, messages []Messa
 	reqBody := map[string]interface{}{
 		"model":    a.model,
 		"messages": toAnthropicMessages(messages),
+	}
+	if system_prompt != "" {
+		reqBody["system"] = system_prompt
 	}
 
 	url := anthropicBaseURL + "/messages/count_tokens"
