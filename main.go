@@ -133,6 +133,11 @@ type pendingTool struct {
 // MAX_STEPS_PROMPT guardrail.
 const defaultMaxAgentSteps = 40
 
+// maxToolsPerTurn caps how many tool calls are executed from a single model
+// reply. Beyond keeping the parallel batch sane, it stops a runaway model
+// that keeps re-emitting the same calls from flooding the loop.
+const maxToolsPerTurn = 10
+
 type uiMode int
 
 const (
@@ -984,6 +989,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// true so the spinner keeps running and submitPrompt won't
 			// launch a concurrent generation; the prompt bar itself stays
 			// focused and usable.
+
+			// Cap the batch. A runaway model that keeps re-emitting the same
+			// calls must not spin forever: only the first maxToolsPerTurn
+			// calls of this turn are executed, the rest are dropped. The
+			// assistant message below carries exactly the calls that will
+			// get results, so the conversation stays well-formed.
+			if len(toolCalls) > maxToolsPerTurn {
+				m.message_area.AppendMessage(
+					fmt.Sprintf(">**INFO** Model requested %d tool calls; running the first %d this turn.", len(toolCalls), maxToolsPerTurn),
+					false,
+				)
+				toolCalls = toolCalls[:maxToolsPerTurn]
+			}
+
 			m.context = append(m.context, providers.Message{
 				Role: "assistant", Content: content, ToolCalls: toolCalls,
 			})
