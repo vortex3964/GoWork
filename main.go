@@ -405,7 +405,7 @@ func runToolCmd(ctx context.Context, d *tools.Dispatcher, call providers.ToolCal
 // this bounds it to the model's context window (when known) so the original
 // user request is never the thing that gets dropped when the window fills.
 func (m *model) contextForModel() []providers.Message {
-	return providers.TrimContext(m.context, m.status.contextWindow)
+	return providers.TrimContext(m.context, m.status.contextWindow, m.status.modelID)
 }
 
 // endTurn resets all agentic-loop state and returns the app to idle, focusing

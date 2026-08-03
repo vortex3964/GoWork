@@ -10,10 +10,10 @@ func repeat(s string, n int) string {
 	return strings.Repeat(s, n)
 }
 
-func msgTokens(msgs []Message) int {
+func msgTokens(model string, msgs []Message) int {
 	total := 0
 	for _, m := range msgs {
-		total += EstimateMessageTokens(m)
+		total += EstimateMessageTokensForModel(m, model)
 	}
 	return total
 }
@@ -24,7 +24,7 @@ func TestTrimContextUnderBudgetIsUnchanged(t *testing.T) {
 		{Role: "user", Content: "the task"},
 		{Role: "assistant", Content: "sure"},
 	}
-	got := TrimContext(msgs, 1<<20)
+	got := TrimContext(msgs, 1<<20, "gpt-4o")
 	if len(got) != len(msgs) {
 		t.Fatalf("got %d messages, want %d", len(got), len(msgs))
 	}
@@ -42,7 +42,7 @@ func TestTrimContextAlwaysKeepsFirstUserMessage(t *testing.T) {
 		{Role: "assistant", Content: repeat("y", 10000)},
 		{Role: "user", Content: repeat("z", 10000)},
 	}
-	got := TrimContext(msgs, 1024)
+	got := TrimContext(msgs, 1024, "gpt-4o")
 	if len(got) != 1 {
 		t.Fatalf("expected just the first message, got %d: %+v", len(got), got)
 	}
@@ -66,19 +66,19 @@ func TestTrimContextKeepsToolGroupsIntact(t *testing.T) {
 	tail2 := Message{Role: "user", Content: repeat("d", 2000)}
 
 	msgs := []Message{first, callMsg, toolMsg, tail1, tail2}
-	total := msgTokens(msgs)
+	total := msgTokens("gpt-4o", msgs)
 
 	// Window sized so the allowance (window-overhead) fits exactly
 	// first+tail, but not the full history - the middle tool group drops.
-	overhead := EstimateOverheadTokens()
-	wantKeep := EstimateMessageTokens(first) + EstimateMessageTokens(tail1) + EstimateMessageTokens(tail2)
+	overhead := EstimateOverheadTokensForModel("gpt-4o")
+	wantKeep := EstimateMessageTokensForModel(first, "gpt-4o") + EstimateMessageTokensForModel(tail1, "gpt-4o") + EstimateMessageTokensForModel(tail2, "gpt-4o")
 	window := overhead + wantKeep + 50
 	allowance := window - overhead
 	if allowance >= total || allowance < wantKeep {
 		t.Fatalf("bad test window: allowance=%d must be < total=%d and >= wantKeep=%d", allowance, total, wantKeep)
 	}
 
-	got := TrimContext(msgs, window)
+	got := TrimContext(msgs, window, "gpt-4o")
 	// The tool group must either be fully present or fully absent - never
 	// a tool message without its assistant call.
 	sawTool := false
