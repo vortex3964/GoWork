@@ -49,12 +49,18 @@ func toContents(messages []Message) []map[string]interface{} {
 				parts = append(parts, map[string]interface{}{"text": msg.Content})
 			}
 			for _, tc := range msg.ToolCalls {
-				parts = append(parts, map[string]interface{}{
+				part := map[string]interface{}{
 					"functionCall": map[string]interface{}{
 						"name": tc.Tool_name,
 						"args": tc.Input,
 					},
-				})
+				}
+				// thinking models demand the original signature replayed as a
+				// sibling of functionCall at the part level.
+				if tc.ThoughtSignature != "" {
+					part["thoughtSignature"] = tc.ThoughtSignature
+				}
+				parts = append(parts, part)
 			}
 			contents = append(contents, map[string]interface{}{"role": role, "parts": parts})
 		case "tool":
@@ -96,7 +102,7 @@ func toGeminiTools() []map[string]interface{} {
 		decls = append(decls, map[string]interface{}{
 			"name":        td.Name,
 			"description": td.Description,
-			"parameters":  td.InputSchema,
+			"parameters":  toolSchemaForProto(td.InputSchema),
 		})
 	}
 	return []map[string]interface{}{{"functionDeclarations": decls}}
@@ -136,6 +142,9 @@ func (g *geminiProvider) Generate(ctx context.Context, messages []Message) (Gene
 						Args json.RawMessage `json:"args"`
 						ID   string          `json:"id"`
 					} `json:"functionCall"`
+					// thoughtSignature is a sibling of functionCall at the
+					// part level - NOT nested inside it.
+					ThoughtSignature string `json:"thoughtSignature"`
 				} `json:"parts"`
 			} `json:"content"`
 			FinishReason string `json:"finishReason"`
@@ -166,9 +175,10 @@ func (g *geminiProvider) Generate(ctx context.Context, messages []Message) (Gene
 				id = part.FuncCall.ID
 			}
 			toolCalls = append(toolCalls, ToolCall{
-				Tool_call_id: id,
-				Tool_name:    name,
-				Input:        part.FuncCall.Args,
+				Tool_call_id:     id,
+				Tool_name:        name,
+				Input:            part.FuncCall.Args,
+				ThoughtSignature: part.ThoughtSignature,
 			})
 			continue
 		}
@@ -230,6 +240,7 @@ func (g *geminiProvider) GenerateStream(ctx context.Context, messages []Message,
 							Args json.RawMessage `json:"args"`
 							ID   string          `json:"id"`
 						} `json:"functionCall"`
+						ThoughtSignature string `json:"thoughtSignature"`
 					} `json:"parts"`
 				} `json:"content"`
 				FinishReason string `json:"finishReason"`
@@ -264,9 +275,10 @@ func (g *geminiProvider) GenerateStream(ctx context.Context, messages []Message,
 					id = part.FuncCall.ID
 				}
 				toolCalls = append(toolCalls, ToolCall{
-					Tool_call_id: id,
-					Tool_name:    part.FuncCall.Name,
-					Input:        part.FuncCall.Args,
+					Tool_call_id:     id,
+					Tool_name:        part.FuncCall.Name,
+					Input:            part.FuncCall.Args,
+					ThoughtSignature: part.ThoughtSignature,
 				})
 				continue
 			}

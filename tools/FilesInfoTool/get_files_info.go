@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
-	"strconv"
+	"strings"
 
 	"GoWork/tools"
 )
@@ -17,9 +17,9 @@ type Input struct {
 	Path string `json:"path"`
 }
 
-type Tool struct {}
+type Tool struct{}
 
-//NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface 
+// NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface
 func New() tools.AgentTool { return &Tool{} }
 
 func (t *Tool) Name() string { return "list_directory" }
@@ -37,7 +37,7 @@ func (t *Tool) InputSchema() json.RawMessage {
 				"description": `Directory to inspect, relative to the project root. Use "." for the root itself.`,
 			},
 		},
-		"required":               []string{"path"},
+		"required":             []string{"path"},
 		"additionalProperties": false,
 	}
 	b, _ := json.Marshal(schema)
@@ -46,7 +46,7 @@ func (t *Tool) InputSchema() json.RawMessage {
 
 func (t *Tool) Kind() tools.Kind { return tools.KindRead }
 
-func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs , rawInput json.RawMessage) (tools.ToolResult, error) {
+func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.RawMessage) (tools.ToolResult, error) {
 	var input Input
 	if err := json.Unmarshal(rawInput, &input); err != nil {
 		return tools.ToolResult{}, fmt.Errorf("list_directory: invalid input: %w", err)
@@ -65,7 +65,7 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs , rawInput json.
 
 	ignores := tools.LoadIgnores(args.RootPath)
 
-	var resp string
+	var body strings.Builder
 	for _, entry := range entries {
 		rel := entry.Name()
 		if dir != "." {
@@ -75,20 +75,25 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs , rawInput json.
 			continue
 		}
 
+		if entry.IsDir() {
+			body.WriteString(rel + "/\n")
+			continue
+		}
+
 		info, err := entry.Info()
 		if err != nil {
 			continue
 		}
-
-		if entry.IsDir() {
-			resp += entry.Name() + "/: dir\n"
-		} else {
-			resp += entry.Name() + ": file, " + strconv.FormatInt(info.Size(), 10) + " bytes\n"
-		}
+		body.WriteString(fmt.Sprintf("%s: file, %d bytes\n", rel, info.Size()))
 	}
 
-	if resp == "" {
+	if body.Len() == 0 {
 		return tools.Ok("directory is empty (or all contents are ignored)"), nil
+	}
+
+	resp := body.String()
+	if dir == "." {
+		resp = "# contents relative to project root (e.g. \"providers/tool.go\"); re-pass these paths verbatim.\n" + resp
 	}
 	return tools.Ok(resp), nil
 }
