@@ -104,7 +104,7 @@ func toOllamaTools() []map[string]interface{} {
 			"function": map[string]interface{}{
 				"name":        td.Name,
 				"description": td.Description,
-				"parameters":  td.InputSchema,
+				"parameters":  toolSchemaForProto(td.InputSchema),
 			},
 		})
 	}

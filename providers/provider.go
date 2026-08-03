@@ -46,6 +46,10 @@ type ToolCall struct {
 	Tool_call_id string // asigned by the ai model
 	Tool_name    string
 	Input        json.RawMessage
+	// ThoughtSignature is gemini-only. Thinking models return a signature on
+	// every functionCall part, and that signature MUST be echoed back on the
+	// same functionCall when it's replayed in a later turn, or the API 400s.
+	ThoughtSignature string
 }
 
 // Message carries structured parts now, not just plain text,
@@ -199,6 +203,42 @@ func rawArgs(s string) json.RawMessage {
 		return json.RawMessage(s)
 	}
 	return json.RawMessage("{}")
+}
+
+// toolSchemaForProto returns a copy of an OpenAI-style tool schema with
+// JSON-Schema keywords the provider's schema format doesn't support -
+// notably additionalProperties, which openai's JSON-Schema subset accepts but
+// gemini (protobuf Schema) and anthropic's input_schema reject with a 400.
+// The sanitizer is recursive so nested object schemas get cleaned too.
+func toolSchemaForProto(raw json.RawMessage) json.RawMessage {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return raw
+	}
+	b, _ := json.Marshal(dropAdditionalProperties(v))
+	return b
+}
+
+func dropAdditionalProperties(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			if k == "additionalProperties" {
+				continue
+			}
+			out[k] = dropAdditionalProperties(val)
+		}
+		return out
+	case []any:
+		arr := make([]any, len(t))
+		for i, x := range t {
+			arr[i] = dropAdditionalProperties(x)
+		}
+		return arr
+	default:
+		return v
+	}
 }
 
 // openAICompatMessages lowers the shared Message slice into OpenAI's chat

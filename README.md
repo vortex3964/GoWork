@@ -65,7 +65,6 @@ llama.cpp
 - proper resizing for changes list
 - context handling
 - designing skills
-- interupt handling and time excited error handling in tool calls (so that when the user wants to interupt a tool call they can or if a tool call is taking too long)
 - sql db for storing stats and messages and session data etch
 - add slash commands (with window for autocomplete)
 - implement skills area
@@ -73,7 +72,6 @@ llama.cpp
 - tools for generating skills and handling them
 - implement skill managment area \
 - add skills loading guidance to the system prompt once skills are actually supported
-- Important remember limit the tokens of generate so we dont burn everything in non local models
 - maybe make llama and lmstuido have an in app launch button in case the user forgot to start them
 - maybe add lsp support?
 - add pdf support
