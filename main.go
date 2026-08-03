@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"charm.land/bubbles/v2/spinner"
@@ -44,6 +46,44 @@ import (
 const topBarHeight = 1
 
 const spinnerHeight = 1
+
+const sys_prompt_path = "prompts/system_prompt.md"
+
+// inject_vars_in_sys_prompt reads prompts/system_prompt.md, substitutes the
+// ${...} environment placeholders, and returns the rendered prompt.
+// root is the already-resolved project root (only its last dir is used).
+func inject_vars_in_sys_prompt(root string) (string, error) {
+	data, err := os.ReadFile(sys_prompt_path)
+	if err != nil {
+		return "", err
+	}
+
+	prompt := string(data)
+
+	projectRoot := ""
+	if root != "" {
+		projectRoot = filepath.Base(root)
+	}
+	prompt = strings.ReplaceAll(prompt, "${PROJECT_ROOT}", projectRoot)
+
+	prompt = strings.ReplaceAll(prompt, "${PLATFORM}", shellOut("uname", "-s"))
+	if shellOut("git", "rev-parse", "--is-inside-work-tree") == "true" {
+		prompt = strings.ReplaceAll(prompt, "${IS_GIT_REPO}", "yes")
+	} else {
+		prompt = strings.ReplaceAll(prompt, "${IS_GIT_REPO}", "no")
+	}
+
+	return prompt, nil
+}
+
+// shellOut runs a command and returns its trimmed stdout, or "" on failure.
+func shellOut(arg ...string) string {
+	out, err := exec.Command(arg[0], arg[1:]...).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
 
 func get_supported_providers() []string {
 	return []string{"google", "anthropic", "groq", "openAi", "local"}
@@ -188,19 +228,19 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 	p.Focus()
 
 	return model{
-		tabs: tabs.New("code", "skills", "stats"),
-		prompt: p,
-		message_area: messagearea.New(),
-		mode: modePrompt,
-		spinner: sp,
-		context: []providers.Message{},
-		model: holder,
-		aiThink: &think,
-		status: newStatusLine(root, providerName, modelID),
-		logoLines: loadLogo(),
-		popUp: popup.New(),
-		modal: dialog.New(),
-		changesList: changeslist.New(wl),
+		tabs:            tabs.New("code", "skills", "stats"),
+		prompt:          p,
+		message_area:    messagearea.New(),
+		mode:            modePrompt,
+		spinner:         sp,
+		context:         []providers.Message{},
+		model:           holder,
+		aiThink:         &think,
+		status:          newStatusLine(root, providerName, modelID),
+		logoLines:       loadLogo(),
+		popUp:           popup.New(),
+		modal:           dialog.New(),
+		changesList:     changeslist.New(wl),
 		tool_dispatcher: dispatcher,
 	}
 }
@@ -833,6 +873,13 @@ func main() {
 	if err != nil {
 		fmt.Println("Warning: couldn't determine project root:", err)
 		root = ""
+	}
+
+	sys, err := inject_vars_in_sys_prompt(root)
+	if err != nil {
+		fmt.Println("Warning: couldn't load system prompt:", err)
+	} else {
+		providers.InitSystemPrompt(sys)
 	}
 
 	p := tea.NewProgram(initialModel(root, provider, modelName, providerName))

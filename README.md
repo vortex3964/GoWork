@@ -77,13 +77,15 @@ llama.cpp
 - implement skills area
 - implement token usage area stats
 - tools for generating skills and handling them
-- implement skill managment area 
+- implement skill managment area \
+- add skills loading guidance to the system prompt once skills are actually supported
 - Important remember limit the tokens of generate so we dont burn everything in non local models
 - maybe make llama and lmstuido have an in app launch button in case the user forgot to start them
 - dispacher for tools is just wrong it needs a rewrite now that the app is coming together
 - maybe add lsp support?
 - add pdf support
 - handle images
+- add mode tracking to status bar with color changes similar to nvim
 - make an installer
 - probably will delete move tools feature to delete the dir if its empty after the move
 - add a prompt message queue or block while the ai is generating (would prefer the first solution)
@@ -95,6 +97,8 @@ llama.cpp
 - have atatchments like images pdfs or copied and pasted text on the promptbar so that a large copied text doesnt take up the entire screen
 - add a way to copy text from promptbar and message area
 - multithread (probably) what we do in main to avoid slugish start times
+- add tools to track todos or plan mode maybe
+- add the ability for the ai to create questioners for users that they answer with options
 
 ## common errors we check for 
 invalid request\
