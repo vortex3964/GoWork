@@ -15,6 +15,9 @@ type stubProvider struct {
 func (s *stubProvider) Generate(_ context.Context, _ []providers.Message) (providers.GenerateResult, error) {
 	return providers.GenerateResult{Content: s.name}, nil
 }
+func (s *stubProvider) GenerateStream(_ context.Context, _ []providers.Message, _ providers.StreamFunc) (providers.GenerateResult, error) {
+	return providers.GenerateResult{Content: s.name}, nil
+}
 func (s *stubProvider) EstimateTokens(_ context.Context, _ []providers.Message) (int, error) {
 	return 0, nil
 }
