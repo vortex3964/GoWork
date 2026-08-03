@@ -324,6 +324,14 @@ func generateCmd(p providers.Provider, messages []providers.Message) tea.Cmd {
 	}
 }
 
+// contextForModel returns the message history we actually send to the
+// provider on this turn. Full history is kept in m.context for future turns;
+// this bounds it to the model's context window (when known) so the original
+// user request is never the thing that gets dropped when the window fills.
+func (m *model) contextForModel() []providers.Message {
+	return providers.TrimContext(m.context, m.status.contextWindow)
+}
+
 // runToolCmd executes a single tool call off the update loop. Tool calls run
 // strictly sequentially (the WatchList backing them isn't thread-safe), so
 // the next one is only kicked off once this one reports back. Panics inside
@@ -421,7 +429,7 @@ func (m *model) submitPrompt() []tea.Cmd {
 	m.historyIdx = 0
 	m.stepCount = 0
 	m.pendingTools = m.pendingTools[:0]
-	cmds = append(cmds, generateCmd(p, m.context))
+	cmds = append(cmds, generateCmd(p, m.contextForModel()))
 	cmds = append(cmds, m.spinner.Tick)
 	return cmds
 }
@@ -915,7 +923,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		*m.aiThink = true
-		return m, generateCmd(p, m.context)
+		return m, generateCmd(p, m.contextForModel())
 	case modelInfoMsg:
 		if msg.err == nil {
 			m.status.contextWindow = msg.info.ContextWindow

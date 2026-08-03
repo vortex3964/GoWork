@@ -133,6 +133,7 @@ func (o *ollamaProvider) Generate(ctx context.Context, messages []Message) (Gene
 		Message struct {
 			Content   string `json:"content"`
 			ToolCalls []struct {
+				ID       string `json:"id"`
 				Function struct {
 					Name      string          `json:"name"`
 					Arguments json.RawMessage `json:"arguments"`
@@ -150,9 +151,18 @@ func (o *ollamaProvider) Generate(ctx context.Context, messages []Message) (Gene
 
 	toolCalls := make([]ToolCall, 0, len(parsed.Message.ToolCalls))
 	for _, tc := range parsed.Message.ToolCalls {
+		id := tc.ID
+		// Some ollama versions (and many small models) don't return an id on
+		// tool_calls. The tool-result round-trip keys on ToolCallID, so
+		// synthesize one rather than echoing an empty id back on the next
+		// turn (which some servers reject or fail to match).
+		if id == "" {
+			id = nextTextCallID()
+		}
 		toolCalls = append(toolCalls, ToolCall{
-			Tool_name: tc.Function.Name,
-			Input:     tc.Function.Arguments,
+			Tool_call_id: id,
+			Tool_name:    tc.Function.Name,
+			Input:        tc.Function.Arguments,
 		})
 	}
 
