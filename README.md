@@ -51,11 +51,7 @@ ollama\
 llama.cpp
 
 ## TODO
-- proper registry for tools
 - need to re add read state to check mmtime to stop ai from reading stale files
-- wire and init the tools in main and make a prompt with tool calls
-- add system prompt with the tools
-- architect tools so they can effeciently be wired to main
 - update read and edit so that we handle pdfs and images we will ignore images and read pdfs with the new tool we will make in the future
 - update move delete tools to also track files with the changes list command and the watcer
 - update move delete websearch webfetch to have a permision window from the user before running
@@ -70,7 +66,6 @@ llama.cpp
 - proper resizing for changes list
 - context handling
 - designing skills
-- actually test tool calls with the llm
 - interupt handling and time excited error handling in tool calls (so that when the user wants to interupt a tool call they can or if a tool call is taking too long)
 - sql db for storing stats and messages and session data etch
 - add slash commands (with window for autocomplete)
@@ -81,7 +76,6 @@ llama.cpp
 - add skills loading guidance to the system prompt once skills are actually supported
 - Important remember limit the tokens of generate so we dont burn everything in non local models
 - maybe make llama and lmstuido have an in app launch button in case the user forgot to start them
-- dispacher for tools is just wrong it needs a rewrite now that the app is coming together
 - maybe add lsp support?
 - add pdf support
 - handle images
@@ -93,7 +87,6 @@ llama.cpp
 - excell support
 - handling permisions for tool calls from ai
 - make docs
-- generate in tools rebuilds the messages context from scratch all the time when it doesnt have to (i think)
 - have atatchments like images pdfs or copied and pasted text on the promptbar so that a large copied text doesnt take up the entire screen
 - add a way to copy text from promptbar and message area
 - multithread (probably) what we do in main to avoid slugish start times
