@@ -80,7 +80,8 @@ func (t *Tool) InputSchema() json.RawMessage {
 				"description": fmt.Sprintf("Maximum number of matches to return. Defaults to %d.", DEFAULT_LIMIT),
 			},
 		},
-		"required": []string{"pattern"},
+		"required":               []string{"pattern"},
+		"additionalProperties": false,
 	}
 	b, _ := json.Marshal(schema)
 	return b

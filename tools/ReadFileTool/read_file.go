@@ -55,7 +55,8 @@ func (t *Tool) InputSchema() json.RawMessage {
 				"description": fmt.Sprintf("Number of lines to read starting from starting_line. Defaults to the rest of the file if omitted, capped at %d lines.", DEFAULT_MAX_LINES),
 			},
 		},
-		"required": []string{"path"},
+		"required":               []string{"path"},
+		"additionalProperties": false,
 	}
 	b, _ := json.Marshal(schema)
 	return b

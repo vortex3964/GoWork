@@ -169,8 +169,8 @@ func TestGetFilesInfo(t *testing.T) {
 
 	t.Run("reports correct name and kind", func(t *testing.T) {
 		tool := newTool(t, t.TempDir())
-		if tool.Name() != "get_files_info" {
-			t.Errorf("Name() = %q, want %q", tool.Name(), "get_files_info")
+		if tool.Name() != "list_directory" {
+			t.Errorf("Name() = %q, want %q", tool.Name(), "list_directory")
 		}
 	})
 

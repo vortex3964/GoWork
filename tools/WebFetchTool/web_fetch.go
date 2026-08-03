@@ -89,7 +89,8 @@ func (t *Tool) InputSchema() json.RawMessage {
 				"description": "What you're looking for on this page. Used to focus the summary when the page is too long to return in full.",
 			},
 		},
-		"required": []string{"url"},
+		"required":               []string{"url"},
+		"additionalProperties": false,
 	}
 	b, _ := json.Marshal(schema)
 	return b

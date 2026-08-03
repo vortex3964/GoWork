@@ -42,7 +42,8 @@ func (t *Tool) InputSchema() json.RawMessage {
 				"description": "Content to write into the file. Ignored if path ends with \"/\".",
 			},
 		},
-		"required": []string{"path", "content"},
+		"required":               []string{"path", "content"},
+		"additionalProperties": false,
 	}
 	b, _ := json.Marshal(schema)
 	return b

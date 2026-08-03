@@ -62,7 +62,8 @@ func (t *Tool) InputSchema() json.RawMessage {
 				"description": "If true, replaces every occurrence of old_string. If false (default), old_string must appear exactly once in the file.",
 			},
 		},
-		"required": []string{"file_path", "old_string", "new_string"},
+		"required":               []string{"file_path", "old_string", "new_string"},
+		"additionalProperties": false,
 	}
 	b, _ := json.Marshal(schema)
 	return b
