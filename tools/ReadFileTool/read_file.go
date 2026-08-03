@@ -164,6 +164,12 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		return tools.Ok("(file is empty)"), nil
 	}
 
+	// Record what the agent saw so write tools can tell "changed since the
+	// model last looked" from "the model wrote it itself".
+	if args.ReadState != nil {
+		args.ReadState.Record(args.PathKey(relPath), info.ModTime())
+	}
+
 	start := input.Start
 	if start < 1 {
 		start = 1

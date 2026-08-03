@@ -104,6 +104,12 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs,rawInput json.Ra
 		return tools.Errf("moved file but failed to remove original at %s: %s", input.SourcePath, err), nil
 	}
 
+	// The source path no longer exists; forget its read-state so a later
+	// read/edit of that path is treated as a fresh file.
+	if args.ReadState != nil {
+		args.ReadState.Forget(args.PathKey(input.SourcePath))
+	}
+
 	extra := ""
 	srcParent := filepath.Dir(input.SourcePath)
 	// srcParent == "." means the source file was at the project root itself; never remove the root.

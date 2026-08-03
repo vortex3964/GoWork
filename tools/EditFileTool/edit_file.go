@@ -199,7 +199,16 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	if err != nil {
 		return tools.ToolResult{}, fmt.Errorf("edit_file: reading %s: %w", input.FilePath, err)
 	}
- 
+
+	// Refuse to edit a file that changed on disk since the agent last saw
+	// it. A stale line-number edit would silently hit the wrong lines.
+	if args.ReadState != nil {
+		key := args.PathKey(input.FilePath)
+		if seen, ok := args.ReadState.SeenAt(key); ok && info.ModTime().After(seen) {
+			return tools.Errf("file %s was modified after it was last read - re-read it with read_file to get the current content before editing", input.FilePath), nil
+		}
+	}
+
 	var accepted, rejected []byte
 	if args.WatchList != nil {
 		changes := args.WatchList.GetChanges(input.FilePath)

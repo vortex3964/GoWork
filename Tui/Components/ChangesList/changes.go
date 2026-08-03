@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/sergi/go-diff/diffmatchpatch"
@@ -60,6 +61,13 @@ type WatchList struct {
 	Watcher    *fsnotify.Watcher
 	WatchedDirs map[string]struct{}
 	events     chan WatcherEventMsg
+	// mu guards the maps (WatchedFiles, absWatched, Changeslist, WatchedDirs)
+	// and every fsnotify Add/Remove call. The tools mutate the maps from
+	// their own goroutines (write/edit/create call Add) while the main loop
+	// and the watcher handler read and write them, so without the lock this
+	// is a data race. fsnotify.Watcher is not safe for concurrent calls, so
+	// serializing the Add calls here matters too.
+	mu sync.Mutex
 }
 
 func NewWatchList(aiThink *bool) (*WatchList , error) {
@@ -103,24 +111,44 @@ func (w *WatchList) SetThink(t *bool) {
 
 // Add adds a file to the watch list.
 func (w *WatchList) Add(path string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.addLocked(path)
+}
+
+func (w *WatchList) addLocked(path string) {
 	w.WatchedFiles[path] = struct{}{}
 	w.absWatched[absPath(path)] = path
 }
 
 // Has reports whether path is currently watched.
 func (w *WatchList) Has(path string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	_, ok := w.WatchedFiles[path]
 	return ok
 }
 
 // Remove stops watching path.
 func (w *WatchList) Remove(path string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.removeLocked(path)
+}
+
+func (w *WatchList) removeLocked(path string) {
 	delete(w.WatchedFiles, path)
 	delete(w.absWatched, absPath(path))
 }
 
 // Files returns all currently watched file paths (original form).
 func (w *WatchList) Files() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.filesLocked()
+}
+
+func (w *WatchList) filesLocked() []string {
 	files := make([]string, 0, len(w.WatchedFiles))
 	for f := range w.WatchedFiles {
 		files = append(files, f)
@@ -129,10 +157,21 @@ func (w *WatchList) Files() []string {
 }
 
 func (w *WatchList) GetChanges(filepath string) []Change {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	return w.Changeslist[filepath].Changes
 }
 
 func (w *WatchList) addDirToWatcher(path string) {
+	if w.Watcher == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.addDirToWatcherLocked(path)
+}
+
+func (w *WatchList) addDirToWatcherLocked(path string) {
 	if w.Watcher == nil {
 		return
 	}
@@ -144,6 +183,8 @@ func (w *WatchList) addDirToWatcher(path string) {
 }
 
 func (w *WatchList) hasWatchedFile(eventPath string) (string, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	orig, ok := w.absWatched[absPath(eventPath)]
 	return orig, ok
 }

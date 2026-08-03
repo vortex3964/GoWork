@@ -58,6 +58,11 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs ,rawInput json.R
 		return tools.Errf("error deleting file: %s", err), nil
 	}
 
+	// The file is gone; drop its read-state entry too.
+	if args.ReadState != nil {
+		args.ReadState.Forget(args.PathKey(input.Path))
+	}
+
 	parent := filepath.Dir(input.Path)
 	extra := ""
 	// parent == "." means the file was at the project root itself; never attempt to remove the root.
