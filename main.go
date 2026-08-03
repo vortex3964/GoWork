@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
@@ -94,13 +95,17 @@ func get_supported_providers_local() []string {
 	return []string{"ollama", "llamaCpp", "lmStudio"}
 }
 
-// to catch errors in case the api call for the ai fails
-type aiResponseMsg struct {
-	content    string
-	toolCalls  []providers.ToolCall
-	stopReason string
-	usage      providers.Usage
-	err        error
+// streamDeltaMsg carries a new chunk of assistant text while a generation is
+// streaming; it's what makes the message area update token-by-token.
+type streamDeltaMsg struct {
+	delta string
+}
+
+// streamEndMsg is sent once (and only once) when a streamed generation
+// finishes - success or error - carrying the fully assembled result.
+type streamEndMsg struct {
+	result providers.GenerateResult
+	err    error
 }
 
 // toolResultMsg reports a single finished tool call back to the update loop.
@@ -162,13 +167,24 @@ type model struct {
 	//tool call
 	tool_dispatcher *tools.Dispatcher
 
-	// agentic loop state: the tool calls we're still waiting on (run
-	// one at a time) and how many tool-turns this user request has taken.
-	pendingTools []pendingTool
-	stepCount    int
+	// agentic loop state: the tool calls we're still waiting on and how many
+	// tool-turns this user request has taken. Tools in the current batch run
+	// in parallel; pendingResults (one slot per call) is nil until that slot
+	// reports back, and the loop only returns to the model once every slot is
+	// filled.
+	pendingTools    []pendingTool
+	pendingResults  []*tools.ToolResult
+	stepCount       int
 	// maxSteps is the per-prompt cap on tool turns before the loop forces a
 	// stop; configured via MAX_AGENT_STEPS and defaulted in initialModel.
 	maxSteps int
+
+	// streaming state: while a generation is live we pump deltas off streamCh
+	// into the last assistant message instead of waiting for the whole reply.
+	streamCh    chan tea.Msg
+	liveActive  bool
+	liveContent string
+	liveMsgIdx  int
 
 	// provider/model picker (ctrl+p)
 	providerSelect providerselect.Model
@@ -306,37 +322,62 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// tea.Cmd that actually calls the AI provider - runs off the main update loop
-func generateCmd(p providers.Provider, messages []providers.Message) tea.Cmd {
+// startStreaming spawns a goroutine that runs a streaming generation and
+// forwards chunks into ch. Deltas are throttled (at least every 80ms and at
+// most ~8KB accumulated) so the update loop isn't flooded with per-token
+// messages - a slow local model at tens of tokens/sec still feels live, while
+// a fast one doesn't drown bubbletea in tiny messages. A single streamEndMsg
+// is always sent last, then ch is closed.
+func startStreaming(p providers.Provider, messages []providers.Message, ch chan<- tea.Msg) {
+	go func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		var buf strings.Builder
+		flush := func() {
+			if buf.Len() == 0 {
+				return
+			}
+			ch <- streamDeltaMsg{delta: buf.String()}
+			buf.Reset()
+		}
+		defer cancel()
+
+		ticker := time.NewTicker(80 * time.Millisecond)
+		defer ticker.Stop()
+
+		res, err := p.GenerateStream(ctx, messages, func(delta string) {
+			buf.WriteString(delta)
+			if buf.Len() >= 64 {
+				flush()
+			}
+			select {
+			case <-ticker.C:
+				flush()
+			default:
+			}
+		})
+		flush() // any trailing partial chunk
+		ch <- streamEndMsg{result: res, err: err}
+		close(ch)
+	}()
+}
+
+// streamReadCmd returns the next message from the streaming channel. A nil
+// msg means the channel closed (stream finished).
+func streamReadCmd(ch <-chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		//TODO: swap context.Background() for something cancelable (e.g. tied
-		//to a "stop generating" keybind) once that's wired up.
-		result, err := p.Generate(context.Background(), messages)
-		if err != nil {
-			return aiResponseMsg{err: err}
+		msg, ok := <-ch
+		if !ok {
+			return nil
 		}
-		return aiResponseMsg{
-			content:    result.Content,
-			toolCalls:  result.ToolCalls,
-			stopReason: result.StopReason,
-			usage:      result.Usage,
-		}
+		return msg
 	}
 }
 
-// contextForModel returns the message history we actually send to the
-// provider on this turn. Full history is kept in m.context for future turns;
-// this bounds it to the model's context window (when known) so the original
-// user request is never the thing that gets dropped when the window fills.
-func (m *model) contextForModel() []providers.Message {
-	return providers.TrimContext(m.context, m.status.contextWindow)
-}
+// runToolCmd executes a single tool call off the update loop. Panics inside a
+// tool are recovered and surfaced as an error result instead of killing the
 
-// runToolCmd executes a single tool call off the update loop. Tool calls run
-// strictly sequentially (the WatchList backing them isn't thread-safe), so
-// the next one is only kicked off once this one reports back. Panics inside
-// a tool are recovered and surfaced as an error result instead of killing
-// the whole app (same idea as opencode's runToolSafely).
+// batch in parallel is what the caller arranges by issuing several of these
+// together via tea.Batch - the tools' shared WatchList is now mutex-guarded.
 func runToolCmd(d *tools.Dispatcher, call providers.ToolCall, index int) tea.Cmd {
 	return func() tea.Msg {
 		var res tools.ToolResult
@@ -350,6 +391,14 @@ func runToolCmd(d *tools.Dispatcher, call providers.ToolCall, index int) tea.Cmd
 		}()
 		return toolResultMsg{index: index, result: res}
 	}
+}
+
+// contextForModel returns the message history we actually send to the
+// provider on this turn. Full history is kept in m.context for future turns;
+// this bounds it to the model's context window (when known) so the original
+// user request is never the thing that gets dropped when the window fills.
+func (m *model) contextForModel() []providers.Message {
+	return providers.TrimContext(m.context, m.status.contextWindow)
 }
 
 // toolOutputForContext bounds how much of a tool's output gets written back
@@ -429,7 +478,16 @@ func (m *model) submitPrompt() []tea.Cmd {
 	m.historyIdx = 0
 	m.stepCount = 0
 	m.pendingTools = m.pendingTools[:0]
-	cmds = append(cmds, generateCmd(p, m.contextForModel()))
+	m.pendingResults = m.pendingResults[:0]
+
+	// Start a streamed generation. An empty assistant message is created now
+	// so deltas can be written straight into it.
+	m.streamCh = make(chan tea.Msg, 16)
+	m.liveActive = true
+	m.liveContent = ""
+	m.liveMsgIdx = m.message_area.LiveAssistantStart()
+	startStreaming(p, m.contextForModel(), m.streamCh)
+	cmds = append(cmds, streamReadCmd(m.streamCh))
 	cmds = append(cmds, m.spinner.Tick)
 	return cmds
 }
@@ -805,12 +863,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, m.changesList.WatchCmd()
-	case aiResponseMsg:
+	case streamDeltaMsg:
+		// A chunk of streamed assistant text: append it to the live message
+		// and re-arm the reader for the next chunk.
+		if m.liveActive {
+			m.liveContent += msg.delta
+			m.message_area.LiveAssistantUpdate(m.liveMsgIdx, m.liveContent)
+			return m, streamReadCmd(m.streamCh)
+		}
+		return m, nil
+	case streamEndMsg:
+		m.liveActive = false
 		m.changesList.RefreshDiffs()
 		if msg.err != nil {
 			*m.aiThink = false
 			m.stepCount = 0
 			m.pendingTools = m.pendingTools[:0]
+			m.pendingResults = m.pendingResults[:0]
 			m.prompt.Focus()
 			var perr *providers.ProviderError
 			if errors.As(msg.err, &perr) {
@@ -821,6 +890,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.message_area.AppendMessage("Auth failed - check your API key.", false)
 				case providers.ErrContextExceeded:
 					m.message_area.AppendMessage("Context window exceeded - try trimming history.", false)
+				case providers.ErrCanceled:
+					m.message_area.AppendMessage(">**INFO** Generation stopped.", false)
 				default:
 					m.message_area.AppendMessage("Error: "+perr.Error(), false)
 				}
@@ -833,19 +904,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		m.status.sessionTokens += msg.usage.TotalTokens
-		m.status.lastPromptTokens = msg.usage.PromptTokens
+		m.status.sessionTokens += msg.result.Usage.TotalTokens
+		m.status.lastPromptTokens = msg.result.Usage.PromptTokens
+
+		// The live assistant message already shows the streamed text; write
+		// the canonical final content once more (the trailing partial chunk
+		// only lands here).
+		content := msg.result.Content
+		if m.liveMsgIdx >= 0 {
+			m.message_area.LiveAssistantUpdate(m.liveMsgIdx, content)
+		} else if content != "" {
+			m.message_area.AppendMessage(content, false)
+		}
 
 		// Some models (often small local ones) print a tool call as a JSON
 		// blob in their text instead of emitting a native tool_calls block.
 		// If the model reported no tool calls but its text parses into a
 		// known tool call, treat it as one anyway.
-		toolCalls := msg.toolCalls
-		content := msg.content
+		toolCalls := msg.result.ToolCalls
 		if len(toolCalls) == 0 && content != "" {
 			if parsed, clean := providers.ParseTextToolCalls(content); len(parsed) > 0 {
 				toolCalls = parsed
 				content = clean
+				if m.liveMsgIdx >= 0 {
+					m.message_area.LiveAssistantUpdate(m.liveMsgIdx, content)
+				}
 			}
 		}
 
@@ -855,9 +938,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// true so the spinner keeps running and submitPrompt won't
 			// launch a concurrent generation; the prompt bar itself stays
 			// focused and usable.
-			if content != "" {
-				m.message_area.AppendMessage(content, false)
-			}
 			m.context = append(m.context, providers.Message{
 				Role: "assistant", Content: content, ToolCalls: toolCalls,
 			})
@@ -874,29 +954,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				)
 				m.stepCount = 0
 				m.pendingTools = m.pendingTools[:0]
+				m.pendingResults = m.pendingResults[:0]
 				return m, nil
 			}
 
-			// Render each requested call as a "running" row, then start
-			// executing them one at a time. The prompt bar stays focused
-			// and usable while tools run.
-			*m.aiThink = true
+			// Render each requested call as a "running" row, then execute
+			// the whole batch in parallel - the update loop collects
+			// results as they arrive and only returns to the model once
+			// every slot is filled.
 			m.pendingTools = m.pendingTools[:0]
-			for _, tc := range toolCalls {
+			m.pendingResults = make([]*tools.ToolResult, len(toolCalls))
+			cmds := make([]tea.Cmd, 0, len(toolCalls))
+			for i, tc := range toolCalls {
 				idx := m.message_area.AppendTool(tc.Tool_name, messagearea.SummarizeToolInput(tc.Input))
 				m.pendingTools = append(m.pendingTools, pendingTool{call: tc, messageIdx: idx})
+				cmds = append(cmds, runToolCmd(m.tool_dispatcher, tc, i))
 			}
-			return m, runToolCmd(m.tool_dispatcher, m.pendingTools[0].call, 0)
+			return m, tea.Batch(cmds...)
 		}
 
 		// Final answer - no more tool calls to run.
 		*m.aiThink = false
 		if content != "" {
-			m.message_area.AppendMessage(content, false)
 			m.context = append(m.context, providers.Message{Role: "assistant", Content: content})
 		}
 		m.stepCount = 0
 		m.pendingTools = m.pendingTools[:0]
+		m.pendingResults = m.pendingResults[:0]
 		m.prompt.Focus()
 		if m.changesList.Open() {
 			return m, m.changesList.WatchCmd()
@@ -914,20 +998,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.message_area.UpdateToolMessage(pt.messageIdx, messagearea.ToolDone, msg.result.Content)
 		}
 
-		// Feed the tool's output back to the model, tied to its call id.
-		m.context = append(m.context, providers.Message{
-			Role: "tool", ToolCallID: pt.call.Tool_call_id, Content: toolOutputForContext(msg.result.Content),
-		})
+		// Stash the result. Results are appended to context in call order
+		// once the whole batch reports back, keeping the assistant's
+		// tool_calls paired with their answers.
+		if msg.index < len(m.pendingResults) {
+			res := msg.result
+			m.pendingResults[msg.index] = &res
+		}
 		m.changesList.RefreshDiffs()
 
-		// Kick off the next tool in this batch, if any. Strictly sequential.
-		next := msg.index + 1
-		if next < len(m.pendingTools) {
-			return m, runToolCmd(m.tool_dispatcher, m.pendingTools[next].call, next)
+		// Still waiting on other calls in the batch.
+		for _, r := range m.pendingResults {
+			if r == nil {
+				return m, nil
+			}
 		}
 
-		// Every tool in the batch ran - loop back to the model.
+		// Every tool in the batch ran - loop back to the model with all
+		// results in context.
+		for i, pt := range m.pendingTools {
+			m.context = append(m.context, providers.Message{
+				Role: "tool", ToolCallID: pt.call.Tool_call_id, Content: toolOutputForContext(m.pendingResults[i].Content),
+			})
+		}
 		m.pendingTools = m.pendingTools[:0]
+		m.pendingResults = m.pendingResults[:0]
+
 		var p providers.Provider
 		if m.model != nil {
 			p = m.model.Get()
@@ -938,8 +1034,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.message_area.AppendMessage(">**ERROR** No provider selected press ctrl+p to pick one.", false)
 			return m, nil
 		}
-		*m.aiThink = true
-		return m, generateCmd(p, m.contextForModel())
+		m.streamCh = make(chan tea.Msg, 16)
+		m.liveActive = true
+		m.liveContent = ""
+		m.liveMsgIdx = m.message_area.LiveAssistantStart()
+		startStreaming(p, m.contextForModel(), m.streamCh)
+		return m, streamReadCmd(m.streamCh)
 	case modelInfoMsg:
 		if msg.err == nil {
 			m.status.contextWindow = msg.info.ContextWindow

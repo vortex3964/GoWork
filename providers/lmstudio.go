@@ -116,6 +116,15 @@ func (l *lmStudioProvider) Generate(ctx context.Context, messages []Message) (Ge
 	}, nil
 }
 
+func (l *lmStudioProvider) GenerateStream(ctx context.Context, messages []Message, onDelta StreamFunc) (GenerateResult, error) {
+	var tools []map[string]interface{}
+	if l.toolsEnabled && len(tools_def) > 0 {
+		tools = openAICompatTools()
+	}
+	return streamOpenAICompat(ctx, l.baseURL+"/chat/completions", l.model,
+		nil, toLMStudioMessages(messages), tools, false, onDelta)
+}
+
 func (l *lmStudioProvider) EstimateTokens(ctx context.Context, messages []Message) (int, error) {
 	chars := 0
 	for _, msg := range messages {

@@ -160,6 +160,33 @@ func (m *Model) UpdateToolMessage(index int, status ToolStatus, result string) {
 	m.vp.GotoBottom()
 }
 
+// LiveAssistantStart appends a fresh, empty assistant message and returns its
+// index. The caller owns it and should feed streamed tokens to it with
+// LiveAssistantUpdate, then leave it as the final message when the stream ends.
+func (m *Model) LiveAssistantStart() int {
+	m.append(NewMessage("", false))
+	return len(m.messages) - 1
+}
+
+// LiveAssistantUpdate replaces the content of the assistant message at index
+// (created by LiveAssistantStart) with content. It re-renders just that block,
+// so streaming token-by-token stays cheap even with many messages on screen.
+// No-op for a tool or user message, or an out-of-range index.
+func (m *Model) LiveAssistantUpdate(index int, content string) {
+	if index < 0 || index >= len(m.messages) {
+		return
+	}
+	msg := m.messages[index]
+	if msg.isUser || msg.isTool {
+		return
+	}
+	msg.content = content
+	m.messages[index] = msg
+	m.rendered[index] = m.renderBlock(msg, m.contentWidth())
+	m.pushContent()
+	m.vp.GotoBottom()
+}
+
 func (m *Model) append(msg message) {
 	m.messages = append(m.messages, msg)
 	m.size += 1

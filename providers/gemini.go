@@ -187,6 +187,108 @@ func (g *geminiProvider) Generate(ctx context.Context, messages []Message) (Gene
 	}, nil
 }
 
+func (g *geminiProvider) GenerateStream(ctx context.Context, messages []Message, onDelta StreamFunc) (GenerateResult, error) {
+	reqBody := map[string]interface{}{
+		"contents": toContents(messages),
+	}
+	if system_prompt != "" {
+		reqBody["systemInstruction"] = map[string]interface{}{
+			"parts": []map[string]string{{"text": system_prompt}},
+		}
+	}
+	if len(tools_def) > 0 {
+		reqBody["tools"] = toGeminiTools()
+		reqBody["toolConfig"] = map[string]interface{}{
+			"functionCallingConfig": map[string]interface{}{"mode": "AUTO"},
+		}
+	}
+
+	url := geminiBaseURL + "/models/" + g.model + ":streamGenerateContent?alt=sse"
+	resp, err := streamRequest(ctx, http.MethodPost, url, map[string]string{"x-goog-api-key": g.api_key}, reqBody)
+	if err != nil {
+		return GenerateResult{}, err
+	}
+	defer resp.Body.Close()
+
+	var content strings.Builder
+	var toolCalls []ToolCall
+	usage := Usage{}
+	finish := ""
+
+	err = scanStreamLines(ctx, resp, func(line string) error {
+		payload, ok := sseData(line)
+		if !ok {
+			return nil
+		}
+		var parsed struct {
+			Candidates []struct {
+				Content struct {
+					Parts []struct {
+						Text     string `json:"text"`
+						FuncCall *struct {
+							Name string          `json:"name"`
+							Args json.RawMessage `json:"args"`
+							ID   string          `json:"id"`
+						} `json:"functionCall"`
+					} `json:"parts"`
+				} `json:"content"`
+				FinishReason string `json:"finishReason"`
+			} `json:"candidates"`
+			UsageMetadata *struct {
+				PromptTokenCount     int `json:"promptTokenCount"`
+				CandidatesTokenCount int `json:"candidatesTokenCount"`
+				TotalTokenCount      int `json:"totalTokenCount"`
+			} `json:"usageMetadata"`
+		}
+		if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+			return nil
+		}
+		if parsed.UsageMetadata != nil {
+			usage = Usage{
+				PromptTokens:     parsed.UsageMetadata.PromptTokenCount,
+				CompletionTokens: parsed.UsageMetadata.CandidatesTokenCount,
+				TotalTokens:      parsed.UsageMetadata.TotalTokenCount,
+			}
+		}
+		if len(parsed.Candidates) == 0 {
+			return nil
+		}
+		c := parsed.Candidates[0]
+		if c.FinishReason != "" {
+			finish = c.FinishReason
+		}
+		for _, part := range c.Content.Parts {
+			if part.FuncCall != nil {
+				id := part.FuncCall.Name
+				if part.FuncCall.ID != "" {
+					id = part.FuncCall.ID
+				}
+				toolCalls = append(toolCalls, ToolCall{
+					Tool_call_id: id,
+					Tool_name:    part.FuncCall.Name,
+					Input:        part.FuncCall.Args,
+				})
+				continue
+			}
+			if part.Text != "" {
+				content.WriteString(part.Text)
+				onDelta(part.Text)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return GenerateResult{}, err
+	}
+
+	return GenerateResult{
+		Content:    content.String(),
+		ToolCalls:  toolCalls,
+		StopReason: finish,
+		Usage:      usage,
+	}, nil
+}
+
 func (g *geminiProvider) EstimateTokens(ctx context.Context, messages []Message) (int, error) {
 	reqBody := map[string]interface{}{
 		"contents": toContents(messages),

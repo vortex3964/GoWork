@@ -99,6 +99,16 @@ func (o *openaiProvider) Generate(ctx context.Context, messages []Message) (Gene
 	}, nil
 }
 
+func (o *openaiProvider) GenerateStream(ctx context.Context, messages []Message, onDelta StreamFunc) (GenerateResult, error) {
+	var tools []map[string]interface{}
+	if len(tools_def) > 0 {
+		tools = openAICompatTools()
+	}
+	return streamOpenAICompat(ctx, openaiBaseURL+"/chat/completions", o.model,
+		map[string]string{"Authorization": "Bearer " + o.api_key},
+		toOpenAIMessages(messages), tools, true, onDelta)
+}
+
 //TODO: also add a better token counting func
 
 // openai doesn't expose a token-counting endpoint, so this falls back to
