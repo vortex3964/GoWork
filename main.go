@@ -186,6 +186,14 @@ type model struct {
 	liveContent string
 	liveMsgIdx  int
 
+	// interrupt state: cancel aborts whichever unit of work is in flight
+	// (the streamed generation or the tool batch - they share one context
+	// per turn), and stopRequested remembers that the user pressed ctrl+i so
+	// the loop doesn't silently keep going when a provider ignores the
+	// cancel. ctrl+i is delivered as tab (same byte, 0x09).
+	cancel        context.CancelFunc
+	stopRequested bool
+
 	// provider/model picker (ctrl+p)
 	providerSelect providerselect.Model
 
@@ -322,15 +330,15 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// startStreaming spawns a goroutine that runs a streaming generation and
-// forwards chunks into ch. Deltas are throttled (at least every 80ms and at
-// most ~8KB accumulated) so the update loop isn't flooded with per-token
-// messages - a slow local model at tens of tokens/sec still feels live, while
-// a fast one doesn't drown bubbletea in tiny messages. A single streamEndMsg
-// is always sent last, then ch is closed.
-func startStreaming(p providers.Provider, messages []providers.Message, ch chan<- tea.Msg) {
+// startStreaming spawns a goroutine that runs a streaming generation on ctx
+// (which the caller owns so ctrl+i can cancel it) and forwards chunks into ch.
+// Deltas are throttled (at least every 80ms and at most ~64B accumulated) so
+// the update loop isn't flooded with per-token messages - a slow local model
+// at tens of tokens/sec still feels live, while a fast one doesn't drown
+// bubbletea in tiny messages. A single streamEndMsg is always sent last, then
+// ch is closed.
+func startStreaming(ctx context.Context, p providers.Provider, messages []providers.Message, ch chan<- tea.Msg) {
 	go func() {
-		ctx, cancel := context.WithCancel(context.Background())
 		var buf strings.Builder
 		flush := func() {
 			if buf.Len() == 0 {
@@ -339,7 +347,6 @@ func startStreaming(p providers.Provider, messages []providers.Message, ch chan<
 			ch <- streamDeltaMsg{delta: buf.String()}
 			buf.Reset()
 		}
-		defer cancel()
 
 		ticker := time.NewTicker(80 * time.Millisecond)
 		defer ticker.Stop()
@@ -378,7 +385,7 @@ func streamReadCmd(ch <-chan tea.Msg) tea.Cmd {
 
 // batch in parallel is what the caller arranges by issuing several of these
 // together via tea.Batch - the tools' shared WatchList is now mutex-guarded.
-func runToolCmd(d *tools.Dispatcher, call providers.ToolCall, index int) tea.Cmd {
+func runToolCmd(ctx context.Context, d *tools.Dispatcher, call providers.ToolCall, index int) tea.Cmd {
 	return func() tea.Msg {
 		var res tools.ToolResult
 		func() {
@@ -387,7 +394,7 @@ func runToolCmd(d *tools.Dispatcher, call providers.ToolCall, index int) tea.Cmd
 					res = tools.Errf("tool %s panicked: %v", call.Tool_name, r)
 				}
 			}()
-			res = d.Dispach(context.Background(), tools.ToolUse{Name: call.Tool_name, Input: call.Input})
+			res = d.Dispach(ctx, tools.ToolUse{Name: call.Tool_name, Input: call.Input})
 		}()
 		return toolResultMsg{index: index, result: res}
 	}
@@ -399,6 +406,23 @@ func runToolCmd(d *tools.Dispatcher, call providers.ToolCall, index int) tea.Cmd
 // user request is never the thing that gets dropped when the window fills.
 func (m *model) contextForModel() []providers.Message {
 	return providers.TrimContext(m.context, m.status.contextWindow)
+}
+
+// endTurn resets all agentic-loop state and returns the app to idle, focusing
+// the prompt. Used when a turn finishes, errors, or is interrupted. It also
+// cancels any still-live context (harmless if the work already wound down).
+func (m *model) endTurn() {
+	*m.aiThink = false
+	m.stepCount = 0
+	m.pendingTools = m.pendingTools[:0]
+	m.pendingResults = m.pendingResults[:0]
+	m.liveActive = false
+	m.stopRequested = false
+	if m.cancel != nil {
+		m.cancel()
+		m.cancel = nil
+	}
+	m.prompt.Focus()
 }
 
 // toolOutputForContext bounds how much of a tool's output gets written back
@@ -481,12 +505,16 @@ func (m *model) submitPrompt() []tea.Cmd {
 	m.pendingResults = m.pendingResults[:0]
 
 	// Start a streamed generation. An empty assistant message is created now
-	// so deltas can be written straight into it.
+	// so deltas can be written straight into it. The context is owned here so
+	// ctrl+i can cancel the turn from the update loop.
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	m.stopRequested = false
 	m.streamCh = make(chan tea.Msg, 16)
 	m.liveActive = true
 	m.liveContent = ""
 	m.liveMsgIdx = m.message_area.LiveAssistantStart()
-	startStreaming(p, m.contextForModel(), m.streamCh)
+	startStreaming(ctx, p, m.contextForModel(), m.streamCh)
 	cmds = append(cmds, streamReadCmd(m.streamCh))
 	cmds = append(cmds, m.spinner.Tick)
 	return cmds
@@ -623,6 +651,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, m.openProviderSelect()
+		}
+
+		// ctrl+i interrupts the current turn - the streamed generation and/or
+		// the tool batch. A terminal delivers ctrl+i as the same byte as tab
+		// (0x09), so both spellings are accepted. With nothing running this is
+		// a no-op, so tab stays free while idle.
+		if msg_str == "ctrl+i" || msg_str == "tab" {
+			if !*m.aiThink || m.cancel == nil {
+				return m, nil
+			}
+			m.stopRequested = true
+			m.cancel()
+			m.message_area.AppendMessage(">**INFO** Stopping…", false)
+			return m, nil
 		}
 
 		// A visible modal swallows all keys so the user has to dismiss it
@@ -875,12 +917,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case streamEndMsg:
 		m.liveActive = false
 		m.changesList.RefreshDiffs()
+		// The user pressed ctrl+i. Even if the provider ignored the cancel
+		// and returned happily, we honour the interrupt and stop here rather
+		// than launching another model turn or more tools.
+		if m.stopRequested {
+			m.endTurn()
+			m.message_area.AppendMessage(">**INFO** Generation stopped.", false)
+			return m, nil
+		}
 		if msg.err != nil {
-			*m.aiThink = false
-			m.stepCount = 0
-			m.pendingTools = m.pendingTools[:0]
-			m.pendingResults = m.pendingResults[:0]
-			m.prompt.Focus()
+			m.endTurn()
 			var perr *providers.ProviderError
 			if errors.As(msg.err, &perr) {
 				switch perr.Kind {
@@ -946,42 +992,38 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			
 			m.stepCount++
 			if m.stepCount > m.maxSteps {
-				*m.aiThink = false
-				m.prompt.Focus()
+				m.endTurn()
 				m.message_area.AppendMessage(
 					">**ERROR** Reached the maximum number of agent turns. If you want, ask me to continue with the remaining steps.",
 					false,
 				)
-				m.stepCount = 0
-				m.pendingTools = m.pendingTools[:0]
-				m.pendingResults = m.pendingResults[:0]
 				return m, nil
 			}
 
 			// Render each requested call as a "running" row, then execute
 			// the whole batch in parallel - the update loop collects
 			// results as they arrive and only returns to the model once
-			// every slot is filled.
+			// every slot is filled. The batch gets its own cancellable
+			// context so ctrl+i can abort in-flight tools.
+			ctx, cancel := context.WithCancel(context.Background())
+			m.cancel = cancel
+			m.stopRequested = false
 			m.pendingTools = m.pendingTools[:0]
 			m.pendingResults = make([]*tools.ToolResult, len(toolCalls))
 			cmds := make([]tea.Cmd, 0, len(toolCalls))
 			for i, tc := range toolCalls {
 				idx := m.message_area.AppendTool(tc.Tool_name, messagearea.SummarizeToolInput(tc.Input))
 				m.pendingTools = append(m.pendingTools, pendingTool{call: tc, messageIdx: idx})
-				cmds = append(cmds, runToolCmd(m.tool_dispatcher, tc, i))
+				cmds = append(cmds, runToolCmd(ctx, m.tool_dispatcher, tc, i))
 			}
 			return m, tea.Batch(cmds...)
 		}
 
 		// Final answer - no more tool calls to run.
-		*m.aiThink = false
+		m.endTurn()
 		if content != "" {
 			m.context = append(m.context, providers.Message{Role: "assistant", Content: content})
 		}
-		m.stepCount = 0
-		m.pendingTools = m.pendingTools[:0]
-		m.pendingResults = m.pendingResults[:0]
-		m.prompt.Focus()
 		if m.changesList.Open() {
 			return m, m.changesList.WatchCmd()
 		}
@@ -1015,7 +1057,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Every tool in the batch ran - loop back to the model with all
-		// results in context.
+		// results in context, unless the user interrupted the batch.
 		for i, pt := range m.pendingTools {
 			m.context = append(m.context, providers.Message{
 				Role: "tool", ToolCallID: pt.call.Tool_call_id, Content: toolOutputForContext(m.pendingResults[i].Content),
@@ -1023,22 +1065,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.pendingTools = m.pendingTools[:0]
 		m.pendingResults = m.pendingResults[:0]
+		m.cancel = nil
+
+		if m.stopRequested {
+			m.endTurn()
+			m.message_area.AppendMessage(">**INFO** Turn stopped.", false)
+			return m, nil
+		}
 
 		var p providers.Provider
 		if m.model != nil {
 			p = m.model.Get()
 		}
 		if p == nil {
-			*m.aiThink = false
-			m.stepCount = 0
+			m.endTurn()
 			m.message_area.AppendMessage(">**ERROR** No provider selected press ctrl+p to pick one.", false)
 			return m, nil
 		}
+		ctx, cancel := context.WithCancel(context.Background())
+		m.cancel = cancel
+		m.stopRequested = false
 		m.streamCh = make(chan tea.Msg, 16)
 		m.liveActive = true
 		m.liveContent = ""
 		m.liveMsgIdx = m.message_area.LiveAssistantStart()
-		startStreaming(p, m.contextForModel(), m.streamCh)
+		startStreaming(ctx, p, m.contextForModel(), m.streamCh)
 		return m, streamReadCmd(m.streamCh)
 	case modelInfoMsg:
 		if msg.err == nil {
