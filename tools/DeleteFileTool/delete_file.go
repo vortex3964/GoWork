@@ -37,7 +37,8 @@ func (t *Tool) InputSchema() json.RawMessage {
 				"description": "Path to the file to delete, relative to the project root (e.g. \"src/foo.go\").",
 			},
 		},
-		"required": []string{"path"},
+		"required":               []string{"path"},
+		"additionalProperties": false,
 	}
 	b, _ := json.Marshal(schema)
 	return b

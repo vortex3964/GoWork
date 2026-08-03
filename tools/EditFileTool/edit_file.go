@@ -64,7 +64,8 @@ func (t *Tool) InputSchema() json.RawMessage {
 				"description": "The text to place at the given line range. Can be empty (to delete the range), a single line, or multiple lines.",
 			},
 		},
-		"required": []string{"file_path", "start_line", "end_line", "new_content"},
+		"required":               []string{"file_path", "start_line", "end_line", "new_content"},
+		"additionalProperties": false,
 	}
 	b, _ := json.Marshal(schema)
 	return b

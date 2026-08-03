@@ -93,7 +93,8 @@ func (t *Tool) InputSchema() json.RawMessage {
 				"description": fmt.Sprintf("Max results to return, 1-%d. Defaults to %d.", maxResultsHardCap, defaultMaxResults),
 			},
 		},
-		"required": []string{"query"},
+		"required":               []string{"query"},
+		"additionalProperties": false,
 	}
 	b, _ := json.Marshal(schema)
 	return b
