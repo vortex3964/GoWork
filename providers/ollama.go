@@ -79,7 +79,15 @@ func toOllamaMessages(messages []Message) []map[string]interface{} {
 			}
 			out = append(out, m)
 		case "tool":
-			out = append(out, map[string]interface{}{"role": "tool", "content": msg.Content})
+			// Newer ollama servers require tool messages to name the call
+			// they answer (tool_call_id), matching the id echoed back in the
+			// assistant's tool_calls above. Older versions ignore unknown
+			// fields, so sending it unconditionally is safe.
+			out = append(out, map[string]interface{}{
+				"role":         "tool",
+				"tool_call_id": msg.ToolCallID,
+				"content":      msg.Content,
+			})
 		default:
 			out = append(out, map[string]interface{}{"role": msg.Role, "content": msg.Content})
 		}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"charm.land/bubbles/v2/spinner"
@@ -95,15 +96,37 @@ func get_supported_providers_local() []string {
 
 // to catch errors in case the api call for the ai fails
 type aiResponseMsg struct {
-	content string
-	usage   providers.Usage
-	err     error
+	content    string
+	toolCalls  []providers.ToolCall
+	stopReason string
+	usage      providers.Usage
+	err        error
+}
+
+// toolResultMsg reports a single finished tool call back to the update loop.
+// index points at the pending tool it belongs to (into model.pendingTools).
+type toolResultMsg struct {
+	index  int
+	result tools.ToolResult
 }
 
 type modelInfoMsg struct {
 	info providers.ModelInfo
 	err  error
 }
+
+// pendingTool is one assistant-requested tool call waiting to run, paired
+// with the message-area index its status line is rendered at.
+type pendingTool struct {
+	call       providers.ToolCall
+	messageIdx int
+}
+
+// defaultMaxAgentSteps is used when MAX_AGENT_STEPS isn't set (or parses to
+// zero). It guards the agentic loop against runaway tool-call chains (a model
+
+
+const defaultMaxAgentSteps = 40
 
 type uiMode int
 
@@ -138,6 +161,14 @@ type model struct {
 
 	//tool call
 	tool_dispatcher *tools.Dispatcher
+
+	// agentic loop state: the tool calls we're still waiting on (run
+	// one at a time) and how many tool-turns this user request has taken.
+	pendingTools []pendingTool
+	stepCount    int
+	// maxSteps is the per-prompt cap on tool turns before the loop forces a
+	// stop; configured via MAX_AGENT_STEPS and defaulted in initialModel.
+	maxSteps int
 
 	// provider/model picker (ctrl+p)
 	providerSelect providerselect.Model
@@ -236,6 +267,7 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 		context:         []providers.Message{},
 		model:           holder,
 		aiThink:         &think,
+		maxSteps:        maxAgentStepsFromEnv(),
 		status:          newStatusLine(root, providerName, modelID),
 		logoLines:       loadLogo(),
 		popUp:           popup.New(),
@@ -243,6 +275,21 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 		changesList:     changeslist.New(wl),
 		tool_dispatcher: dispatcher,
 	}
+}
+
+// maxAgentStepsFromEnv reads MAX_AGENT_STEPS (a positive int) and falls back
+// to defaultMaxAgentSteps when unset, empty, or invalid.
+func maxAgentStepsFromEnv() int {
+	raw := strings.TrimSpace(os.Getenv("MAX_AGENT_STEPS"))
+	if raw == "" {
+		return defaultMaxAgentSteps
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		log.Printf("ignoring invalid MAX_AGENT_STEPS=%q, using %d", raw, defaultMaxAgentSteps)
+		return defaultMaxAgentSteps
+	}
+	return n
 }
 
 func (m model) Init() tea.Cmd {
@@ -260,7 +307,7 @@ func (m model) Init() tea.Cmd {
 }
 
 // tea.Cmd that actually calls the AI provider - runs off the main update loop
-func generateCmd(p providers.Provider, prompt string, messages []providers.Message) tea.Cmd {
+func generateCmd(p providers.Provider, messages []providers.Message) tea.Cmd {
 	return func() tea.Msg {
 		//TODO: swap context.Background() for something cancelable (e.g. tied
 		//to a "stop generating" keybind) once that's wired up.
@@ -268,8 +315,44 @@ func generateCmd(p providers.Provider, prompt string, messages []providers.Messa
 		if err != nil {
 			return aiResponseMsg{err: err}
 		}
-		return aiResponseMsg{content: result.Content, usage: result.Usage}
+		return aiResponseMsg{
+			content:    result.Content,
+			toolCalls:  result.ToolCalls,
+			stopReason: result.StopReason,
+			usage:      result.Usage,
+		}
 	}
+}
+
+// runToolCmd executes a single tool call off the update loop. Tool calls run
+// strictly sequentially (the WatchList backing them isn't thread-safe), so
+// the next one is only kicked off once this one reports back. Panics inside
+// a tool are recovered and surfaced as an error result instead of killing
+// the whole app (same idea as opencode's runToolSafely).
+func runToolCmd(d *tools.Dispatcher, call providers.ToolCall, index int) tea.Cmd {
+	return func() tea.Msg {
+		var res tools.ToolResult
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					res = tools.Errf("tool %s panicked: %v", call.Tool_name, r)
+				}
+			}()
+			res = d.Dispach(context.Background(), tools.ToolUse{Name: call.Tool_name, Input: call.Input})
+		}()
+		return toolResultMsg{index: index, result: res}
+	}
+}
+
+// toolOutputForContext bounds how much of a tool's output gets written back
+
+
+func toolOutputForContext(content string) string {
+	const maxChars = 24 * 1024
+	if len(content) <= maxChars {
+		return content
+	}
+	return content[:maxChars] + "\n…[tool output truncated - too long to keep in context]"
 }
 
 func fetchModelInfoCmd(p providers.Provider, model string) tea.Cmd {
@@ -311,6 +394,13 @@ func (m *model) submitPrompt() []tea.Cmd {
 	if val == "" {
 		return cmds
 	}
+	// Block submitting a second request while one is still running (the
+	// agentic loop can hold aiThink true across many tool turns, so this
+	// guards against launching concurrent generations).
+	if *m.aiThink {
+		m.message_area.AppendMessage(">**INFO** Still working - wait for the current turn to finish.", false)
+		return cmds
+	}
 	var p providers.Provider
 	if m.model != nil {
 		p = m.model.Get()
@@ -329,7 +419,9 @@ func (m *model) submitPrompt() []tea.Cmd {
 	m.context = append(m.context, providers.Message{Role: "user", Content: val})
 	m.prompt.Reset()
 	m.historyIdx = 0
-	cmds = append(cmds, generateCmd(p, val, m.context))
+	m.stepCount = 0
+	m.pendingTools = m.pendingTools[:0]
+	cmds = append(cmds, generateCmd(p, m.context))
 	cmds = append(cmds, m.spinner.Tick)
 	return cmds
 }
@@ -684,9 +776,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.changesList.WatchCmd()
 	case aiResponseMsg:
-		*m.aiThink = false
 		m.changesList.RefreshDiffs()
 		if msg.err != nil {
+			*m.aiThink = false
+			m.stepCount = 0
+			m.pendingTools = m.pendingTools[:0]
+			m.prompt.Focus()
 			var perr *providers.ProviderError
 			if errors.As(msg.err, &perr) {
 				switch perr.Kind {
@@ -702,16 +797,119 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.message_area.AppendMessage("Error: "+msg.err.Error(), false)
 			}
-		} else {
-			m.message_area.AppendMessage(msg.content, false)
-			m.context = append(m.context, providers.Message{Role: "assistant", Content: msg.content})
-			m.status.sessionTokens += msg.usage.TotalTokens
-			m.status.lastPromptTokens = msg.usage.PromptTokens
+			if m.changesList.Open() {
+				return m, m.changesList.WatchCmd()
+			}
+			return m, nil
 		}
+
+		m.status.sessionTokens += msg.usage.TotalTokens
+		m.status.lastPromptTokens = msg.usage.PromptTokens
+
+		// Some models (often small local ones) print a tool call as a JSON
+		// blob in their text instead of emitting a native tool_calls block.
+		// If the model reported no tool calls but its text parses into a
+		// known tool call, treat it as one anyway.
+		toolCalls := msg.toolCalls
+		content := msg.content
+		if len(toolCalls) == 0 && content != "" {
+			if parsed, clean := providers.ParseTextToolCalls(content); len(parsed) > 0 {
+				toolCalls = parsed
+				content = clean
+			}
+		}
+
+		if len(toolCalls) > 0 {
+			// The assistant asked for tools: run them, feed the results
+			// back into context, then call the model again. aiThink stays
+			// true so the spinner keeps running and submitPrompt won't
+			// launch a concurrent generation; the prompt bar itself stays
+			// focused and usable.
+			if content != "" {
+				m.message_area.AppendMessage(content, false)
+			}
+			m.context = append(m.context, providers.Message{
+				Role: "assistant", Content: content, ToolCalls: toolCalls,
+			})
+
+			
+			
+			m.stepCount++
+			if m.stepCount > m.maxSteps {
+				*m.aiThink = false
+				m.prompt.Focus()
+				m.message_area.AppendMessage(
+					">**ERROR** Reached the maximum number of agent turns. If you want, ask me to continue with the remaining steps.",
+					false,
+				)
+				m.stepCount = 0
+				m.pendingTools = m.pendingTools[:0]
+				return m, nil
+			}
+
+			// Render each requested call as a "running" row, then start
+			// executing them one at a time. The prompt bar stays focused
+			// and usable while tools run.
+			*m.aiThink = true
+			m.pendingTools = m.pendingTools[:0]
+			for _, tc := range toolCalls {
+				idx := m.message_area.AppendTool(tc.Tool_name, messagearea.SummarizeToolInput(tc.Input))
+				m.pendingTools = append(m.pendingTools, pendingTool{call: tc, messageIdx: idx})
+			}
+			return m, runToolCmd(m.tool_dispatcher, m.pendingTools[0].call, 0)
+		}
+
+		// Final answer - no more tool calls to run.
+		*m.aiThink = false
+		if content != "" {
+			m.message_area.AppendMessage(content, false)
+			m.context = append(m.context, providers.Message{Role: "assistant", Content: content})
+		}
+		m.stepCount = 0
+		m.pendingTools = m.pendingTools[:0]
+		m.prompt.Focus()
 		if m.changesList.Open() {
 			return m, m.changesList.WatchCmd()
 		}
 		return m, nil
+	case toolResultMsg:
+		if msg.index < 0 || msg.index >= len(m.pendingTools) {
+			return m, nil
+		}
+		pt := m.pendingTools[msg.index]
+
+		if msg.result.IsError {
+			m.message_area.UpdateToolMessage(pt.messageIdx, messagearea.ToolError, msg.result.Content)
+		} else {
+			m.message_area.UpdateToolMessage(pt.messageIdx, messagearea.ToolDone, msg.result.Content)
+		}
+
+		// Feed the tool's output back to the model, tied to its call id.
+		m.context = append(m.context, providers.Message{
+			Role: "tool", ToolCallID: pt.call.Tool_call_id, Content: toolOutputForContext(msg.result.Content),
+		})
+		m.changesList.RefreshDiffs()
+
+		// Kick off the next tool in this batch, if any. Strictly sequential.
+		next := msg.index + 1
+		if next < len(m.pendingTools) {
+			return m, runToolCmd(m.tool_dispatcher, m.pendingTools[next].call, next)
+		}
+
+		// Every tool in the batch ran - loop back to the model.
+		m.pendingTools = m.pendingTools[:0]
+		var p providers.Provider
+		if m.model != nil {
+			p = m.model.Get()
+		}
+		if p == nil {
+			*m.aiThink = false
+			m.stepCount = 0
+			m.message_area.AppendMessage(">**ERROR** No provider selected press ctrl+p to pick one.", false)
+			return m, nil
+		}
+		*m.aiThink = true
+		return m, generateCmd(p, m.context)
 	case modelInfoMsg:
 		if msg.err == nil {
 			m.status.contextWindow = msg.info.ContextWindow

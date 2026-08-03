@@ -1,6 +1,8 @@
 package messagearea
 
 import (
+	"encoding/json"
+	"sort"
 	"strings"
 
 	"charm.land/bubbles/v2/viewport"
@@ -26,13 +28,80 @@ var (
 	userBodyColor  = lipgloss.Color("252")
 )
 
+
+
+
+type ToolStatus int
+
+const (
+	ToolRunning ToolStatus = iota
+	ToolDone
+	ToolError
+)
+
+// maxToolResultLines caps how many lines of a tool's output we show inline
+// (crush uses a similar height cap; the full result still goes back to the
+// model in context).
+const maxToolResultLines = 12
+
+// maxToolArgsLen caps the one-line argument summary shown next to the tool
+// name so a giant JSON blob can't push the header off the screen.
+const maxToolArgsLen = 80
+
 type message struct {
 	content string
 	isUser  bool
+
+	// tool-call message fields (isTool == true)
+	isTool   bool
+	toolName string
+	toolArgs string
+	status   ToolStatus
+	result   string
 }
 
 func NewMessage(content string, isUser bool) message {
 	return message{content: content, isUser: isUser}
+}
+
+func NewToolMessage(name, args string) message {
+	return message{isTool: true, toolName: name, toolArgs: args, status: ToolRunning}
+}
+
+// SummarizeToolInput renders a compact one-line label for a tool call's
+// raw JSON input, preferring path/url-like values over the raw blob - the
+// "main param" of crush's `● bash git status` style header.
+func SummarizeToolInput(input json.RawMessage) string {
+	if len(input) == 0 || string(input) == "{}" {
+		return ""
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(input, &m); err != nil {
+		return ""
+	}
+
+	prefer := []string{"file_path", "path", "url", "src", "dst", "srcpath", "dstpath", "command"}
+	for _, key := range prefer {
+		if raw, ok := m[key]; ok {
+			var s string
+			if json.Unmarshal(raw, &s) == nil && strings.TrimSpace(s) != "" {
+				return s
+			}
+		}
+	}
+
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		var s string
+		if json.Unmarshal(m[k], &s) == nil && strings.TrimSpace(s) != "" {
+			return k + "=" + s
+		}
+	}
+	return ""
 }
 
 type Model struct {
@@ -67,6 +136,31 @@ func New() Model {
 
 func (m *Model) AppendMessage(content string, isUser bool) {
 	msg := NewMessage(content, isUser)
+	m.append(msg)
+}
+
+// AppendTool adds a tool-call message in its running state and returns its
+// index, which the caller uses with UpdateToolMessage once the tool yields a
+// result.
+func (m *Model) AppendTool(name, args string) int {
+	m.append(NewToolMessage(name, args))
+	return len(m.messages) - 1
+}
+
+// UpdateToolMessage flips a previously-appended tool message to done/error and
+// attaches its result. No-op for index out of range or a non-tool message.
+func (m *Model) UpdateToolMessage(index int, status ToolStatus, result string) {
+	if index < 0 || index >= len(m.messages) || !m.messages[index].isTool {
+		return
+	}
+	m.messages[index].status = status
+	m.messages[index].result = result
+	m.rendered[index] = m.renderBlock(m.messages[index], m.contentWidth())
+	m.pushContent()
+	m.vp.GotoBottom()
+}
+
+func (m *Model) append(msg message) {
 	m.messages = append(m.messages, msg)
 	m.size += 1
 
@@ -183,6 +277,45 @@ func (m *Model) markdownRenderer(width int) *glamour.TermRenderer {
 }
 
 func (m *Model) renderBlock(msg message, width int) string {
+	
+	
+	
+	
+	if msg.isTool {
+		icon := "●"
+		labelColor := style.Info
+		bodyColor := style.Muted
+		switch msg.status {
+		case ToolDone:
+			icon = "✓"
+			labelColor = style.Success
+			bodyColor = style.Text
+		case ToolError:
+			icon = "×"
+			labelColor = style.Danger
+			bodyColor = style.Danger
+		}
+
+		header := lipgloss.NewStyle().Bold(true).Foreground(labelColor).Render(icon + " " + msg.toolName)
+		if args := msg.toolArgs; args != "" {
+			if len(args) > maxToolArgsLen {
+				args = args[:maxToolArgsLen] + "…"
+			}
+			header += " " + lipgloss.NewStyle().Foreground(style.Muted).Render(args)
+		}
+
+		var body string
+		switch msg.status {
+		case ToolRunning:
+			body = lipgloss.NewStyle().Italic(true).Foreground(style.Muted).Render("running…")
+		default:
+			if msg.result != "" {
+				body = lipgloss.NewStyle().Foreground(bodyColor).Width(width).Render(truncateToolResult(msg.result))
+			}
+		}
+		return header + "\n" + body
+	}
+
 	label := "● Ai"
 	labelColor := aiLabelColor
 	bodyColor := aiBodyColor
@@ -214,6 +347,16 @@ func (m *Model) renderBlock(msg message, width int) string {
 	}
 
 	return header + "\n" + body
+}
+
+// truncateToolResult caps the tool output shown inline so one huge result
+// (e.g. a full file read) can't fill the whole message area.
+func truncateToolResult(s string) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) > maxToolResultLines {
+		return strings.Join(lines[:maxToolResultLines], "\n") + "\n…"
+	}
+	return s
 }
 
 // pushContent joins the cached per-message blocks and hands the result to
