@@ -126,11 +126,11 @@ func (l *lmStudioProvider) GenerateStream(ctx context.Context, messages []Messag
 }
 
 func (l *lmStudioProvider) EstimateTokens(ctx context.Context, messages []Message) (int, error) {
-	chars := 0
+	total := 0
 	for _, msg := range messages {
-		chars += len(msg.Content)
+		total += EstimateMessageTokensForModel(msg, l.model)
 	}
-	return chars / 4, nil
+	return total, nil
 }
 
 type lmStudioModel struct {
