@@ -404,6 +404,12 @@ func scanStreamLines(ctx context.Context, resp *http.Response, fn func(line stri
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
+		// A mid-stream cancel can show up as a transport read error; map it
+		// back to ErrCanceled so callers see the interrupt, not a generic
+		// failure.
+		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+			return newProviderError(ErrCanceled, "request canceled", ctx.Err())
+		}
 		return newProviderError(ErrUnknown, "reading stream failed", err)
 	}
 	return nil
