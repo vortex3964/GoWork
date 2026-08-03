@@ -7,10 +7,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"time"
 	ignore "github.com/sabhiram/go-gitignore"
 	cl "GoWork/Tui/Components/ChangesList"
 	"GoWork/providers"
@@ -101,10 +102,59 @@ type DispatchArgs struct {
 	RootPath string
 	WatchList *cl.WatchList
 	Provider ProviderGetter
+	// ReadState tracks the last modification time the agent saw for each
+	// file it has read or written. Write tools use it to refuse editing a
+	// file that changed on disk since the agent last saw it, so the model
+	// can't blind-clobber newer external edits.
+	ReadState *ReadState
+}
+
+// ReadState is a small, concurrency-safe map of clean relative path -> the
+// file's mod time when the agent last read or wrote it. Write tools consult
+// it before overwriting so we fail (and tell the model to re-read) when the
+// file changed underneath us since we last saw it.
+type ReadState struct {
+	mu    sync.Mutex
+	times map[string]time.Time
+}
+
+func NewReadState() *ReadState {
+	return &ReadState{times: make(map[string]time.Time)}
+}
+
+// Record updates the recorded mod time for path.
+func (r *ReadState) Record(path string, t time.Time) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.times[path] = t
+}
+
+// Forget drops a path's record (used when a file is moved or deleted).
+func (r *ReadState) Forget(path string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.times, path)
+}
+
+// SeenAt returns the mod time recorded for path, or the zero time if it was
+// never seen.
+func (r *ReadState) SeenAt(path string) (time.Time, bool) {
+	if r == nil {
+		return time.Time{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.times[path]
+	return t, ok
 }
 
 func InitDispatchArgs(projectRoot string , wl *cl.WatchList , getProvider ProviderGetter) (DispatchArgs , error) {
-	
 	if projectRoot == "" {
 		return DispatchArgs{} , fmt.Errorf("projectRoot cant be empty")
 	}
@@ -121,7 +171,7 @@ func InitDispatchArgs(projectRoot string , wl *cl.WatchList , getProvider Provid
 		return DispatchArgs{} , fmt.Errorf("opening project root failed:%w" , err)
 	}
 
-	return DispatchArgs{Root: root , RootPath: abs , WatchList: wl , Provider: getProvider} , nil
+	return DispatchArgs{Root: root , RootPath: abs , WatchList: wl , Provider: getProvider , ReadState: NewReadState()} , nil
 }
 
 //DESC: AgentTool is the contract every tool must satisfy. A tool is anything
@@ -212,6 +262,13 @@ func IsIgnored(ignores []*ignore.GitIgnore, rel string) bool {
 		}
 	}
 	return false
+}
+
+// PathKey normalizes a tool-provided relative path into the key used for the
+// ReadState tracker, so read and write tools agree even when one receives
+// "./src/foo.go" and the other "src/foo.go".
+func (d DispatchArgs) PathKey(path string) string {
+	return filepath.Clean(path)
 }
 
 // MkdirAllInRoot creates dir and all necessary parent directories within

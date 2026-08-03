@@ -116,19 +116,28 @@ func (m *Model) RefreshDiffs() {
 	if m.Watch == nil {
 		return
 	}
+	m.Watch.mu.Lock()
+	defer m.Watch.mu.Unlock()
 	for file := range m.Watch.WatchedFiles {
 		difs, err := GetDiffs(file)
 		if err != nil {
-			m.Watch.Remove(file)
+			m.Watch.removeLocked(file)
 			delete(m.Watch.Changeslist, file)
 			continue
 		}
 		m.Watch.Changeslist[file] = ChangeList{difs}
-		m.Watch.addDirToWatcher(file)
+		m.Watch.addDirToWatcherLocked(file)
 	}
 }
 
-func (m *Model) PauseWatching() {}
+func (m *Model) PauseWatching() {
+	m.Watch.mu.Lock()
+	defer m.Watch.mu.Unlock()
+	// The watcher handler already skips rebuilding the list while the AI is
+	// thinking (*m.aiThink), so pausing here is a no-op by design. Kept as a
+	// named hook so callers document their intent; if list-live-updates
+	// during AI turns are ever wanted, this is where they'd be gated.
+}
 
 func (m *Model) WatchCmd() tea.Cmd {
 	if m.Watch == nil || m.Watch.Watcher == nil {
@@ -163,7 +172,9 @@ func (m *Model) HandleWatcherEvent(eventPath string) bool {
 		return true
 	}
 	difs := GetDiffsBytes(data, filepath.Base(path))
+	m.Watch.mu.Lock()
 	m.Watch.Changeslist[path] = ChangeList{difs}
+	m.Watch.mu.Unlock()
 	m.lastWatcherPath = path
 	m.lastWatcherData = data
 	return true
@@ -373,9 +384,11 @@ func (m *Model) ExplorerScrollDown() {
 
 func (m *Model) acceptChange(path string, c Change) {
 	Accept_change(path, c.Start, c.Mid, c.End)
+	m.Watch.mu.Lock()
+	defer m.Watch.mu.Unlock()
 	difs, err := GetDiffs(path)
 	if err != nil || len(difs) == 0 {
-		m.Watch.Remove(path)
+		m.Watch.removeLocked(path)
 		delete(m.Watch.Changeslist, path)
 	} else {
 		m.Watch.Changeslist[path] = ChangeList{difs}
@@ -384,9 +397,11 @@ func (m *Model) acceptChange(path string, c Change) {
 
 func (m *Model) rejectChange(path string, c Change) {
 	Reject_change(path, c.Start, c.Mid, c.End)
+	m.Watch.mu.Lock()
+	defer m.Watch.mu.Unlock()
 	difs, err := GetDiffs(path)
 	if err != nil || len(difs) == 0 {
-		m.Watch.Remove(path)
+		m.Watch.removeLocked(path)
 		delete(m.Watch.Changeslist, path)
 	} else {
 		m.Watch.Changeslist[path] = ChangeList{difs}
@@ -398,21 +413,31 @@ func (m *Model) AcceptSelected() {
 		return
 	}
 	sel := m.filtered[m.cursor]
+	m.Watch.mu.Lock()
 	cl, ok := m.Watch.Changeslist[sel.filePath]
 	if !ok {
+		m.Watch.mu.Unlock()
 		return
 	}
 	if sel.isHeader {
 		Accept_all_changes(sel.filePath, cl.Changes)
-		m.Watch.Remove(sel.filePath)
+		m.Watch.removeLocked(sel.filePath)
 		delete(m.Watch.Changeslist, sel.filePath)
 	} else {
-		m.acceptChange(sel.filePath, sel.change)
+		Accept_change(sel.filePath, sel.change.Start, sel.change.Mid, sel.change.End)
+		difs, err := GetDiffs(sel.filePath)
+		if err != nil || len(difs) == 0 {
+			m.Watch.removeLocked(sel.filePath)
+			delete(m.Watch.Changeslist, sel.filePath)
+		} else {
+			m.Watch.Changeslist[sel.filePath] = ChangeList{difs}
+		}
 	}
 	if len(m.Watch.Changeslist[sel.filePath].Changes) == 0 {
-		m.Watch.Remove(sel.filePath)
+		m.Watch.removeLocked(sel.filePath)
 		delete(m.Watch.Changeslist, sel.filePath)
 	}
+	m.Watch.mu.Unlock()
 	if m.cursor >= len(m.filtered) {
 		m.cursor = len(m.filtered) - 1
 	}
@@ -424,21 +449,31 @@ func (m *Model) RejectSelected() {
 		return
 	}
 	sel := m.filtered[m.cursor]
+	m.Watch.mu.Lock()
 	cl, ok := m.Watch.Changeslist[sel.filePath]
 	if !ok {
+		m.Watch.mu.Unlock()
 		return
 	}
 	if sel.isHeader {
 		Reject_all_changes(sel.filePath, cl.Changes)
-		m.Watch.Remove(sel.filePath)
+		m.Watch.removeLocked(sel.filePath)
 		delete(m.Watch.Changeslist, sel.filePath)
 	} else {
-		m.rejectChange(sel.filePath, sel.change)
+		Reject_change(sel.filePath, sel.change.Start, sel.change.Mid, sel.change.End)
+		difs, err := GetDiffs(sel.filePath)
+		if err != nil || len(difs) == 0 {
+			m.Watch.removeLocked(sel.filePath)
+			delete(m.Watch.Changeslist, sel.filePath)
+		} else {
+			m.Watch.Changeslist[sel.filePath] = ChangeList{difs}
+		}
 	}
 	if len(m.Watch.Changeslist[sel.filePath].Changes) == 0 {
-		m.Watch.Remove(sel.filePath)
+		m.Watch.removeLocked(sel.filePath)
 		delete(m.Watch.Changeslist, sel.filePath)
 	}
+	m.Watch.mu.Unlock()
 	if m.cursor >= len(m.filtered) {
 		m.cursor = len(m.filtered) - 1
 	}
@@ -446,6 +481,7 @@ func (m *Model) RejectSelected() {
 }
 
 func (m *Model) AcceptAll() {
+	m.Watch.mu.Lock()
 	for path, cl := range m.Watch.Changeslist {
 		if len(cl.Changes) > 0 {
 			Accept_all_changes(path, cl.Changes)
@@ -454,10 +490,12 @@ func (m *Model) AcceptAll() {
 	m.Watch.Changeslist = make(map[string]ChangeList)
 	m.Watch.WatchedFiles = make(map[string]struct{})
 	m.Watch.absWatched = make(map[string]string)
+	m.Watch.mu.Unlock()
 	m.rebuildRows()
 }
 
 func (m *Model) RejectAll() {
+	m.Watch.mu.Lock()
 	for path, cl := range m.Watch.Changeslist {
 		if len(cl.Changes) > 0 {
 			Reject_all_changes(path, cl.Changes)
@@ -466,6 +504,7 @@ func (m *Model) RejectAll() {
 	m.Watch.Changeslist = make(map[string]ChangeList)
 	m.Watch.WatchedFiles = make(map[string]struct{})
 	m.Watch.absWatched = make(map[string]string)
+	m.Watch.mu.Unlock()
 	m.rebuildRows()
 }
 

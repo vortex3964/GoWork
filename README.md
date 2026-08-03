@@ -51,7 +51,6 @@ ollama\
 llama.cpp
 
 ## TODO
-- need to re add read state to check mmtime to stop ai from reading stale files
 - update read and edit so that we handle pdfs and images we will ignore images and read pdfs with the new tool we will make in the future
 - update move delete tools to also track files with the changes list command and the watcer
 - update move delete websearch webfetch to have a permision window from the user before running
