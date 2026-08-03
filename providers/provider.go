@@ -51,7 +51,7 @@ type ToolCall struct {
 // because "assistant called a tool" and "here's the tool's result"
 // both have to round-trip through context on the next turn.
 type Message struct {
-	Role       string // "user" | "assistant" | "tool"
+	Role       string // "system" | "user" | "assistant" | "tool"
 	Content    string
 	ToolCalls  []ToolCall // set when assistant message IS a tool call
 	ToolCallID string     // set on the "tool" role message that answers a call
@@ -154,6 +154,27 @@ func InitToolsDef(t []ToolDef) {
 	tools_def = t
 }
 
+// system_prompt holds the rendered system prompt. It's a first-class
+// instruction channel with higher authority than the conversation, so it's
+// kept out of the message history and injected by each provider into its own
+// native system slot instead (top-level "system" for anthropic,
+// "systemInstruction" for gemini, a leading role:system message for the
+// openai-compatible providers).
+var system_prompt string
+
+func InitSystemPrompt(s string) {
+	system_prompt = s
+}
+
+// systemMessage returns the system prompt as a Message for providers whose
+// API expresses it as a leading role:system message. Nil when unset.
+func systemMessage() *Message {
+	if system_prompt == "" {
+		return nil
+	}
+	return &Message{Role: "system", Content: system_prompt}
+}
+
 // hasToolCapability reports whether a server-reported capabilities list
 // (ollama/lm studio) includes tool calling. Accepts the common spellings.
 func hasToolCapability(caps []string) bool {
@@ -185,7 +206,10 @@ func rawArgs(s string) json.RawMessage {
 //   - results go out under role "tool", tied to the call by tool_call_id;
 //   - everything else passes through as role/content.
 func openAICompatMessages(messages []Message) []map[string]interface{} {
-	out := make([]map[string]interface{}, 0, len(messages))
+	out := make([]map[string]interface{}, 0, len(messages)+1)
+	if sm := systemMessage(); sm != nil {
+		out = append(out, map[string]interface{}{"role": "system", "content": sm.Content})
+	}
 	for _, msg := range messages {
 		switch msg.Role {
 		case "assistant":

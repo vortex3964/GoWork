@@ -108,6 +108,11 @@ func (g *geminiProvider) Generate(ctx context.Context, messages []Message) (Gene
 	reqBody := map[string]interface{}{
 		"contents": toContents(messages),
 	}
+	if system_prompt != "" {
+		reqBody["systemInstruction"] = map[string]interface{}{
+			"parts": []map[string]string{{"text": system_prompt}},
+		}
+	}
 	if len(tools_def) > 0 {
 		reqBody["tools"] = toGeminiTools()
 		reqBody["toolConfig"] = map[string]interface{}{
