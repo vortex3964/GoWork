@@ -109,17 +109,14 @@ func (o *openaiProvider) GenerateStream(ctx context.Context, messages []Message,
 		toOpenAIMessages(messages), tools, true, onDelta)
 }
 
-//TODO: also add a better token counting func
-
-// openai doesn't expose a token-counting endpoint, so this falls back to
-// a rough estimate until something better (e.g. a real tokenizer) is
-// wired up.
+// openai doesn't expose a free token-counting endpoint, so this counts tokens
+// locally with the model's own BPE vocabulary (openai-compatible tiktoken).
 func (o *openaiProvider) EstimateTokens(ctx context.Context, messages []Message) (int, error) {
-	chars := 0
+	total := 0
 	for _, msg := range messages {
-		chars += len(msg.Content)
+		total += EstimateMessageTokensForModel(msg, o.model)
 	}
-	return chars / 4, nil
+	return total, nil
 }
 
 // openaiModel mirrors the model object openai's API returns. NOTE: unlike

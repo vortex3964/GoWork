@@ -114,11 +114,11 @@ func (g *groqProvider) GenerateStream(ctx context.Context, messages []Message, o
 // countTokens, so this falls back to a rough estimate until something
 // better is wired up.
 func (g *groqProvider) EstimateTokens(ctx context.Context, messages []Message) (int, error) {
-	chars := 0
+	total := 0
 	for _, msg := range messages {
-		chars += len(msg.Content)
+		total += EstimateMessageTokensForModel(msg, g.model)
 	}
-	return chars / 4, nil
+	return total, nil
 }
 
 // groqModel mirrors the model object groq's API returns. Both Info
