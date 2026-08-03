@@ -122,6 +122,15 @@ func (l *llamaCppProvider) Generate(ctx context.Context, messages []Message) (Ge
 	}, nil
 }
 
+func (l *llamaCppProvider) GenerateStream(ctx context.Context, messages []Message, onDelta StreamFunc) (GenerateResult, error) {
+	var tools []map[string]interface{}
+	if l.toolsEnabled && len(tools_def) > 0 {
+		tools = openAICompatTools()
+	}
+	return streamOpenAICompat(ctx, l.baseURL+"/v1/chat/completions", l.model,
+		nil, toLlamaCppMessages(messages), tools, false, onDelta)
+}
+
 func (l *llamaCppProvider) EstimateTokens(ctx context.Context, messages []Message) (int, error) {
 	templateBody := map[string]interface{}{
 		"messages": toLlamaCppMessages(messages),

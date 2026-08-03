@@ -25,6 +25,7 @@ package providers
 //llama.cpp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -262,6 +263,10 @@ func openAICompatTools() []map[string]interface{} {
 // just pass it by reference in the Generate function
 type Provider interface {
 	Generate(ctx context.Context, messages []Message) (GenerateResult, error)
+	// GenerateStream is the streaming variant of Generate. It calls onDelta
+	// with each chunk of assistant text as it arrives and returns the fully
+	// assembled result (content, tool calls, usage) once the stream ends.
+	GenerateStream(ctx context.Context, messages []Message, onDelta StreamFunc) (GenerateResult, error)
 	EstimateTokens(ctx context.Context, messages []Message) (int, error)
 	Info(ctx context.Context, model string) (ModelInfo, error)
 	ListModels(ctx context.Context) ([]ModelInfo, error)
@@ -325,6 +330,218 @@ func classifyHTTPStatus(status int) ErrorKind {
 // httpStreamClient instead, which has no hard timeout and relies on the
 // request's context for cancellation.
 var httpClient = &http.Client{Timeout: 2 * time.Minute}
+
+// StreamFunc is invoked by a provider with each chunk of assistant text as it
+// arrives during a streaming call.
+type StreamFunc func(delta string)
+
+// httpStreamClient is used for streaming requests. It deliberately has no
+// overall timeout - a streamed response can legitimately run for a long time
+// - so cancellation comes entirely from the request context (which the caller
+// wires up).
+var httpStreamClient = &http.Client{}
+
+// streamRequest performs an HTTP request for a streaming call and returns the
+// response with its body still open so the caller can read the stream. It
+// uses the no-timeout client and honors ctx for cancellation.
+func streamRequest(ctx context.Context, method, url string, headers map[string]string, reqBody interface{}) (*http.Response, error) {
+	var reader io.Reader
+	if reqBody != nil {
+		jsonData, err := json.Marshal(reqBody)
+		if err != nil {
+			return nil, newProviderError(ErrInvalidRequest, "failed to marshal request body", err)
+		}
+		reader = bytes.NewBuffer(jsonData)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, url, reader)
+	if err != nil {
+		return nil, newProviderError(ErrInvalidRequest, "failed to build request", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := httpStreamClient.Do(req)
+	if err != nil {
+		switch {
+		case errors.Is(ctx.Err(), context.Canceled):
+			return nil, newProviderError(ErrCanceled, "request canceled", err)
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
+			return nil, newProviderError(ErrTimeout, "request timed out", err)
+		default:
+			return nil, newProviderError(ErrUnknown, "request failed", err)
+		}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return nil, newProviderError(classifyHTTPStatus(resp.StatusCode),
+			fmt.Sprintf("%s returned %d", url, resp.StatusCode), fmt.Errorf("%s", body))
+	}
+
+	return resp, nil
+}
+
+// scanStreamLines scans a streaming response body line by line, calling fn
+// for every non-empty, trimmed line. It stops (and returns) on context
+// cancellation so an interrupt aborts the stream cleanly.
+func scanStreamLines(ctx context.Context, resp *http.Response, fn func(line string) error) error {
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return newProviderError(ErrCanceled, "request canceled", ctx.Err())
+		}
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if err := fn(line); err != nil {
+			return err
+		}
+	}
+	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
+		return newProviderError(ErrUnknown, "reading stream failed", err)
+	}
+	return nil
+}
+
+// sseData strips the "data:" prefix off an SSE line, or returns ok=false if
+// the line isn't a data payload. "[DONE]" sentinels yield ok=false too.
+func sseData(line string) (payload string, ok bool) {
+	if !strings.HasPrefix(line, "data:") {
+		return "", false
+	}
+	p := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	if p == "" || p == "[DONE]" {
+		return "", false
+	}
+	return p, true
+}
+
+// streamOpenAICompat handles the shared OpenAI-compatible streaming shape used
+// by openai/groq/llama.cpp/lm studio: SSE chunks whose choices[].delta holds
+// incremental text and (optionally) tool-call fragments. requestUsage, when
+// true, asks the server to echo token usage in the final chunk.
+func streamOpenAICompat(ctx context.Context, url, model string, headers map[string]string, messages []map[string]interface{}, tools []map[string]interface{}, requestUsage bool, onDelta StreamFunc) (GenerateResult, error) {
+	reqBody := map[string]interface{}{
+		"model":    model,
+		"messages": messages,
+		"stream":   true,
+	}
+	if len(tools) > 0 {
+		reqBody["tools"] = tools
+	}
+	if requestUsage {
+		reqBody["stream_options"] = map[string]interface{}{"include_usage": true}
+	}
+
+	resp, err := streamRequest(ctx, http.MethodPost, url, headers, reqBody)
+	if err != nil {
+		return GenerateResult{}, err
+	}
+	defer resp.Body.Close()
+
+	var content strings.Builder
+	var usage Usage
+	finish := ""
+	type tcAcc struct {
+		id   string
+		name string
+		args strings.Builder
+	}
+	var toolCalls []*tcAcc
+
+	err = scanStreamLines(ctx, resp, func(line string) error {
+		payload, ok := sseData(line)
+		if !ok {
+			return nil
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content   string `json:"content"`
+					ToolCalls []struct {
+						Index    int    `json:"index"`
+						ID       string `json:"id"`
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"delta"`
+				FinishReason string `json:"finish_reason"`
+			} `json:"choices"`
+			Usage *struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+				TotalTokens      int `json:"total_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			return nil
+		}
+		if chunk.Usage != nil {
+			usage = Usage{
+				PromptTokens:     chunk.Usage.PromptTokens,
+				CompletionTokens: chunk.Usage.CompletionTokens,
+				TotalTokens:      chunk.Usage.TotalTokens,
+			}
+		}
+		if len(chunk.Choices) == 0 {
+			return nil
+		}
+		c := chunk.Choices[0]
+		if c.FinishReason != "" {
+			finish = c.FinishReason
+		}
+		if c.Delta.Content != "" {
+			content.WriteString(c.Delta.Content)
+			onDelta(c.Delta.Content)
+		}
+		for _, tc := range c.Delta.ToolCalls {
+			for len(toolCalls) <= tc.Index {
+				toolCalls = append(toolCalls, &tcAcc{})
+			}
+			acc := toolCalls[tc.Index]
+			if tc.ID != "" {
+				acc.id = tc.ID
+			}
+			if tc.Function.Name != "" {
+				acc.name = tc.Function.Name
+			}
+			if tc.Function.Arguments != "" {
+				acc.args.WriteString(tc.Function.Arguments)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return GenerateResult{}, err
+	}
+
+	calls := make([]ToolCall, 0, len(toolCalls))
+	for _, acc := range toolCalls {
+		if acc.name == "" {
+			continue
+		}
+		calls = append(calls, ToolCall{
+			Tool_call_id: acc.id,
+			Tool_name:    acc.name,
+			Input:        rawArgs(acc.args.String()),
+		})
+	}
+
+	return GenerateResult{
+		Content:    content.String(),
+		ToolCalls:  calls,
+		StopReason: finish,
+		Usage:      usage,
+	}, nil
+}
 
 func doJSONRequest(ctx context.Context, method, url string, headers map[string]string, reqBody interface{}) ([]byte, error) {
 	var reader io.Reader
@@ -404,6 +621,13 @@ func (r *retryingProvider) Generate(ctx context.Context, messages []Message) (Ge
 
 func (r *retryingProvider) EstimateTokens(ctx context.Context, messages []Message) (int, error) {
 	return r.inner.EstimateTokens(ctx, messages)
+}
+
+// GenerateStream forwards to the inner provider without retrying. Retrying a
+// stream that partially delivered would re-emit the already-streamed tokens,
+// so streams are single-shot: any error bubbles straight back to the caller.
+func (r *retryingProvider) GenerateStream(ctx context.Context, messages []Message, onDelta StreamFunc) (GenerateResult, error) {
+	return r.inner.GenerateStream(ctx, messages, onDelta)
 }
 
 func (r *retryingProvider) Info(ctx context.Context, model string) (ModelInfo, error) {

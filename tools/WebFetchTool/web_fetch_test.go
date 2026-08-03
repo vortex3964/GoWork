@@ -30,6 +30,13 @@ func (f *fakeProvider) Generate(_ context.Context, _ []providers.Message) (provi
 	}
 	return providers.GenerateResult{Content: f.content}, nil
 }
+func (f *fakeProvider) GenerateStream(_ context.Context, _ []providers.Message, _ providers.StreamFunc) (providers.GenerateResult, error) {
+	f.calls++
+	if f.err != nil {
+		return providers.GenerateResult{}, f.err
+	}
+	return providers.GenerateResult{Content: f.content}, nil
+}
 func (f *fakeProvider) EstimateTokens(_ context.Context, _ []providers.Message) (int, error) {
 	return 0, nil
 }

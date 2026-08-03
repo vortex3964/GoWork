@@ -178,6 +178,84 @@ func (o *ollamaProvider) Generate(ctx context.Context, messages []Message) (Gene
 	}, nil
 }
 
+func (o *ollamaProvider) GenerateStream(ctx context.Context, messages []Message, onDelta StreamFunc) (GenerateResult, error) {
+	reqBody := map[string]interface{}{
+		"model":    o.model,
+		"messages": toOllamaMessages(messages),
+		"stream":   true,
+	}
+	if o.toolsEnabled && len(tools_def) > 0 {
+		reqBody["tools"] = toOllamaTools()
+	}
+
+	resp, err := streamRequest(ctx, http.MethodPost, o.baseURL+"/api/chat", nil, reqBody)
+	if err != nil {
+		return GenerateResult{}, err
+	}
+	defer resp.Body.Close()
+
+	var content strings.Builder
+	usage := Usage{}
+	finish := ""
+	var toolCalls []ToolCall
+
+	err = scanStreamLines(ctx, resp, func(line string) error {
+		var chunk struct {
+			Message struct {
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					ID       string `json:"id"`
+					Function struct {
+						Name      string          `json:"name"`
+						Arguments json.RawMessage `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"message"`
+			Done            bool   `json:"done"`
+			DoneReason      string `json:"done_reason"`
+			PromptEvalCount int    `json:"prompt_eval_count"`
+			EvalCount       int    `json:"eval_count"`
+		}
+		if err := json.Unmarshal([]byte(line), &chunk); err != nil {
+			return nil
+		}
+		if chunk.Message.Content != "" {
+			content.WriteString(chunk.Message.Content)
+			onDelta(chunk.Message.Content)
+		}
+		if chunk.Done {
+			finish = chunk.DoneReason
+			usage = Usage{
+				PromptTokens:     chunk.PromptEvalCount,
+				CompletionTokens: chunk.EvalCount,
+				TotalTokens:      chunk.PromptEvalCount + chunk.EvalCount,
+			}
+			for _, tc := range chunk.Message.ToolCalls {
+				id := tc.ID
+				if id == "" {
+					id = nextTextCallID()
+				}
+				toolCalls = append(toolCalls, ToolCall{
+					Tool_call_id: id,
+					Tool_name:    tc.Function.Name,
+					Input:        tc.Function.Arguments,
+				})
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return GenerateResult{}, err
+	}
+
+	return GenerateResult{
+		Content:    content.String(),
+		ToolCalls:  toolCalls,
+		StopReason: finish,
+		Usage:      usage,
+	}, nil
+}
+
 func (o *ollamaProvider) EstimateTokens(ctx context.Context, messages []Message) (int, error) {
 	// ollama doesn't have a standalone "count tokens" endpoint. The closest
 	// honest equivalent is asking it to evaluate the prompt and generate as

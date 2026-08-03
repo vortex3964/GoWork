@@ -173,6 +173,149 @@ func (a *anthropicProvider) Generate(ctx context.Context, messages []Message) (G
 	}, nil
 }
 
+func (a *anthropicProvider) GenerateStream(ctx context.Context, messages []Message, onDelta StreamFunc) (GenerateResult, error) {
+	reqBody := map[string]interface{}{
+		"model":      a.model,
+		"max_tokens": anthropicDefaultMaxTokens,
+		"messages":   toAnthropicMessages(messages),
+		"stream":     true,
+	}
+	if system_prompt != "" {
+		reqBody["system"] = system_prompt
+	}
+	if len(tools_def) > 0 {
+		reqBody["tools"] = toAnthropicTools()
+	}
+
+	resp, err := streamRequest(ctx, http.MethodPost, anthropicBaseURL+"/messages", map[string]string{
+		"x-api-key":         a.api_key,
+		"anthropic-version": anthropicVersion,
+	}, reqBody)
+	if err != nil {
+		return GenerateResult{}, err
+	}
+	defer resp.Body.Close()
+
+	var content strings.Builder
+	usage := Usage{}
+	finish := ""
+	// Block state per index: text blocks append to content; tool_use blocks
+	// accumulate their closing JSON in args.
+	type anBlock struct {
+		isTool bool
+		id     string
+		name   string
+		args   strings.Builder
+	}
+	blocks := map[int]*anBlock{}
+
+	err = scanStreamLines(ctx, resp, func(line string) error {
+		payload, ok := sseData(line)
+		if !ok {
+			return nil
+		}
+		var ev struct {
+			Type string `json:"type"`
+			Index *int  `json:"index"`
+			ContentBlock *struct {
+				Type string          `json:"type"`
+				ID   string          `json:"id"`
+				Name string          `json:"name"`
+				Text string          `json:"text"`
+				Input json.RawMessage `json:"input"`
+			} `json:"content_block"`
+			Delta *struct {
+				Type        string `json:"type"`
+				Text        string `json:"text"`
+				PartialJSON string `json:"partial_json"`
+				StopReason  string `json:"stop_reason"`
+			} `json:"delta"`
+			Message *struct {
+				Usage *struct {
+					InputTokens  int `json:"input_tokens"`
+					OutputTokens int `json:"output_tokens"`
+				} `json:"usage"`
+			} `json:"message"`
+			Usage *struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+			return nil
+		}
+		if ev.Message != nil && ev.Message.Usage != nil {
+			usage = Usage{
+				PromptTokens:     ev.Message.Usage.InputTokens,
+				CompletionTokens: ev.Message.Usage.OutputTokens,
+				TotalTokens:      ev.Message.Usage.InputTokens + ev.Message.Usage.OutputTokens,
+			}
+		}
+		switch ev.Type {
+		case "content_block_start":
+			idx := 0
+			if ev.Index != nil {
+				idx = *ev.Index
+			}
+			b := &anBlock{}
+			if ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" {
+				b.isTool = true
+				b.id = ev.ContentBlock.ID
+				b.name = ev.ContentBlock.Name
+			}
+			blocks[idx] = b
+		case "content_block_delta":
+			idx := 0
+			if ev.Index != nil {
+				idx = *ev.Index
+			}
+			b := blocks[idx]
+			if b == nil {
+				b = &anBlock{}
+				blocks[idx] = b
+			}
+			if ev.Delta == nil {
+				return nil
+			}
+			switch ev.Delta.Type {
+			case "text_delta":
+				b.isTool = false
+				content.WriteString(ev.Delta.Text)
+				onDelta(ev.Delta.Text)
+			case "input_json_delta":
+				b.isTool = true
+				b.args.WriteString(ev.Delta.PartialJSON)
+			}
+		}
+		if ev.Delta != nil && ev.Delta.StopReason != "" {
+			finish = ev.Delta.StopReason
+		}
+		return nil
+	})
+	if err != nil {
+		return GenerateResult{}, err
+	}
+
+	var toolCalls []ToolCall
+	for _, b := range blocks {
+		if b == nil || !b.isTool {
+			continue
+		}
+		toolCalls = append(toolCalls, ToolCall{
+			Tool_call_id: b.id,
+			Tool_name:    b.name,
+			Input:        rawArgs(b.args.String()),
+		})
+	}
+
+	return GenerateResult{
+		Content:    content.String(),
+		ToolCalls:  toolCalls,
+		StopReason: finish,
+		Usage:      usage,
+	}, nil
+}
+
 func (a *anthropicProvider) EstimateTokens(ctx context.Context, messages []Message) (int, error) {
 	reqBody := map[string]interface{}{
 		"model":    a.model,

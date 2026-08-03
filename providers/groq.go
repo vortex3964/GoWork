@@ -98,6 +98,16 @@ func (g *groqProvider) Generate(ctx context.Context, messages []Message) (Genera
 	}, nil
 }
 
+func (g *groqProvider) GenerateStream(ctx context.Context, messages []Message, onDelta StreamFunc) (GenerateResult, error) {
+	var tools []map[string]interface{}
+	if len(tools_def) > 0 {
+		tools = openAICompatTools()
+	}
+	return streamOpenAICompat(ctx, groqBaseURL+"/chat/completions", g.model,
+		map[string]string{"Authorization": "Bearer " + g.api_key},
+		toGroqMessages(messages), tools, true, onDelta)
+}
+
 //TODO: find a better function for estimating tokens
 
 // groq doesn't expose a dedicated token-counting endpoint like gemini's
