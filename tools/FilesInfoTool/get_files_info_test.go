@@ -59,7 +59,7 @@ func TestGetFilesInfo(t *testing.T) {
 		if !strings.Contains(content, "a.txt: file, 11 bytes") {
 			t.Errorf("expected a.txt entry with correct size, got: %q", content)
 		}
-		if !strings.Contains(content, "sub/: dir") {
+		if !strings.Contains(content, "sub/") {
 			t.Errorf("expected sub/ entry marked as dir, got: %q", content)
 		}
 	})

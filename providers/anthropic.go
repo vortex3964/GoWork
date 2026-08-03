@@ -96,7 +96,7 @@ func toAnthropicTools() []map[string]interface{} {
 		tools = append(tools, map[string]interface{}{
 			"name":         td.Name,
 			"description":  td.Description,
-			"input_schema": td.InputSchema,
+			"input_schema": toolSchemaForProto(td.InputSchema),
 		})
 	}
 	return tools
