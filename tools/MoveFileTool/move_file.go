@@ -46,7 +46,8 @@ func (t *Tool) InputSchema() json.RawMessage {
 				"description": "New path for the file, relative to the project root (e.g. \"src/bar.go\"). Missing parent directories are created automatically.",
 			},
 		},
-		"required": []string{"source_path", "destination_path"},
+		"required":               []string{"source_path", "destination_path"},
+		"additionalProperties": false,
 	}
 	b, _ := json.Marshal(schema)
 	return b

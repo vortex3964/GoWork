@@ -1,4 +1,4 @@
-// Package fileinfo implements the get_files_info tool: listing the
+// Package fileinfo implements the list_directory tool: listing the
 // immediate (non-recursive) contents of a directory.
 package fileinfo
 
@@ -22,7 +22,7 @@ type Tool struct {}
 //NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface 
 func New() tools.AgentTool { return &Tool{} }
 
-func (t *Tool) Name() string { return "get_files_info" }
+func (t *Tool) Name() string { return "list_directory" }
 
 func (t *Tool) Description() string {
 	return "Lists the immediate (non-recursive) contents of a directory: whether each entry is a file or a directory, and file size in bytes. Respects .gitignore and .agentignore."
@@ -37,7 +37,8 @@ func (t *Tool) InputSchema() json.RawMessage {
 				"description": `Directory to inspect, relative to the project root. Use "." for the root itself.`,
 			},
 		},
-		"required": []string{"path"},
+		"required":               []string{"path"},
+		"additionalProperties": false,
 	}
 	b, _ := json.Marshal(schema)
 	return b
@@ -48,7 +49,7 @@ func (t *Tool) Kind() tools.Kind { return tools.KindRead }
 func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs , rawInput json.RawMessage) (tools.ToolResult, error) {
 	var input Input
 	if err := json.Unmarshal(rawInput, &input); err != nil {
-		return tools.ToolResult{}, fmt.Errorf("get_files_info: invalid input: %w", err)
+		return tools.ToolResult{}, fmt.Errorf("list_directory: invalid input: %w", err)
 	}
 
 	dir := input.Path
