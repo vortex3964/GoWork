@@ -568,6 +568,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.changesList.Toggle(), m.changesList.WatchCmd())
 		}
 
+		// Tab navigation works in every mode: ctrl+tab / tab = next,
+		// ctrl+shift+tab / shift+tab = previous.
+		switch msg_str {
+		case "ctrl+tab", "tab":
+			m.tabs.Next()
+			return m, nil
+		case "ctrl+shift+tab", "shift+tab":
+			m.tabs.Prev()
+			return m, nil
+		}
+
 		if m.mode == modeChangeHandling {
 			switch msg_str {
 			case "esc", "tab", "enter":
@@ -687,12 +698,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		} else {
 			switch msg_str {
-			case "tab":
-				m.tabs.Next()
-				return m, nil
-			case "shift+tab":
-				m.tabs.Prev()
-				return m, nil
 			case "enter":
 				m.mode = modePrompt
 				return m, m.prompt.Focus()
@@ -703,16 +708,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Button == tea.MouseLeft {
-			// Tabs occupy row 0 only (topBarHeight == 1). The prompt bar
-			// sits pinned just above the statusline at the bottom of the
-			// screen, so it owns exactly promptbar.Height rows starting
-			// at promptTop() - anything below that is the statusline,
-			// which isn't clickable. Only on the "code" tab, since
-			// that's the only screen either is rendered on. Once the
-			// message area needs its own click handling (e.g. selecting
-			// a message), this is where its Y range gets checked too.
+			// The tab strip renders taller than one line (its border adds top
+			// and bottom rows), so let clicks anywhere on it switch tabs. The
+			// prompt bar sits pinned just above the statusline at the bottom
+			// of the screen, so it owns exactly promptbar.Height rows starting
+			// at promptTop() - anything below that is the statusline, which
+			// isn't clickable. Only on the "code" tab, since that's the only
+			// screen either is rendered on. Once the message area needs its
+			// own click handling (e.g. selecting a message), this is where
+			// its Y range gets checked too.
 			switch {
-			case msg.Y < topBarHeight:
+			case msg.Y < m.tabs.Height():
 				m.tabs.HandleClick(msg.X)
 			case m.tabs.Active().Name == "code" && msg.Y >= m.promptTop() && msg.Y < m.promptTop()+promptbar.Height:
 				m.historyIdx = 0
