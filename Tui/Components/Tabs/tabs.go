@@ -35,16 +35,21 @@ func (m Model) Active() tab {
 	return m.Tabs[m.ActiveIdx]
 }
 
-func (m *Model) Next() {
-	if m.ActiveIdx < len(m.Tabs)-1 {
-		m.ActiveIdx++
-	}
+// Height returns how many terminal rows the tab strip occupies when
+// rendered (the border makes it taller than a single line).
+func (m Model) Height() int {
+	return len(strings.Split(m.View(), "\n"))
 }
 
+// Next advances to the following tab, wrapping from the last back to the
+// first.
+func (m *Model) Next() {
+	m.ActiveIdx = (m.ActiveIdx + 1) % len(m.Tabs)
+}
+
+// Prev moves to the previous tab, wrapping from the first back to the last.
 func (m *Model) Prev() {
-	if m.ActiveIdx > 0 {
-		m.ActiveIdx--
-	}
+	m.ActiveIdx = (m.ActiveIdx - 1 + len(m.Tabs)) % len(m.Tabs)
 }
 
 // clickRect + hit-testing: lets main.go forward a mouse click's X
