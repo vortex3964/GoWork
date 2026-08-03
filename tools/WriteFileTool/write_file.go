@@ -123,6 +123,16 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		return tools.ToolResult{}, fmt.Errorf("write_file: reading %s: %w", input.FilePath, err)
 	}
 
+	// Refuse to edit a file that changed on disk since the agent last saw
+	// it (read or written by the model, or touched externally). Otherwise a
+	// stale write silently clobbers newer edits.
+	if args.ReadState != nil {
+		key := args.PathKey(input.FilePath)
+		if seen, ok := args.ReadState.SeenAt(key); ok && info.ModTime().After(seen) {
+			return tools.Errf("file %s was modified after it was last read - re-read it with read_file to get the current content before editing", input.FilePath), nil
+		}
+	}
+
 	var accepted, rejected []byte
 	if args.WatchList != nil {
 		changes := args.WatchList.GetChanges(input.FilePath)
@@ -162,14 +172,23 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	if err != nil {
 		return tools.ToolResult{}, fmt.Errorf("write_file: opening %s for write: %w", input.FilePath, err)
 	}
-	defer wf.Close()
 
 	if args.WatchList != nil {
 		args.WatchList.Add(input.FilePath)
 	}
 
 	if _, err := wf.Write(merged); err != nil {
+		wf.Close()
 		return tools.ToolResult{}, fmt.Errorf("write_file: writing %s: %w", input.FilePath, err)
+	}
+	wf.Close()
+
+	// Update the read-state so the model's own write isn't mistaken for an
+	// external change on the next edit in the same turn.
+	if args.ReadState != nil {
+		if fresh, err := args.Root.Stat(input.FilePath); err == nil {
+			args.ReadState.Record(args.PathKey(input.FilePath), fresh.ModTime())
+		}
 	}
 
 	if count > 1 {

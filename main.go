@@ -491,6 +491,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case providerselect.SelectedMsg:
 		m.mode = modePrompt
 		m.prompt.Focus()
+		// The picker may have been open while a turn was running (it only
+		// blocks ctrl+p, not the picker's Enter). Double-check aiThink so
+		// we never swap providers under an in-flight agentic loop.
+		if *m.aiThink {
+			m.message_area.AppendMessage(">**INFO** Provider not switched: a turn is still running.", false)
+			return m, nil
+		}
 		apiKey := msg.APIKey
 		if apiKey == "" {
 			apiKey = os.Getenv("API_KEY")
@@ -546,6 +553,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if msg_str == "ctrl+p" {
 			if m.mode == modeProviderSelect {
+				return m, nil
+			}
+			// Don't let the picker open (or the provider swap while it's
+			// open) mid-agentic-loop: the in-flight turn re-reads the
+			// provider when it loops back to the model, so switching here
+			// would send the rest of the run to a different provider with
+			// context shaped for another one.
+			if *m.aiThink {
+				m.message_area.AppendMessage(">**INFO** Wait for the current turn to finish before switching providers.", false)
 				return m, nil
 			}
 			return m, m.openProviderSelect()
@@ -1051,8 +1067,11 @@ func envOr(keys ...string) string {
 
 func main() {
 	if err := godotenv.Load(); err != nil {
-		fmt.Println("Couldn't locate .env file:", err)
-		os.Exit(1)
+		// A missing .env isn't fatal: every provider can still be picked
+		// interactively with ctrl+p (and local providers need no key at
+		// all). Just warn and carry on with whatever the real environment
+		// exports.
+		fmt.Println("Warning: couldn't locate .env file:", err)
 	}
 
 	providerName := envOr("PROVIDER")

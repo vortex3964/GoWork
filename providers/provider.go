@@ -319,6 +319,13 @@ func classifyHTTPStatus(status int) ErrorKind {
 	}
 }
 
+// httpClient is used for every non-streaming provider request. It carries an
+// overall timeout so a dead host (e.g. a local server that isn't running, or a
+// cloud endpoint that hangs) can't block the app forever. Streaming uses
+// httpStreamClient instead, which has no hard timeout and relies on the
+// request's context for cancellation.
+var httpClient = &http.Client{Timeout: 2 * time.Minute}
+
 func doJSONRequest(ctx context.Context, method, url string, headers map[string]string, reqBody interface{}) ([]byte, error) {
 	var reader io.Reader
 	if reqBody != nil {
@@ -338,7 +345,7 @@ func doJSONRequest(ctx context.Context, method, url string, headers map[string]s
 		req.Header.Set(k, v)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		switch {
 		case errors.Is(ctx.Err(), context.Canceled):

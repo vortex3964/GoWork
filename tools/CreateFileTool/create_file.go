@@ -100,5 +100,13 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		args.WatchList.Add(input.Path)
 	}
 
+	// Record the fresh file so an immediate edit in the same turn isn't
+	// flagged as a stale write.
+	if args.ReadState != nil {
+		if fresh, err := args.Root.Stat(input.Path); err == nil {
+			args.ReadState.Record(args.PathKey(input.Path), fresh.ModTime())
+		}
+	}
+
 	return tools.Ok(fmt.Sprintf("successfully created file at %s", filepath.Join(args.RootPath, input.Path))), nil
 }
