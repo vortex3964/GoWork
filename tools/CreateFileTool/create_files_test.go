@@ -92,22 +92,20 @@ func TestCreateFile(t *testing.T) {
 		}
 	})
 
-	t.Run("empty content creates empty file", func(t *testing.T) {
+	t.Run("refuses empty content (no empty files)", func(t *testing.T) {
 		root := t.TempDir()
 		tool := newTool(t, root)
 
-		_, isErr := run(t, tool, root, "empty.txt", "")
-		if isErr {
-			t.Fatalf("unexpected error result")
+		content, isErr := run(t, tool, root, "empty.txt", "")
+		if !isErr {
+			t.Fatalf("expected empty content to be rejected, got: %q", content)
+		}
+		if !strings.Contains(content, "content is required") {
+			t.Errorf("error should mention content requirement, got: %q", content)
 		}
 
-		data, err := os.ReadFile(filepath.Join(root, "empty.txt"))
-		if err != nil {
-			t.Fatalf("expected file to exist: %v", err)
-		}
-		want := "<<<<<<< old\n=======\n\n>>>>>>> Ai change\n"
-		if string(data) != want {
-			t.Errorf("file content = %q, want %q", string(data), want)
+		if _, err := os.Stat(filepath.Join(root, "empty.txt")); !os.IsNotExist(err) {
+			t.Errorf("expected file NOT to be created for empty content")
 		}
 	})
 

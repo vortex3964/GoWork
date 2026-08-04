@@ -35,6 +35,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -113,16 +114,18 @@ func ollamaModelTools(m string) bool {
 		return false
 	}
 	switch {
-	case strings.Contains(m, "qwen3"), strings.Contains(m, "qwen2"),
-		strings.Contains(m, "qwen1.5"), strings.Contains(m, "deepseek"):
+	case strings.Contains(m, "qwen"), strings.Contains(m, "deepseek"):
 		return true
-	case strings.HasPrefix(m, "llama3.1"), strings.HasPrefix(m, "llama3.2"),
-		strings.HasPrefix(m, "llama3.3"), strings.HasPrefix(m, "llama4"):
+	case strings.HasPrefix(m, "llama4"), strings.HasPrefix(m, "llama3"), strings.HasPrefix(m, "llama"),
+		strings.Contains(m, "codestral"), strings.Contains(m, "devstral"):
 		return true
 	case strings.Contains(m, "gemma"), strings.Contains(m, "functiongemma"),
 		strings.Contains(m, "groq-tool-use"), strings.Contains(m, "command-r"),
-		strings.Contains(m, "phi3"), strings.Contains(m, "hermes"),
-		strings.Contains(m, "mistral"), strings.Contains(m, "mixtral"):
+		strings.Contains(m, "phi"), strings.Contains(m, "hermes"),
+		strings.Contains(m, "mistral"), strings.Contains(m, "mixtral"),
+		strings.Contains(m, "glm"), strings.Contains(m, "yi"),
+		strings.Contains(m, "internlm"), strings.Contains(m, "solar"),
+		strings.Contains(m, "aya"), strings.Contains(m, "granite"):
 		return true
 	case strings.Contains(m, "instruct"):
 		return true
@@ -310,6 +313,48 @@ type Provider interface {
 	EstimateTokens(ctx context.Context, messages []Message) (int, error)
 	Info(ctx context.Context, model string) (ModelInfo, error)
 	ListModels(ctx context.Context) ([]ModelInfo, error)
+}
+
+// enrichListedModels fills in the real per-model info (context window, max
+// output, authoritative tool support) for a local server's name-only model
+// listing by calling Info for each model. Local pickers used to skip this to
+// avoid the two failure modes it caused: an unbounded hang (no per-call
+// timeout) and one slow/failing model aborting the whole list. Both are
+// handled here - each Info call gets its own deadline, calls run concurrently
+// in a small worker pool, and a failure just leaves the bare entry in place.
+func enrichListedModels(ctx context.Context, p Provider, bare []ModelInfo) []ModelInfo {
+	if len(bare) == 0 {
+		return bare
+	}
+	const (
+		perCallTimeout = 8 * time.Second
+		workers        = 4
+	)
+	out := make([]ModelInfo, len(bare))
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, workers)
+	for i, b := range bare {
+		wg.Add(1)
+		go func(idx int, id string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			cctx, cancel := context.WithTimeout(ctx, perCallTimeout)
+			defer cancel()
+			info, err := p.Info(cctx, id)
+			if err != nil {
+				out[idx] = bare[idx] // fail-soft: keep the bare entry
+				return
+			}
+			info.ID = id
+			info.DisplayName = id
+			out[idx] = info
+		}(i, b.ID)
+	}
+	wg.Wait()
+	return out
 }
 
 // TODO: the errors we will have to acount for

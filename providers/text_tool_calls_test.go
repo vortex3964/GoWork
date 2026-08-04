@@ -27,6 +27,34 @@ func TestParseTextToolCalls(t *testing.T) {
 			wantClean: "",
 		},
 		{
+			name:      "single bare json call (no fences)",
+			content:   `{"name": "read_file", "arguments": {"path": "main.go"}}`,
+			wantCalls: 1,
+			wantName:  "read_file",
+			wantClean: "",
+		},
+		{
+			name:      "multiple bare json calls in one reply",
+			content:   "{\n  \"name\": \"read_file\",\n  \"arguments\": {\"path\": \"main.go\"}\n}\n\n{\n  \"name\": \"create_file\",\n  \"arguments\": {\"path\": \"a.c\"}\n}",
+			wantCalls: 2,
+			wantName:  "read_file",
+			wantClean: "",
+		},
+		{
+			name:      "ollama tool_call tag wrapped",
+			content:   "<tool_call>\n{\"name\": \"read_file\", \"arguments\": {\"path\": \"main.go\"}}\n</tool_call>",
+			wantCalls: 1,
+			wantName:  "read_file",
+			wantClean: "",
+		},
+		{
+			name:      "prose around tool_call tags",
+			content:   "Let me check the structure first.\n<tool_call>\n{\"name\": \"read_file\", \"arguments\": {\"path\": \"main.go\"}}\n</tool_call>",
+			wantCalls: 1,
+			wantName:  "read_file",
+			wantClean: "Let me check the structure first.",
+		},
+		{
 			name:      "prose then json then prose",
 			content:   "I'll create it:\n{\"name\": \"create_file\", \"arguments\": {\"path\": \"a.c\", \"content\": \"x\"}}\nDone.",
 			wantCalls: 1,
@@ -84,10 +112,66 @@ func TestParseTextToolCalls(t *testing.T) {
 	}
 }
 
+// TestParseTextToolCalls covers whether a call gets recovered at all.
+func TestParseTextToolCallsRejectsNarration(t *testing.T) {
+	InitToolsDef([]ToolDef{
+		{Name: "create_file", InputSchema: json.RawMessage(`{"type":"object","properties":{},"required":["path","content"]}`)},
+		{Name: "list_directory", InputSchema: json.RawMessage(`{"type":"object","properties":{},"required":["path"]}`)},
+	})
+
+	cases := []struct {
+		name        string
+		content     string
+		wantCalls   int
+		wantClean   string
+	}{
+		{
+			// The model just NARRATES a tool call in prose with no arguments.
+			// This must NOT be recovered+executed, or it creates junk /
+			// errors like "path is required".
+			name:      "narrated call with no args is not a call",
+			content:   "I'll create it: create_file Tui/todo.go",
+			wantCalls: 0,
+			wantClean: "I'll create it: create_file Tui/todo.go",
+		},
+		{
+			name:      "json call missing required args is not a call",
+			content:   `{"name": "create_file"}`,
+			wantCalls: 0,
+			wantClean: `{"name": "create_file"}`,
+		},
+		{
+			name:      "json call with empty arguments object is not a call",
+			content:   `{"name": "create_file", "arguments": {}}`,
+			wantCalls: 0,
+			wantClean: `{"name": "create_file", "arguments": {}}`,
+		},
+		{
+			name:      "real call with args is still recovered",
+			content:   `{"name": "create_file", "arguments": {"path": "a.go", "content": "x"}}`,
+			wantCalls: 1,
+			wantClean: "",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			calls, clean := ParseTextToolCalls(c.content)
+			if len(calls) != c.wantCalls {
+				t.Fatalf("got %d calls, want %d (clean=%q)", len(calls), c.wantCalls, clean)
+			}
+			if clean != c.wantClean {
+				t.Errorf("cleaned content = %q, want %q", clean, c.wantClean)
+			}
+		})
+	}
+}
+
 // TestParseTextToolCallsMalformed covers the messy JSON small local models
 // actually emit - the whole reason the parser has a forgiving fallback. In
-// every case a recognized call must still be produced (spilling into an
-// error the model can react to) rather than silently dropped.
+// every case a recognized call with usable arguments must still be produced
+// (spilling into an error the model can react to) rather than silently
+// dropped.
 func TestParseTextToolCallsMalformed(t *testing.T) {
 	InitToolsDef([]ToolDef{
 		{Name: "create_file"},

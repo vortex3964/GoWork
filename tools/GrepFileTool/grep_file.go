@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -31,6 +32,7 @@ type Input struct {
 	Literal      bool   `json:"literal"`
 	ContextLines int    `json:"context_lines"`
 	Limit        int    `json:"limit"`
+	InFilenames  bool   `json:"in_filenames"`
 }
 
 type Tool struct{}
@@ -44,7 +46,9 @@ func (t *Tool) Description() string {
 	return fmt.Sprintf(`Search file contents for a regex pattern using ripgrep. Respects .gitignore and .agentignore.
 
 Returns matching lines as "path:line: text", the same format ripgrep prints to a terminal. Context lines (if requested via context_lines) are shown as "path-line- text" instead, so match lines always stand out.
-Output is capped at %d matches or %d bytes, whichever is hit first. If you hit the match cap, raise limit or narrow pattern/include. If you hit the byte cap, narrow the search instead - raising limit won't help.`, DEFAULT_LIMIT, DEFAULT_MAX_BYTES)
+Output is capped at %d matches or %d bytes, whichever is hit first. If you hit the match cap, raise limit or narrow pattern/include. If you hit the byte cap, narrow the search instead - raising limit won't help.
+
+Searching by FILE NAME (in_filenames=true): by default grep_file only searches file CONTENTS, so a filename is never matched. Set in_filenames=true to match against file paths instead - use this to find where a file lives (pattern "todoList" returns "Tui/todoList.go"), to check a file exists before creating anything, or to glob for files by name. It returns one matching path per line.`, DEFAULT_LIMIT, DEFAULT_MAX_BYTES)
 }
 
 func (t *Tool) InputSchema() json.RawMessage {
@@ -78,6 +82,10 @@ func (t *Tool) InputSchema() json.RawMessage {
 			"limit": map[string]any{
 				"type":        "integer",
 				"description": fmt.Sprintf("Maximum number of matches to return. Defaults to %d.", DEFAULT_LIMIT),
+			},
+			"in_filenames": map[string]any{
+				"type":        "boolean",
+				"description": "If true, match the pattern against file paths (names) instead of file contents. Use this to find where a file lives or confirm it exists. Defaults to false.",
 			},
 		},
 		"required":               []string{"pattern"},
@@ -179,6 +187,10 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	limit := input.Limit
 	if limit <= 0 {
 		limit = DEFAULT_LIMIT
+	}
+
+	if input.InFilenames {
+		return t.searchFilenames(ctx, args, input, relPath, limit)
 	}
 
 	rgPath, err := exec.LookPath("rg")
@@ -333,4 +345,118 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	}
 
 	return tools.Ok(content), nil
+}
+
+// searchFilenames lists every file under the search path (via rg --files,
+// so .gitignore/.agentignore still apply) and reports the ones whose path
+// matches the pattern.
+func (t *Tool) searchFilenames(ctx context.Context, args tools.DispatchArgs, input Input, relPath string, limit int) (tools.ToolResult, error) {
+	rgPath, err := exec.LookPath("rg")
+	if err != nil {
+		return tools.Errf("ripgrep (rg) is not installed or not on PATH"), nil
+	}
+
+	rgArgs := []string{"--files", "--hidden", "--color=never"}
+	if input.Include != "" {
+		rgArgs = append(rgArgs, "--glob", input.Include)
+	}
+	if agentIgnore := filepath.Join(args.RootPath, ".agentignore"); fileExists(agentIgnore) {
+		rgArgs = append(rgArgs, "--ignore-file", agentIgnore)
+	}
+	rgArgs = append(rgArgs, "--", filepath.Join(args.RootPath, relPath))
+
+	cmd := exec.CommandContext(ctx, rgPath, rgArgs...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return tools.Errf("starting ripgrep: %v", err), nil
+	}
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return tools.Errf("starting ripgrep: %v", err), nil
+	}
+
+	var paths []string
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	for scanner.Scan() {
+		paths = append(paths, scanner.Text())
+	}
+	scanErr := scanner.Err()
+
+	// The child only reads, so even if we stopped early it exits on its own;
+	// still wait to reap it and to surface real failures.
+	waitErr := cmd.Wait()
+	if ctx.Err() != nil {
+		return tools.ToolResult{}, ctx.Err()
+	}
+	if scanErr != nil {
+		return tools.Errf("reading ripgrep output: %v", scanErr), nil
+	}
+	var exitErr *exec.ExitError
+	if waitErr != nil && !errors.As(waitErr, &exitErr) {
+		return tools.Errf("running ripgrep: %v", waitErr), nil
+	}
+	if exitErr != nil && exitErr.ExitCode() != 1 {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = fmt.Sprintf("ripgrep exited with code %d", exitErr.ExitCode())
+		}
+		return tools.Errf("%s", msg), nil
+	}
+
+	re, err := regexp.Compile(compilePattern(input))
+	if err != nil {
+		return tools.Errf("invalid pattern: %v", err), nil
+	}
+
+	var out strings.Builder
+	matched := 0
+	limitHit := false
+	bytesHit := false
+	for _, p := range paths {
+		rel := relativizeToRoot(args.RootPath, p)
+		if !re.MatchString(rel) {
+			continue
+		}
+		if out.Len()+len(rel)+1 > DEFAULT_MAX_BYTES {
+			bytesHit = true
+			break
+		}
+		out.WriteString(rel)
+		out.WriteByte('\n')
+		matched++
+		if matched >= limit {
+			limitHit = true
+			break
+		}
+	}
+
+	if matched == 0 {
+		return tools.Ok(fmt.Sprintf("No files found whose path matches %q. If you expected this file to exist, it does not - check with list_directory before creating or guessing paths.", input.Pattern)), nil
+	}
+
+	content := out.String()
+	var notices []string
+	if limitHit {
+		notices = append(notices, fmt.Sprintf("%d matches limit reached, raise limit or narrow pattern/include", limit))
+	}
+	if bytesHit {
+		notices = append(notices, fmt.Sprintf("%d byte limit reached, narrow the search", DEFAULT_MAX_BYTES))
+	}
+	if len(notices) > 0 {
+		content += fmt.Sprintf("\n\n[%s]", strings.Join(notices, ". "))
+	}
+	return tools.Ok(content), nil
+}
+
+func compilePattern(input Input) string {
+	p := input.Pattern
+	if input.Literal {
+		p = regexp.QuoteMeta(p)
+	}
+	if input.IgnoreCase {
+		p = "(?i)" + p
+	}
+	return p
 }
