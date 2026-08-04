@@ -23,6 +23,13 @@ import (
 	"strings"
 )
 
+// toolCallTagRe matches the wrapper tags some chat templates (e.g. Ollama's
+// Hermes-style templates) ask models to emit around a tool call. They carry no
+// JSON of their own, so we strip them before scanning to keep the kept-prose
+// clean and the JSON object findable.
+var toolCallTagRe = regexp.MustCompile(`</?tool_call>`)
+var toolResponseTagRe = regexp.MustCompile(`</?tool_response>`)
+
 // textCallSeq gives fabricated tool_call ids to text-parsed calls. It only
 // needs to be unique within a session's context, and it's only touched from
 // the (single-threaded) update loop.
@@ -53,6 +60,11 @@ func ParseTextToolCalls(content string) ([]ToolCall, string) {
 	var kept strings.Builder
 
 	text := content
+	// Strip chat-template tool wrapper tags so neither they nor their blank
+	// lines leak into the prose shown to the user.
+	text = toolCallTagRe.ReplaceAllString(text, "")
+	text = toolResponseTagRe.ReplaceAllString(text, "")
+
 	for len(calls) < 8 {
 		start := strings.IndexByte(text, '{')
 		if start == -1 {
@@ -80,7 +92,8 @@ func ParseTextToolCalls(content string) ([]ToolCall, string) {
 	if len(calls) == 0 {
 		return nil, content
 	}
-	return calls, trimCodeFences(kept.String())
+	clean := trimCodeFences(strings.TrimSpace(kept.String()))
+	return calls, clean
 }
 
 // parseCallChunk turns a single candidate JSON blob into a ToolCall. It
@@ -100,6 +113,13 @@ func parseCallChunk(chunk string) (ToolCall, bool) {
 			if len(args) == 0 {
 				args = call.Arguments
 			}
+			if toolRequiresArgs(name) && argsAreEmpty(args) {
+				// A recognized tool with no usable arguments is the model
+				// NARRATING (e.g. "create_file foo.txt") rather than calling
+				// it. Executing it would just create junk (e.g. "path is
+				// required"). Keep it as prose and don't recover a call.
+				return ToolCall{}, false
+			}
 			return ToolCall{
 				Tool_call_id: nextTextCallID(),
 				Tool_name:    name,
@@ -112,11 +132,41 @@ func parseCallChunk(chunk string) (ToolCall, bool) {
 	if name == "" || !knownTool(name) {
 		return ToolCall{}, false
 	}
+	args := normalizeToolArgs(extractArguments(chunk))
+	if toolRequiresArgs(name) && argsAreEmpty(args) {
+		return ToolCall{}, false
+	}
 	return ToolCall{
 		Tool_call_id: nextTextCallID(),
 		Tool_name:    name,
-		Input:        normalizeToolArgs(extractArguments(chunk)),
+		Input:        args,
 	}, true
+}
+
+// toolRequiresArgs reports whether a registered tool's schema declares at
+// least one required argument. Used to reject arg-less "calls" that are really
+// the model narrating. Falls back to true for a tool with an unknown/empty
+// schema so we err toward not executing garbage.
+func toolRequiresArgs(name string) bool {
+	for _, td := range tools_def {
+		if td.Name != name {
+			continue
+		}
+		var schema struct {
+			Required []string `json:"required"`
+		}
+		if err := json.Unmarshal(td.InputSchema, &schema); err != nil {
+			return true
+		}
+		return len(schema.Required) > 0
+	}
+	return true
+}
+
+// argsAreEmpty reports whether a recovered call has no usable arguments.
+func argsAreEmpty(raw json.RawMessage) bool {
+	s := strings.TrimSpace(string(raw))
+	return s == "" || s == "{}" || s == "null"
 }
 
 var (

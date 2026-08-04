@@ -89,6 +89,7 @@ llama.cpp
 - multithread (probably) what we do in main to avoid slugish start times
 - add tools to track todos or plan mode maybe
 - add the ability for the ai to create questioners for users that they answer with options
+- simplify tokenizer logic
 
 ## common errors we check for 
 invalid request\

@@ -103,7 +103,7 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	f, err := args.Root.Open(input.FilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return tools.Errf("file %s does not exist, create it first using the create_file tool", input.FilePath), nil
+			return tools.Errf("file %s does not exist - the path is wrong or the file was never created. Do NOT create it unless the task explicitly asks for a new file: locate the real path with list_directory or grep_file (in_filenames=true).", input.FilePath), nil
 		}
 		return tools.ToolResult{}, fmt.Errorf("write_file: opening %s: %w", input.FilePath, err)
 	}

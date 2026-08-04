@@ -75,7 +75,69 @@ func inject_vars_in_sys_prompt(root string) (string, error) {
 		prompt = strings.ReplaceAll(prompt, "${IS_GIT_REPO}", "no")
 	}
 
+	prompt = strings.ReplaceAll(prompt, "${PROJECT_TREE}", buildProjectTree(root))
+
 	return prompt, nil
+}
+
+// buildProjectTree lists the project's source files (via rg --files, which
+// respects .gitignore and .agentignore and skips hidden files like .env with
+// their secrets) so the model sees exactly what exists and where, and stops
+// guessing paths. Capped so a huge repo can't blow up the context.
+func buildProjectTree(root string) string {
+	if root == "" {
+		return ""
+	}
+	fileExists := func(p string) bool {
+		_, err := os.Stat(p)
+		return err == nil
+	}
+	rgPath, err := exec.LookPath("rg")
+	if err != nil {
+		return "(ripgrep (rg) not found - use list_directory and grep_file instead)"
+	}
+	rgArgs := []string{"--files", "--color=never", "--no-messages"}
+	if ignore := filepath.Join(root, ".agentignore"); fileExists(ignore) {
+		rgArgs = append(rgArgs, "--ignore-file", ignore)
+	}
+	rgArgs = append(rgArgs, root)
+
+	out, err := exec.Command(rgPath, rgArgs...).Output()
+	if err != nil {
+		// exit 1 = no files; other errors just leave the tree empty.
+		return ""
+	}
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return ""
+	}
+
+	const (
+		maxFiles = 400
+		maxBytes = 16 * 1024
+	)
+	var b strings.Builder
+	truncated := false
+	for i, l := range lines {
+		if i >= maxFiles {
+			truncated = true
+			break
+		}
+		rel, err := filepath.Rel(root, l)
+		if err != nil {
+			rel = l
+		}
+		line := filepath.ToSlash(rel) + "\n"
+		if b.Len()+len(line) > maxBytes {
+			truncated = true
+			break
+		}
+		b.WriteString(line)
+	}
+	if truncated {
+		b.WriteString("... (tree truncated)")
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // shellOut runs a command and returns its trimmed stdout, or "" on failure.
