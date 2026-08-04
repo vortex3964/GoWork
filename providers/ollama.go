@@ -375,8 +375,7 @@ func (o *ollamaProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	models := make([]ModelInfo, 0, len(parsed.Models))
 	for _, m := range parsed.Models {
 		// Names only - calling /api/show per model made the picker hang
-		// (and used to abort the whole list on a single failure). Context
-		// window is filled later via Info when a model is selected.
+		// (and used to abort the whole list on a single failure).
 		supportsTools := hasToolCapability(m.Capabilities)
 		if !supportsTools && len(m.Capabilities) == 0 {
 			supportsTools = ModelSupportsTools("ollama", m.Name)
@@ -384,5 +383,8 @@ func (o *ollamaProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 		models = append(models, ModelInfo{ID: m.Name, DisplayName: m.Name, SupportsTools: supportsTools})
 	}
 
-	return models, nil
+	// Fill in context window (and authoritative tool support) per model,
+	// concurrently and fail-soft, so the picker shows the same info the
+	// cloud providers show instead of bare names.
+	return enrichListedModels(ctx, o, models), nil
 }

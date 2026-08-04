@@ -225,10 +225,11 @@ func (l *llamaCppProvider) ListModels(ctx context.Context) ([]ModelInfo, error) 
 
 	models := make([]ModelInfo, 0, len(parsed.Data))
 	for _, m := range parsed.Data {
-		// Names only - Info-per-model made listing slow/fragile for the
-		// picker. Context window is filled later when a model is selected.
 		models = append(models, ModelInfo{ID: m.ID, DisplayName: m.ID})
 	}
 
-	return models, nil
+	// Fill in context window (and authoritative tool support) per model,
+	// concurrently and fail-soft, so the picker shows the same info the
+	// cloud providers show instead of bare names.
+	return enrichListedModels(ctx, l, models), nil
 }

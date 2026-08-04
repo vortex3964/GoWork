@@ -26,7 +26,7 @@ func New() tools.AgentTool { return &Tool{} }
 func (t *Tool) Name() string { return "create_file" }
 
 func (t *Tool) Description() string {
-	return `Creates a file with the given content, relative to the project root, creating any missing parent directories. To create an empty directory without a file, pass a "path" ending in "/" (e.g. "src/newdir/").`
+	return `Creates a file with the given content, relative to the project root, creating any missing parent directories. Content is REQUIRED and must be non-empty — creating empty, placeholder, or stub files is refused. To create an empty directory without a file, pass a "path" ending in "/" (e.g. "src/newdir/").`
 }
 
 func (t *Tool) InputSchema() json.RawMessage {
@@ -39,7 +39,7 @@ func (t *Tool) InputSchema() json.RawMessage {
 			},
 			"content": map[string]any{
 				"type":        "string",
-				"description": "Content to write into the file. Ignored if path ends with \"/\".",
+				"description": "Content to write into the file. Required and must be non-empty — empty/placeholder files are refused. Ignored if path ends with \"/\".",
 			},
 		},
 		"required":               []string{"path", "content"},
@@ -80,11 +80,20 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		return tools.Ok(fmt.Sprintf("successfully created directory %s", filepath.Join(args.RootPath, dir))), nil
 	}
  
-	dir := filepath.Dir(input.Path)
+dir := filepath.Dir(input.Path)
 	if err := tools.MkdirAllInRoot(args.Root, dir); err != nil {
 		return tools.Errf("error creating directories: %s", err), nil
 	}
- 
+
+	// A newly created file must carry real content. Refusing empty/whitespace
+	// content here prevents the "create a placeholder then leave it" failure
+	// mode: a file wrapped in markers with nothing inside that the model never
+	// comes back to. (Directory-only creation via a trailing "/" is already
+	// handled above and stays allowed.)
+	if strings.TrimSpace(input.Content) == "" {
+		return tools.Errf("content is required - create_file must provide non-empty file content. If you only needed to create a directory, pass a path ending in \"/\"."), nil
+	}
+
 	marked := wrapInMarkers(input.Content)
  
 	file, err := args.Root.Create(input.Path)
