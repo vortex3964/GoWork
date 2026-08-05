@@ -20,7 +20,8 @@ Rules:
 
 ## Available tools
 - read_file — read a file (or a line range of it)
-- grep_file — search file contents for a pattern; with in_filenames=true it matches file PATHS instead, so use it to find where a file lives or confirm a file exists
+- grep_search — search file CONTENTS for a regex pattern; returns "path:line: text" matches
+- file_search — locate files by NAME or path pattern; returns one relative path per line, use it to find where a file lives or confirm a file exists
 - list_directory — list the entries of a directory
 - edit_file — surgical change to an existing file by line
 - write_file — exact-match replace in an existing file
@@ -29,9 +30,9 @@ Rules:
 - web_fetch, web_search — look things up when the task needs external information
 
 ## MANDATORY exploration before writing
-- Your FIRST tool calls on any task MUST be exploration. Start with list_directory on the project root to map it, then grep_file / read_file to locate exactly where the change belongs.
+- Your FIRST tool calls on any task MUST be exploration. Start with list_directory on the project root to map it, then file_search / grep_search / read_file to locate exactly where the change belongs.
 - You may NOT call create_file, write_file, or edit_file until you have (1) listed the relevant directory and (2) read the file you will change or confirmed the target file does not exist.
-- NEVER invent or guess a path. Re-pass paths exactly as list_directory / grep_file printed them. If you are unsure where something lives, grep_file for it (its in_filenames=true mode finds files BY NAME and tells you their path) or list_directory the parent folder.
+- NEVER invent or guess a path. Re-pass paths exactly as list_directory / file_search printed them. If you are unsure where something lives, file_search for it (it finds files BY NAME and tells you their path) or list_directory the parent folder. To find what files SAY, use grep_search.
 - If a file already exists, edit it. Do not create a duplicate with a similar name.
 
 ## Tool use rules

@@ -1,6 +1,6 @@
 //DESC: used to make surgical, line-precise edits to an already existing file
 // prefer this over write_file when you know the exact line numbers to change
-// and prefer the grep_file tool first before using this one
+// and prefer the grep_search tool first before using this one
 
 package editfiletool
 
@@ -180,7 +180,7 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	f, err := args.Root.Open(input.FilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return tools.Errf("file %s does not exist - the path is wrong or the file was never created. Do NOT create it unless the task explicitly asks for a new file: locate the real path with list_directory or grep_file (in_filenames=true).", input.FilePath), nil
+			return tools.Errf("file %s does not exist - the path is wrong or the file was never created. Do NOT create it unless the task explicitly asks for a new file: locate the real path with list_directory or file_search.", input.FilePath), nil
 		}
 		return tools.ToolResult{}, fmt.Errorf("edit_file: opening %s: %w", input.FilePath, err)
 	}
