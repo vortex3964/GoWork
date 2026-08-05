@@ -154,7 +154,7 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	// touching a file outside the project
 	info, err := args.Root.Stat(relPath)
 	if errors.Is(err, os.ErrNotExist) {
-		return tools.Errf("file in path %v does not exist - the path is wrong or the file was never created. Do NOT create it unless the task explicitly asks for a new file: locate it first with list_directory or grep_file (in_filenames=true) to find the real path.", input.Path), nil
+		return tools.Errf("file in path %v does not exist - the path is wrong or the file was never created. Do NOT create it unless the task explicitly asks for a new file: locate it first with list_directory or file_search to find the real path.", input.Path), nil
 	}
 	if err != nil {
 		return tools.Errf("checking %v: %v", input.Path, err), nil

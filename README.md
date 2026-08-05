@@ -82,6 +82,7 @@ llama.cpp
 - -> probably will delete move tools feature to delete the dir if its empty after the move
 - add a prompt message queue or block while the ai is generating (would prefer the first solution)
 - mcp support?
+- token counting is broken on mlstudio
 - excell support
 - @ handling permisions for tool calls from ai
 - make docs
@@ -91,7 +92,6 @@ llama.cpp
 - multithread (probably) what we do in main to avoid slugish start times
 - 3. add tools to track todos or plan mode maybe
 - 2. add the ability for the ai to create questioners for users that they answer with options
-- 1.5. split grep tool sto search_file tool and grep_file tool cause now its doing both and confuses the ai
 - -> simplify tokenizer logic
 
 ## common errors we check for 
@@ -112,7 +112,8 @@ These are the tools the agent has access to when making tool calls
 read_file(path, start_line?, end_line?) - reads a file, optional line range for large files so you don't blow the context window reading a 2000 line Typst doc.\
 write_file(path, old_str, new_str) - targeted find and replace, errors if old_str matches zero or more than one place.\
 edit_file(path , newContent , linenums) - replace text with percision\
-grep_files(path, pattern) - grep across files, returns file path and line number for each match.
+grep_search(path, pattern) - grep across file contents, returns file path and line number for each match.\
+file_search(path, pattern) - locate files by name or path pattern, returns one relative path per line.\
 create_file(path, content?) - creates a new file, errors if it already exists.\
 move_file(srcpath , dstpath) - moves a file from one dir to another (it can also rename it)\
 delete_file(path) - deletes a file.\
