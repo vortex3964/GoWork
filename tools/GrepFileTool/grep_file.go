@@ -198,7 +198,7 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		return tools.Errf("ripgrep (rg) is not installed or not on PATH"), nil
 	}
 
-	searchPath := filepath.Join(args.RootPath, relPath)
+	searchPath := filepath.Join(*args.RootPath, relPath)
 
 	rgArgs := []string{"--json", "--line-number", "--color=never", "--hidden"}
 	if input.IgnoreCase {
@@ -214,7 +214,7 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		rgArgs = append(rgArgs, "--glob", input.Include)
 	}
 
-	if agentIgnore := filepath.Join(args.RootPath, ".agentignore"); fileExists(agentIgnore) {
+	if agentIgnore := filepath.Join(*args.RootPath, ".agentignore"); fileExists(agentIgnore) {
 		rgArgs = append(rgArgs, "--ignore-file", agentIgnore)
 	}
 	// NOTE: no --follow, deliberately - keeps rg from walking symlinks
@@ -256,7 +256,7 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 			continue // ignore begin/end/summary events
 		}
 
-		relFile := relativizeToRoot(args.RootPath, evt.Data.Path.Text)
+		relFile := relativizeToRoot(*args.RootPath, evt.Data.Path.Text)
 		text, wasTruncated := truncateLine(strings.TrimRight(evt.Data.Lines.Text, "\n"))
 		if wasTruncated {
 			linesTruncated = true
@@ -360,10 +360,10 @@ func (t *Tool) searchFilenames(ctx context.Context, args tools.DispatchArgs, inp
 	if input.Include != "" {
 		rgArgs = append(rgArgs, "--glob", input.Include)
 	}
-	if agentIgnore := filepath.Join(args.RootPath, ".agentignore"); fileExists(agentIgnore) {
+	if agentIgnore := filepath.Join(*args.RootPath, ".agentignore"); fileExists(agentIgnore) {
 		rgArgs = append(rgArgs, "--ignore-file", agentIgnore)
 	}
-	rgArgs = append(rgArgs, "--", filepath.Join(args.RootPath, relPath))
+	rgArgs = append(rgArgs, "--", filepath.Join(*args.RootPath, relPath))
 
 	cmd := exec.CommandContext(ctx, rgPath, rgArgs...)
 	stdout, err := cmd.StdoutPipe()
@@ -415,7 +415,7 @@ func (t *Tool) searchFilenames(ctx context.Context, args tools.DispatchArgs, inp
 	limitHit := false
 	bytesHit := false
 	for _, p := range paths {
-		rel := relativizeToRoot(args.RootPath, p)
+		rel := relativizeToRoot(*args.RootPath, p)
 		if !re.MatchString(rel) {
 			continue
 		}

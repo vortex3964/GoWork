@@ -111,6 +111,16 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs,rawInput json.Ra
 		args.ReadState.Forget(args.PathKey(input.SourcePath))
 	}
 
+	// If the moved file was being watched, follow it to its new path: drop
+	// the old entry (and its stale changes) and track the destination.
+	if args.WatchList != nil {
+		srcKey := args.PathKey(input.SourcePath)
+		if args.WatchList.Has(srcKey) {
+			args.WatchList.Remove(srcKey)
+			args.WatchList.Add(input.DestinationPath)
+		}
+	}
+
 	extra := ""
 	srcParent := filepath.Dir(input.SourcePath)
 	// srcParent == "." means the source file was at the project root itself; never remove the root.
