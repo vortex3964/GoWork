@@ -20,19 +20,10 @@ func absPath(path string) string {
 	return abs
 }
 
-//TODO: add a function the write edit create tools will use to write dif markers in files
-// they will follow the format bellow:
-//<<<<<<< old
-// old code
-//=======
-// new code
-//>>>>>>> Ai change
-// they will put the file on a watch list and will return the position in the file of the change (fp maybe or maybe not)
-
-//this will be used to track the changes
-//we will have a watcher for write events on the os level
-//and on every write we will run the dif func on the file to scan
-//for accepts rejects intenaly or externaly
+// this will be used to track the changes
+// we will have a watcher for write events on the os level
+// and on every write we will run the dif func on the file to scan
+// for accepts rejects intenaly or externaly
 type Change struct {
 	Id    string
 	Start int // offset of "<<<<<<< old"
@@ -53,14 +44,14 @@ func InitChangeList(path string) *ChangeList {
 }
 
 type WatchList struct {
-	WatchedFiles map[string]struct{}//this is go's way of having a set
-	absWatched   map[string]string  // abs path -> original path, for O(1) hasWatchedFile
+	WatchedFiles map[string]struct{} //this is go's way of having a set
+	absWatched   map[string]string   // abs path -> original path, for O(1) hasWatchedFile
 	Changeslist  map[string]ChangeList
 	//tracks the ai
-	aiThink    *bool
-	Watcher    *fsnotify.Watcher
+	aiThink     *bool
+	Watcher     *fsnotify.Watcher
 	WatchedDirs map[string]struct{}
-	events     chan WatcherEventMsg
+	events      chan WatcherEventMsg
 	// mu guards the maps (WatchedFiles, absWatched, Changeslist, WatchedDirs)
 	// and every fsnotify Add/Remove call. The tools mutate the maps from
 	// their own goroutines (write/edit/create call Add) while the main loop
@@ -70,11 +61,11 @@ type WatchList struct {
 	mu sync.Mutex
 }
 
-func NewWatchList(aiThink *bool) (*WatchList , error) {
-	w , err := fsnotify.NewWatcher()
-	
+func NewWatchList(aiThink *bool) (*WatchList, error) {
+	w, err := fsnotify.NewWatcher()
+
 	if err != nil {
-		return nil , err
+		return nil, err
 	}
 
 	wl := &WatchList{
@@ -189,17 +180,16 @@ func (w *WatchList) hasWatchedFile(eventPath string) (string, bool) {
 	return orig, ok
 }
 
-
 // hunkRe matches a whole diff hunk in one shot and captures the mid
 // (separator) and end marker lines as groups 1 and 2. The start marker
 // is the overall match start, so no separate group is needed for it.
 var hunkRe = regexp.MustCompile(`(?ms)^<{3,}[ \t]*old[ \t]*$\n.*?^(={3,}[ \t]*)$\n.*?^(>{3,}[ \t]*[^\n]*)$`)
- 
+
 // GetDiffsBytes scans data for diff hunks and returns a Change for each one
 // found, in order of appearance, with the byte offset of each of the three
 // markers (start, mid separator, end). filename is only used to build
 // Change.Id ("filename/Cn"). No disk I/O.
-//NOTE: a malformed marker means we will fail silently
+// NOTE: a malformed marker means we will fail silently
 func GetDiffsBytes(data []byte, filename string) []Change {
 	matches := hunkRe.FindAllSubmatchIndex(data, -1)
 	changes := make([]Change, 0, len(matches))
@@ -220,7 +210,7 @@ func GetDiffsBytes(data []byte, filename string) []Change {
 // GetDiffs scans the file at path for diff hunks and returns a Change
 // for each one found, in order of appearance, with the byte offset of
 // each of the three markers (start, mid separator, end).
-//WARN: a malformed marker means we will fail silently
+// WARN: a malformed marker means we will fail silently
 func GetDiffs(path string) ([]Change, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -285,6 +275,39 @@ func RejectChangeBytes(data []byte, start, middle, end int) []byte {
 	result = append(result, oldCode...)
 	result = append(result, data[endOfEnd:]...)
 	return result
+}
+
+// ChangeSections extracts the old and new halves of a change hunk from data
+// (the file bytes the offsets were computed against), dropping the marker
+// lines and trailing newlines. Used to preview what an accept/reject keeps.
+func ChangeSections(data []byte, c Change) (old, new string) {
+	oldStart := c.Start
+	for oldStart < len(data) && data[oldStart] != '\n' {
+		oldStart++
+	}
+	if oldStart < len(data) {
+		oldStart++
+	}
+
+	oldEnd := c.Mid
+	for oldEnd > oldStart && (data[oldEnd-1] == '\n' || data[oldEnd-1] == '\r') {
+		oldEnd--
+	}
+
+	newStart := c.Mid
+	for newStart < len(data) && data[newStart] != '\n' {
+		newStart++
+	}
+	if newStart < len(data) {
+		newStart++
+	}
+
+	newEnd := c.End
+	for newEnd > newStart && (data[newEnd-1] == '\n' || data[newEnd-1] == '\r') {
+		newEnd--
+	}
+
+	return string(data[oldStart:oldEnd]), string(data[newStart:newEnd])
 }
 
 func Accept_change(path string, start int, middle int, end int) {
