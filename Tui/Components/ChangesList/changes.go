@@ -44,30 +44,20 @@ func InitChangeList(path string) *ChangeList {
 }
 
 type WatchList struct {
-<<<<<<< HEAD
 	// root points at the dispatcher's root string (see SetRoot). All paths
 	// are normalized relative to *root (see key), so a single key space
 	// serves both tool-provided relative paths and the absolute paths
 	// fsnotify reports. Updating the dispatcher's string is enough.
 	root *string
 	// WatchedFiles is a set of canonical (clean, root-relative) paths.
-	WatchedFiles map[string]struct{}//this is go's way of having a set
-=======
 	WatchedFiles map[string]struct{} //this is go's way of having a set
-	absWatched   map[string]string   // abs path -> original path, for O(1) hasWatchedFile
->>>>>>> ab082ea (GoWork tui : improve file explorer and changes list)
 	Changeslist  map[string]ChangeList
 	//tracks the ai
 	aiThink     *bool
 	Watcher     *fsnotify.Watcher
 	WatchedDirs map[string]struct{}
-<<<<<<< HEAD
-	events     chan WatcherEventMsg
-	// mu guards the maps (WatchedFiles, Changeslist, WatchedDirs)
-=======
 	events      chan WatcherEventMsg
-	// mu guards the maps (WatchedFiles, absWatched, Changeslist, WatchedDirs)
->>>>>>> ab082ea (GoWork tui : improve file explorer and changes list)
+	// mu guards the maps (WatchedFiles, Changeslist, WatchedDirs)
 	// and every fsnotify Add/Remove call. The tools mutate the maps from
 	// their own goroutines (write/edit/create call Add) while the main loop
 	// and the watcher handler read and write them, so without the lock this

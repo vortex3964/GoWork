@@ -55,15 +55,7 @@ llama.cpp
 - @ update move delete websearch webfetch to have a permision window from the user before running
 - @ adding bash tool (some bash commands need permisions)
 - @ add debug mode
-- * fix bugs in file explorer it expands beyond it size when we run on smaller windows
-- * file explorer doesnt have stylized text for code
-- * stylize file explorers border with filename and % identation
-- * changes list has pending issues
-- * reject accept changes should be displayed in message stylized
-- * changes list doesnt wrap around when we reach the final changes
-- * no render logic on smaller windows its displayed poorly
-- * needs to have a section for explaining the key binds
-- * proper resizing for changes list
+- -> context handling
 - designing skills
 - sql db for storing stats and messages and session data etch
 - add slash commands (with window for autocomplete)

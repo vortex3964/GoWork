@@ -37,8 +37,6 @@ const (
 )
 
 // maxToolResultLines caps how many lines of a tool's output we show inline
-// (crush uses a similar height cap; the full result still goes back to the
-// model in context).
 const maxToolResultLines = 12
 
 // maxToolArgsLen caps the one-line argument summary shown next to the tool
@@ -66,8 +64,7 @@ func NewToolMessage(name, args string) message {
 }
 
 // SummarizeToolInput renders a compact one-line label for a tool call's
-// raw JSON input, preferring path/url-like values over the raw blob - the
-// "main param" of crush's `● bash git status` style header.
+// raw JSON input, preferring path/url-like values over the raw blob 
 func SummarizeToolInput(input json.RawMessage) string {
 	if len(input) == 0 || string(input) == "{}" {
 		return ""
@@ -301,9 +298,6 @@ func (m *Model) markdownRenderer(width int) *glamour.TermRenderer {
 }
 
 func (m *Model) renderBlock(msg message, width int) string {
-	
-	
-	
 	if msg.isTool {
 		icon := "●"
 		labelColor := style.Info

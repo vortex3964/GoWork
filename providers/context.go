@@ -4,26 +4,16 @@ package providers
 
 import "strings"
 
-// countTextTokens is the local token estimate count roughly
-// 4 chars/token  it's accurate enough for context
-func countTextTokens(text string) int {
-	if text == "" {
-		return 0
-	}
-	return len(text)/4 + 1
-}
-
 // EstimateOverheadTokensForModel estimates the fixed token cost every
 // Generate request carries on top of the message list: the system prompt plus
-// the registered tool schemas (both are re-sent each turn). The model
-// parameter is accepted for call-site compatibility the count itself is
-// model-agnostic.
+// the registered tool schemas (both are re-sent each turn). Unknown models or
+// unavailable tokenizers degrade to a chars/4 estimate.
 func EstimateOverheadTokensForModel(model string) int {
-	tokens := countTextTokens(system_prompt)
+	tokens := countTokensForModel(model, system_prompt)
 	for _, td := range tools_def {
-		tokens += countTextTokens(td.Name)
-		tokens += countTextTokens(td.Description)
-		tokens += countTextTokens(string(td.InputSchema))
+		tokens += countTokensForModel(model, td.Name)
+		tokens += countTokensForModel(model, td.Description)
+		tokens += countTokensForModel(model, string(td.InputSchema))
 	}
 	return tokens + 512
 }
@@ -31,14 +21,14 @@ func EstimateOverheadTokensForModel(model string) int {
 // EstimateMessageTokensForModel is a local token estimate for one message,
 // including the JSON overhead of any tool calls it carries. It deliberately
 // avoids the provider's EstimateTokens-style endpoints, which cost a network
-// round-trip per turn. The model parameter is accepted for call-site
-// compatibility; the count itself is model-agnostic.
+// round-trip per turn. Unknown models or unavailable tokenizers degrade to a
+// chars/4 estimate.
 func EstimateMessageTokensForModel(m Message, model string) int {
-	tokens := countTextTokens(m.Content)
-	tokens += countTextTokens(m.ToolCallID)
+	tokens := countTokensForModel(model, m.Content)
+	tokens += countTokensForModel(model, m.ToolCallID)
 	for _, tc := range m.ToolCalls {
-		tokens += countTextTokens(tc.Tool_name)
-		tokens += countTextTokens(string(tc.Input))
+		tokens += countTokensForModel(model, tc.Tool_name)
+		tokens += countTokensForModel(model, string(tc.Input))
 	}
 	return tokens + 16
 }
@@ -134,10 +124,10 @@ func groupMessages(messages []Message) [][]Message {
 	return groups
 }
 
-//the compaction prompt
+// the compaction prompt
 var compaction_prompt string
 
-//set the prompt
+// set the prompt
 func InitCompactionPrompt(s string) {
 	compaction_prompt = s
 }
@@ -158,7 +148,7 @@ const (
 	compactToolOutputMax = 4096
 )
 
-// ShouldCompact reports whether a request using promptTokens tokens 
+// ShouldCompact reports whether a request using promptTokens tokens
 // has crossed into the compaction zone , unknown windows never compact
 func ShouldCompact(window, promptTokens int) bool {
 	if window <= 0 || promptTokens <= 0 {
