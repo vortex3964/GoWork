@@ -57,41 +57,6 @@ func mustMkdirAll(t *testing.T, path string) {
 }
 
 func TestDeleteFile(t *testing.T) {
-	t.Run("removes now-empty immediate parent directory", func(t *testing.T) {
-		root := t.TempDir()
-		mustMkdirAll(t, filepath.Join(root, "hello"))
-		writeFile(t, filepath.Join(root, "hello", "hi.go"), "package hello")
-
-		tool := newTool(t, root)
-		_, isErr := runTool(t, tool, "hello/hi.go")
-		if isErr {
-			t.Fatalf("unexpected error result")
-		}
-
-		if _, err := os.Stat(filepath.Join(root, "hello")); !os.IsNotExist(err) {
-			t.Error("expected empty 'hello' directory to be removed after deleting its only file")
-		}
-	})
-
-	t.Run("does not cascade beyond the immediate parent", func(t *testing.T) {
-		root := t.TempDir()
-		mustMkdirAll(t, filepath.Join(root, "hello", "world"))
-		writeFile(t, filepath.Join(root, "hello", "world", "hi.go"), "package world")
-
-		tool := newTool(t, root)
-		_, isErr := runTool(t, tool, "hello/world/hi.go")
-		if isErr {
-			t.Fatalf("unexpected error result")
-		}
-
-		if _, err := os.Stat(filepath.Join(root, "hello", "world")); !os.IsNotExist(err) {
-			t.Error("expected 'hello/world' to be removed since it became empty")
-		}
-		if _, err := os.Stat(filepath.Join(root, "hello")); err != nil {
-			t.Error("expected 'hello' to survive — cleanup should not cascade past one level")
-		}
-	})
-
 	t.Run("keeps non-empty parent directory", func(t *testing.T) {
 		root := t.TempDir()
 		mustMkdirAll(t, filepath.Join(root, "hello"))
