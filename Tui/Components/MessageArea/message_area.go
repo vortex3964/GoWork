@@ -301,9 +301,6 @@ func (m *Model) markdownRenderer(width int) *glamour.TermRenderer {
 }
 
 func (m *Model) renderBlock(msg message, width int) string {
-	***REMOVED***
-	***REMOVED***
-	
 	if msg.isTool {
 		icon := "●"
 		labelColor := style.Info

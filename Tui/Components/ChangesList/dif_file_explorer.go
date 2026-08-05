@@ -134,14 +134,27 @@ type FileExplorer struct {
 }
 
 var (
+	// Old/new halves keep their dark red/green bands, but their text is tinted
+	// so a diff stays readable even for plain-text files that chroma can't
+	// color (e.g. .txt fixtures), where the old content would otherwise read
+	// as flat grey.
 	oldBgStyle = lipgloss.NewStyle().
 			Background(lipgloss.Color("#3B1A1A")).
-			Foreground(style.Text)
+			Foreground(lipgloss.Color("#FF9E9E"))
 	newBgStyle = lipgloss.NewStyle().
 			Background(lipgloss.Color("#1A3B1A")).
-			Foreground(style.Text)
+			Foreground(style.Success)
 	markerStyle = lipgloss.NewStyle().
 			Foreground(style.Muted).
+			Italic(true)
+	// markerOldStyle/markerNewStyle tint the diff markers themselves so the
+	// old/base and new sides are recognizable at a glance (muted greys
+	// otherwise).
+	markerOldStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#C27070")).
+			Italic(true)
+	markerNewStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#6FBF7F")).
 			Italic(true)
 	normalStyle = lipgloss.NewStyle().
 			Foreground(style.Text)
@@ -322,7 +335,14 @@ func (fe *FileExplorer) ensureDisplay() {
 func (fe *FileExplorer) renderLine(i int, raw string) (string, lipgloss.Style) {
 	switch {
 	case isMarkerLine(raw):
-		return raw, markerStyle
+		switch {
+		case strings.HasPrefix(raw, "<<<<<<<"):
+			return raw, markerOldStyle
+		case strings.HasPrefix(raw, ">>>>>>>"):
+			return raw, markerNewStyle
+		default:
+			return raw, markerStyle
+		}
 	case fe.lineStates[i] == stateOld:
 		return raw, oldBgStyle
 	case fe.lineStates[i] == stateNew:
@@ -456,13 +476,6 @@ func isMarkerLine(line string) bool {
 		strings.HasPrefix(line, ">>>>>>>")
 }
 
-// View draws the whole explorer pane — a top border with the filename, the
-// wrapped file content, a blank padding row, the scroll-percentage footer and
-// a bottom border — sized to exactly width x height. The side borders are
-// dropped (the file's text runs edge to edge), and the blank padding row
-// keeps the bottom border from ever sitting flush against content, so it
-// can't break. Content lines wrap (never truncate), so every row is exactly
-// as wide as the frame expects.
 func (fe *FileExplorer) View(width, height int) string {
 	fe.SetSize(width, height)
 	fe.ensureDisplay()

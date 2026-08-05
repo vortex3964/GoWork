@@ -265,9 +265,9 @@ type model struct {
 	// in parallel; pendingResults (one slot per call) is nil until that slot
 	// reports back, and the loop only returns to the model once every slot is
 	// filled.
-	pendingTools []pendingTool
+	pendingTools   []pendingTool
 	pendingResults []*tools.ToolResult
-	stepCount int
+	stepCount      int
 	// maxSteps is the per-prompt cap on tool turns before the loop forces a
 	// stop; configured via MAX_AGENT_STEPS and defaulted in initialModel.
 	maxSteps int
