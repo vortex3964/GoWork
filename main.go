@@ -210,6 +210,22 @@ const (
 	modeRecall
 )
 
+type Mode struct {
+	mode  uiMode
+	label string
+	color string
+}
+
+func GetModes() []Mode {
+	return []Mode{
+		modeIdle: {mode: modeIdle, label: "IDLE", color: "#B3B1AD"},
+		modePrompt: {mode: modePrompt, label: "PROMPT", color: "#26ED79"},
+		modeProviderSelect: {mode: modeProviderSelect, label: "PROVIDER", color: "#59C2FF"},
+		modeChangeHandling: {mode: modeChangeHandling, label: "CHANGES", color: "#7C1EC9"},
+		modeRecall: {mode: modeRecall, label: "RECALL", color: "#95E6CB"},
+	}
+}
+
 type model struct {
 	tabs         tabs.Model
 	stats        stats.Model

@@ -70,7 +70,17 @@ func renderChain(segs []segment) string {
 	return b.String()
 }
 func renderStatusLine(m model) string {
+	modes := GetModes()
+	modeText := "?"
+	modeColor := statusModelBG
+	if int(m.mode) >= 0 && int(m.mode) < len(modes) {
+		cur := modes[m.mode]
+		modeText = cur.label
+		modeColor = cur.color
+	}
+
 	left := renderChain([]segment{
+		{bg: modeColor, text: modeText},
 		{bg: statusModelBG, text: m.status.modelID},
 		{bg: statusProviderBG, text: m.status.providerName},
 	})
