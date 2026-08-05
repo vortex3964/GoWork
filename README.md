@@ -51,19 +51,21 @@ ollama\
 llama.cpp
 
 ## TODO
-- update read and edit so that we handle pdfs and images we will ignore images and read pdfs with the new tool we will make in the future
-- update move delete tools to also track files with the changes list command and the watcer
-- update move delete websearch webfetch to have a permision window from the user before running
-- fix bugs in file explorer it expands beyond it size when we run on smaller windows
-- file explorer doesnt have stylized text for code
-- stylize file explorers border with filename and % identation
-- changes list has pending issues
-- reject accept changes should be displayed in message stylized
-- changes list doesnt wrap around when we reach the final changes
-- no render logic on smaller windows its displayed poorly
-- needs to have a section for explaining the key binds
-- proper resizing for changes list
-- context handling
+- 6. update read and edit so that we handle pdfs and images we will ignore images and read pdfs with the new tool we will make in the future
+- 1. update move delete tools to also track files with the changes list command and the watcer
+- @ update move delete websearch webfetch to have a permision window from the user before running
+- @ adding bash tool (some bash commands need permisions)
+- @ add debug mode
+- * fix bugs in file explorer it expands beyond it size when we run on smaller windows
+- * file explorer doesnt have stylized text for code
+- * stylize file explorers border with filename and % identation
+- * changes list has pending issues
+- * reject accept changes should be displayed in message stylized
+- * changes list doesnt wrap around when we reach the final changes
+- * no render logic on smaller windows its displayed poorly
+- * needs to have a section for explaining the key binds
+- * proper resizing for changes list
+- -> context handling
 - designing skills
 - sql db for storing stats and messages and session data etch
 - add slash commands (with window for autocomplete)
@@ -74,22 +76,23 @@ llama.cpp
 - add skills loading guidance to the system prompt once skills are actually supported
 - maybe make llama and lmstuido have an in app launch button in case the user forgot to start them
 - maybe add lsp support?
-- add pdf support
-- handle images
-- add mode tracking to status bar with color changes similar to nvim
+- 4. add pdf support
+- 5. handle images
+- -> add mode tracking to status bar with color changes similar to nvim
 - make an installer
-- probably will delete move tools feature to delete the dir if its empty after the move
+- -> probably will delete move tools feature to delete the dir if its empty after the move
 - add a prompt message queue or block while the ai is generating (would prefer the first solution)
 - mcp support?
 - excell support
-- handling permisions for tool calls from ai
+- @ handling permisions for tool calls from ai
 - make docs
-- have atatchments like images pdfs or copied and pasted text on the promptbar so that a large copied text doesnt take up the entire screen
-- add a way to copy text from promptbar and message area
+- ? have atatchments like images pdfs or copied and pasted text on the promptbar so that a large copied text doesnt take up the entire screen
+- ? add a way to copy text from promptbar and message area
+- ? update prompt bar to also grow up to 5 rows instead of being just 2 lines staticaly
 - multithread (probably) what we do in main to avoid slugish start times
-- add tools to track todos or plan mode maybe
-- add the ability for the ai to create questioners for users that they answer with options
-- simplify tokenizer logic
+- 3. add tools to track todos or plan mode maybe
+- 2. add the ability for the ai to create questioners for users that they answer with options
+- -> simplify tokenizer logic
 
 ## common errors we check for 
 invalid request\
@@ -158,7 +161,7 @@ ALSO COMMING SOON
 
 ## run test
 
-use this to run all the tests for every tool
+use this to run all the tests for every tool and other tests
 ```
 make test 
 ```
