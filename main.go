@@ -265,9 +265,9 @@ type model struct {
 	// in parallel; pendingResults (one slot per call) is nil until that slot
 	// reports back, and the loop only returns to the model once every slot is
 	// filled.
-	pendingTools    []pendingTool
-	pendingResults  []*tools.ToolResult
-	stepCount       int
+	pendingTools []pendingTool
+	pendingResults []*tools.ToolResult
+	stepCount int
 	// maxSteps is the per-prompt cap on tool turns before the loop forces a
 	// stop; configured via MAX_AGENT_STEPS and defaulted in initialModel.
 	maxSteps int
@@ -375,6 +375,10 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 	p := promptbar.New()
 	p.Focus()
 
+	changesList := changeslist.New(wl)
+	// Show paths relative to the project root instead of absolute.
+	changesList.SetRoot(root)
+
 	return model{
 		tabs:            tabs.New("code", "skills", "stats"),
 		prompt:          p,
@@ -389,7 +393,7 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 		logoLines:       loadLogo(),
 		popUp:           popup.New(),
 		modal:           dialog.New(),
-		changesList:     changeslist.New(wl),
+		changesList:     changesList,
 		tool_dispatcher: dispatcher,
 	}
 }
@@ -837,18 +841,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "down":
 				m.changesList.CursorDown()
 				return m, nil
+			case "?":
+				m.changesList.ToggleHelp()
+				return m, nil
 			case "ctrl+a":
-				m.changesList.AcceptSelected()
-				return m, nil
+				return m, m.changesList.AcceptSelected()
 			case "ctrl+r":
-				m.changesList.RejectSelected()
-				return m, nil
+				return m, m.changesList.RejectSelected()
 			case "ctrl+f":
-				m.changesList.AcceptAll()
-				return m, nil
+				return m, m.changesList.AcceptAll()
 			case "ctrl+d":
-				m.changesList.RejectAll()
-				return m, nil
+				return m, m.changesList.RejectAll()
 			default:
 				var cmd tea.Cmd
 				m.changesList, cmd = m.changesList.Update(msg)
@@ -1027,6 +1030,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, m.changesList.WatchCmd()
+	case changeslist.ChangeEventMsg:
+		// Accept/reject summaries surface in the message area, rendered as
+		// markdown (blockquote + bold + code) so they stand out from the
+		// surrounding conversation.
+		m.message_area.AppendMessage(changeEventMarkdown(msg), false)
+		return m, nil
 	case streamDeltaMsg:
 		// A chunk of streamed assistant text: append it to the live message
 		// and re-arm the reader for the next chunk.
@@ -1401,6 +1410,42 @@ func envOr(keys ...string) string {
 		}
 	}
 	return ""
+}
+
+// maxChangePreviewLines caps how many diff lines an accept/reject message
+// inlines so a single huge change can't flood the message area.
+const maxChangePreviewLines = 30
+
+// changeEventMarkdown renders an accept/reject summary as markdown: a
+// blockquote header, then a fenced ```diff block whose +/- lines the message
+// area's syntax highlighter colors (green for accepted new code, red for
+// rejected old code).
+func changeEventMarkdown(msg changeslist.ChangeEventMsg) string {
+	icon, verb, mark := "✓", "**ACCEPTED**", "+"
+	if msg.Rejected {
+		icon, verb, mark = "✗", "**REJECTED**", "-"
+	}
+
+	var b strings.Builder
+	b.WriteString("> " + icon + " " + verb + " `" + msg.Summary + "`")
+
+	if len(msg.Lines) > 0 {
+		b.WriteString("\n\n```diff\n")
+		lines := msg.Lines
+		more := 0
+		if len(lines) > maxChangePreviewLines {
+			lines = lines[:maxChangePreviewLines]
+			more = len(msg.Lines) - maxChangePreviewLines
+		}
+		for _, line := range lines {
+			b.WriteString(mark + " " + line + "\n")
+		}
+		if more > 0 {
+			b.WriteString(mark + fmt.Sprintf(" … %d more lines", more) + "\n")
+		}
+		b.WriteString("```")
+	}
+	return b.String()
 }
 
 func main() {
