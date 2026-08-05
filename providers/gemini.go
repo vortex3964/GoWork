@@ -114,12 +114,12 @@ func (g *geminiProvider) Generate(ctx context.Context, messages []Message) (Gene
 	reqBody := map[string]interface{}{
 		"contents": toContents(messages),
 	}
-	if system_prompt != "" {
+	if system_prompt != "" && !omitSystem(ctx) {
 		reqBody["systemInstruction"] = map[string]interface{}{
 			"parts": []map[string]string{{"text": system_prompt}},
 		}
 	}
-	if len(tools_def) > 0 {
+	if len(tools_def) > 0 && !omitSystem(ctx) {
 		reqBody["tools"] = toGeminiTools()
 		reqBody["toolConfig"] = map[string]interface{}{
 			"functionCallingConfig": map[string]interface{}{"mode": "AUTO"},
@@ -201,12 +201,12 @@ func (g *geminiProvider) GenerateStream(ctx context.Context, messages []Message,
 	reqBody := map[string]interface{}{
 		"contents": toContents(messages),
 	}
-	if system_prompt != "" {
+	if system_prompt != "" && !omitSystem(ctx) {
 		reqBody["systemInstruction"] = map[string]interface{}{
 			"parts": []map[string]string{{"text": system_prompt}},
 		}
 	}
-	if len(tools_def) > 0 {
+	if len(tools_def) > 0 && !omitSystem(ctx) {
 		reqBody["tools"] = toGeminiTools()
 		reqBody["toolConfig"] = map[string]interface{}{
 			"functionCallingConfig": map[string]interface{}{"mode": "AUTO"},
@@ -299,27 +299,6 @@ func (g *geminiProvider) GenerateStream(ctx context.Context, messages []Message,
 		StopReason: finish,
 		Usage:      usage,
 	}, nil
-}
-
-func (g *geminiProvider) EstimateTokens(ctx context.Context, messages []Message) (int, error) {
-	reqBody := map[string]interface{}{
-		"contents": toContents(messages),
-	}
-
-	url := geminiBaseURL + "/models/" + g.model + ":countTokens"
-	body, err := g.doRequest(ctx, http.MethodPost, url, reqBody)
-	if err != nil {
-		return 0, err
-	}
-
-	var parsed struct {
-		TotalTokens int `json:"totalTokens"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return 0, fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	return parsed.TotalTokens, nil
 }
 
 // geminiModel mirrors the model object gemini's API returns. Both Info
