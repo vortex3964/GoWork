@@ -77,7 +77,7 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		if err := tools.MkdirAllInRoot(args.Root, dir); err != nil {
 			return tools.Errf("error creating directories: %s", err), nil
 		}
-		return tools.Ok(fmt.Sprintf("successfully created directory %s", filepath.Join(args.RootPath, dir))), nil
+		return tools.Ok(fmt.Sprintf("successfully created directory %s", filepath.Join(*args.RootPath, dir))), nil
 	}
  
 dir := filepath.Dir(input.Path)
@@ -118,5 +118,5 @@ dir := filepath.Dir(input.Path)
 		}
 	}
 
-	return tools.Ok(fmt.Sprintf("successfully created file at %s", filepath.Join(args.RootPath, input.Path))), nil
+	return tools.Ok(fmt.Sprintf("successfully created file at %s", filepath.Join(*args.RootPath, input.Path))), nil
 }

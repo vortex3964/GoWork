@@ -489,7 +489,6 @@ func (m *Model) AcceptAll() {
 	}
 	m.Watch.Changeslist = make(map[string]ChangeList)
 	m.Watch.WatchedFiles = make(map[string]struct{})
-	m.Watch.absWatched = make(map[string]string)
 	m.Watch.mu.Unlock()
 	m.rebuildRows()
 }
@@ -503,7 +502,6 @@ func (m *Model) RejectAll() {
 	}
 	m.Watch.Changeslist = make(map[string]ChangeList)
 	m.Watch.WatchedFiles = make(map[string]struct{})
-	m.Watch.absWatched = make(map[string]string)
 	m.Watch.mu.Unlock()
 	m.rebuildRows()
 }

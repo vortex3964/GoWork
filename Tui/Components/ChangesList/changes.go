@@ -12,14 +12,6 @@ import (
 	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
-func absPath(path string) string {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return path
-	}
-	return abs
-}
-
 //TODO: add a function the write edit create tools will use to write dif markers in files
 // they will follow the format bellow:
 //<<<<<<< old
@@ -53,15 +45,20 @@ func InitChangeList(path string) *ChangeList {
 }
 
 type WatchList struct {
+	// root points at the dispatcher's root string (see SetRoot). All paths
+	// are normalized relative to *root (see key), so a single key space
+	// serves both tool-provided relative paths and the absolute paths
+	// fsnotify reports. Updating the dispatcher's string is enough.
+	root *string
+	// WatchedFiles is a set of canonical (clean, root-relative) paths.
 	WatchedFiles map[string]struct{}//this is go's way of having a set
-	absWatched   map[string]string  // abs path -> original path, for O(1) hasWatchedFile
 	Changeslist  map[string]ChangeList
 	//tracks the ai
 	aiThink    *bool
 	Watcher    *fsnotify.Watcher
 	WatchedDirs map[string]struct{}
 	events     chan WatcherEventMsg
-	// mu guards the maps (WatchedFiles, absWatched, Changeslist, WatchedDirs)
+	// mu guards the maps (WatchedFiles, Changeslist, WatchedDirs)
 	// and every fsnotify Add/Remove call. The tools mutate the maps from
 	// their own goroutines (write/edit/create call Add) while the main loop
 	// and the watcher handler read and write them, so without the lock this
@@ -79,7 +76,6 @@ func NewWatchList(aiThink *bool) (*WatchList , error) {
 
 	wl := &WatchList{
 		WatchedFiles: make(map[string]struct{}),
-		absWatched:   make(map[string]string),
 		Changeslist:  make(map[string]ChangeList),
 		aiThink:      aiThink,
 		Watcher:      w,
@@ -88,6 +84,14 @@ func NewWatchList(aiThink *bool) (*WatchList , error) {
 	}
 	go wl.pump()
 	return wl, nil
+}
+
+// SetRoot points the watch list at the dispatcher's root string. The string
+// itself is owned by the dispatcher, so a later update there is visible here.
+func (w *WatchList) SetRoot(root *string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.root = root
 }
 
 // pump is the only reader of w.Watcher.Events for the program's lifetime.
@@ -109,6 +113,19 @@ func (w *WatchList) SetThink(t *bool) {
 	w.aiThink = t
 }
 
+// key canonicalizes a path into the single key space used by every map.
+// Tool-provided paths are relative to the project root; fsnotify reports
+// absolute paths. Normalizing both to a clean root-relative path (or the
+// clean path itself if it can't be made relative) makes them agree.
+func (w *WatchList) key(path string) string {
+	if filepath.IsAbs(path) && w.root != nil && *w.root != "" {
+		if rel, err := filepath.Rel(*w.root, path); err == nil {
+			return filepath.Clean(rel)
+		}
+	}
+	return filepath.Clean(path)
+}
+
 // Add adds a file to the watch list.
 func (w *WatchList) Add(path string) {
 	w.mu.Lock()
@@ -117,19 +134,18 @@ func (w *WatchList) Add(path string) {
 }
 
 func (w *WatchList) addLocked(path string) {
-	w.WatchedFiles[path] = struct{}{}
-	w.absWatched[absPath(path)] = path
+	w.WatchedFiles[w.key(path)] = struct{}{}
 }
 
 // Has reports whether path is currently watched.
 func (w *WatchList) Has(path string) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	_, ok := w.WatchedFiles[path]
+	_, ok := w.WatchedFiles[w.key(path)]
 	return ok
 }
 
-// Remove stops watching path.
+// Remove stops watching path and drops any changes stored for it.
 func (w *WatchList) Remove(path string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -137,8 +153,9 @@ func (w *WatchList) Remove(path string) {
 }
 
 func (w *WatchList) removeLocked(path string) {
-	delete(w.WatchedFiles, path)
-	delete(w.absWatched, absPath(path))
+	k := w.key(path)
+	delete(w.WatchedFiles, k)
+	delete(w.Changeslist, k)
 }
 
 // Files returns all currently watched file paths (original form).
@@ -159,7 +176,7 @@ func (w *WatchList) filesLocked() []string {
 func (w *WatchList) GetChanges(filepath string) []Change {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.Changeslist[filepath].Changes
+	return w.Changeslist[w.key(filepath)].Changes
 }
 
 func (w *WatchList) addDirToWatcher(path string) {
@@ -175,7 +192,10 @@ func (w *WatchList) addDirToWatcherLocked(path string) {
 	if w.Watcher == nil {
 		return
 	}
-	dir := absPath(filepath.Dir(path))
+	dir := filepath.Dir(path)
+	if w.root != nil && *w.root != "" {
+		dir = filepath.Join(*w.root, dir)
+	}
 	if _, ok := w.WatchedDirs[dir]; !ok {
 		_ = w.Watcher.Add(dir)
 		w.WatchedDirs[dir] = struct{}{}
@@ -185,8 +205,9 @@ func (w *WatchList) addDirToWatcherLocked(path string) {
 func (w *WatchList) hasWatchedFile(eventPath string) (string, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	orig, ok := w.absWatched[absPath(eventPath)]
-	return orig, ok
+	k := w.key(eventPath)
+	_, ok := w.WatchedFiles[k]
+	return k, ok
 }
 
 
