@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	todo "GoWork/Tui/Components/ToDo"
 	"GoWork/tools"
 	todotool "GoWork/tools/ToDoTool"
-	todo "GoWork/Tui/Components/ToDo"
 )
 
 type testTool struct {
@@ -195,5 +195,41 @@ func TestNameAndSchema(t *testing.T) {
 	}
 	if len(tt.InputSchema()) == 0 {
 		t.Error("InputSchema() returned empty")
+	}
+}
+
+func TestSlidingWindowCapKeepsNewestTasks(t *testing.T) {
+	resetGlobalTodo()
+	tt := newTool()
+
+	content, isErr := runJSON(t, tt, `{"action":"baseline","tasks":["t1","t2","t3","t4","t5","t6","t7","t8","t9","t10"]}`)
+	if isErr {
+		t.Fatalf("unexpected error result: %s", content)
+	}
+	mustContain(t, content, "total 7")
+	mustContain(t, content, "0. t4")
+	mustContain(t, content, "6. t10")
+	if strings.Contains(content, "0. t1") && strings.Contains(content, "1. t2") {
+		t.Errorf("oldest tasks should drop off, got:\n%s", content)
+	}
+	if got := todo.GetTodoList().Size; got != todo.MaxTodos {
+		t.Errorf("global list Size = %d, want %d", got, todo.MaxTodos)
+	}
+}
+
+func TestPushBeyondCapSlidesWindow(t *testing.T) {
+	resetGlobalTodo()
+	tt := newTool()
+
+	runJSON(t, tt, `{"action":"baseline","tasks":["a","b","c","d","e","f","g"]}`)
+	content, isErr := runJSON(t, tt, `{"action":"push","tasks":["h","i","j"]}`)
+	if isErr {
+		t.Fatalf("unexpected error result: %s", content)
+	}
+	mustContain(t, content, "total 7")
+	mustContain(t, content, "0. d")
+	mustContain(t, content, "6. j")
+	if strings.Contains(content, "0. a") {
+		t.Errorf("oldest tasks should have slid out, got:\n%s", content)
 	}
 }

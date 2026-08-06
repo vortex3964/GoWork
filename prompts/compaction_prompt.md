@@ -22,3 +22,4 @@ Rules:
 - Do not invent steps that did not happen.
 - Do not mention this summarization process in the summary.
 - Be concise but complete; the summary replaces the original conversation, so anything still needed must be captured.
+- If a "## Current todo list" section is appended below, base the Work State on it and mark todo items as done, in progress, or pending in the summary.

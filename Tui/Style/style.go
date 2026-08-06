@@ -20,6 +20,7 @@ var (
 	Secondary  = lipgloss.Color("#000000") // match app bg
 	Highlight  = lipgloss.Color("#1a1a1a") // slightly lifted black for selection
 	Special    = lipgloss.Color("#95E6CB")
+	Panel      = lipgloss.Color("#151626") // todo side panel background
 )
 
 // TabAccent is intentionally NOT part of the Ayu palette above.

@@ -205,7 +205,7 @@ type pendingTool struct {
 
 // defaultMaxAgentSteps is used when MAX_AGENT_STEPS isn't set (or parses to
 // zero). It guards the agentic loop against runaway tool-call chains (a model
-// stuck re-calling the same tool, etc.) 
+// stuck re-calling the same tool, etc.)
 const defaultMaxAgentSteps = 40
 
 // maxToolsPerTurn caps how many tool calls are executed from a single model
@@ -231,11 +231,11 @@ type Mode struct {
 
 func GetModes() []Mode {
 	return []Mode{
-		modeIdle: {mode: modeIdle, label: "IDLE", color: "#B3B1AD"},
-		modePrompt: {mode: modePrompt, label: "PROMPT", color: "#26ED79"},
+		modeIdle:           {mode: modeIdle, label: "IDLE", color: "#B3B1AD"},
+		modePrompt:         {mode: modePrompt, label: "PROMPT", color: "#26ED79"},
 		modeProviderSelect: {mode: modeProviderSelect, label: "PROVIDER", color: "#59C2FF"},
 		modeChangeHandling: {mode: modeChangeHandling, label: "CHANGES", color: "#7C1EC9"},
-		modeRecall: {mode: modeRecall, label: "RECALL", color: "#95E6CB"},
+		modeRecall:         {mode: modeRecall, label: "RECALL", color: "#95E6CB"},
 	}
 }
 
@@ -305,8 +305,13 @@ type model struct {
 	// error popup notification
 	popUp popup.Model
 
-	// generic centered modal (tool-support warnings, future confirmations)
+	// Todo components
 	modal dialog.Model
+	todoPanelOpen bool
+	todoPanelWidth int
+	panelDragActive bool
+	panelDragStartX int
+	panelDragWidth  int
 }
 
 func loadLogo() []string {
@@ -484,7 +489,7 @@ func streamReadCmd(ch <-chan tea.Msg) tea.Cmd {
 
 // runToolCmd executes a single tool call off the update loop. Panics inside a
 // tool are recovered and surfaced as an error result instead of killing the
-// whole app . Running the calls of a batch in parallel is what the caller 
+// whole app . Running the calls of a batch in parallel is what the caller
 // arranges by issuing several of these together via tea.Batch
 func runToolCmd(ctx context.Context, d *tools.Dispatcher, call providers.ToolCall, index int) tea.Cmd {
 	return func() tea.Msg {
@@ -511,7 +516,7 @@ func (m *model) contextForModel() []providers.Message {
 
 // shouldCompact reports whether the provider-reported prompt usage from the
 // last request has crossed into the compaction zone for this model's context
-// window. 
+// window.
 func (m *model) shouldCompact() bool {
 	return providers.ShouldCompact(m.status.contextWindow, m.status.lastPromptTokens)
 }
@@ -524,15 +529,16 @@ func isCancelError(err error) bool {
 // compactCmd runs a context-compaction call off the update loop: the model
 // condenses the conversation into a summary that then replaces the old
 // history (see compactResultMsg). It reads m's state once up front and never
-// touches the model from this goroutine.
-func compactCmd(p providers.Provider, messages []providers.Message, window int) tea.Cmd {
+// touches the model from this goroutine. todoState snapshots the live todo
+// list so the summary's Work State can reflect outstanding tasks.
+func compactCmd(p providers.Provider, messages []providers.Message, window int, todoState ...string) tea.Cmd {
 	return func() tea.Msg {
 		// The compaction call only needs history + the compaction prompt:
 		// WithoutSystem makes providers skip the system prompt and tool
 		// schemas, which are useless for summarising and would waste tokens.
 		ctx, cancel := context.WithCancel(providers.WithoutSystem(context.Background()))
 		defer cancel()
-		res, err := p.Generate(ctx, providers.CompactionMessages(messages, window))
+		res, err := p.Generate(ctx, providers.CompactionMessages(messages, window, todoState...))
 		if err != nil {
 			return compactResultMsg{err: err}
 		}
@@ -558,7 +564,7 @@ func (m *model) endTurn() {
 }
 
 // toolOutputForContext bounds how much of a tool's output gets written back
-// into context so a single huge result can't blow the window 
+// into context so a single huge result can't blow the window
 func toolOutputForContext(content string) string {
 	const maxChars = 24 * 1024
 	if len(content) <= maxChars {
@@ -591,6 +597,67 @@ func toolSupportWarningCmd(modelName, providerName string) tea.Cmd {
 			Buttons: []string{"OK"},
 		}
 	}
+}
+
+func (m model) panelWidth() int {
+	w := m.todoPanelWidth
+	if w <= 0 {
+		w = int(float64(m.winWidth) * 0.4)
+	}
+	if w < 20 {
+		w = 20
+	}
+	if w > m.winWidth/2 {
+		w = m.winWidth / 2
+	}
+	return w
+}
+
+// messageBandHeight is the number of rows spanning the message area,
+// where the todo panel and its toggle arrow live.
+func (m model) messageBandHeight() int {
+	h := m.winHeight - topBarHeight - spinnerHeight - statusLineHeight - promptbar.Height
+	if h < 0 {
+		return 0
+	}
+	return h
+}
+
+// panelTop is the first row of the message band on screen.
+func (m model) panelTop() int {
+	return m.tabs.Height() + 1
+}
+
+// arrowRow is the vertical center of the message band, where the toggle
+// arrow is drawn.
+func (m model) arrowRow() int {
+	return m.panelTop() + m.messageBandHeight()/2
+}
+
+func (m model) arrowCol() int {
+	if m.todoPanelOpen {
+		return m.winWidth - m.panelWidth()
+	}
+	return m.winWidth - 1
+}
+
+func (m *model) applyPanelSize() {
+	msgAreaHeight := m.winHeight - topBarHeight - spinnerHeight - statusLineHeight - promptbar.Height
+	if msgAreaHeight < 0 {
+		msgAreaHeight = 0
+	}
+	msgWidth := m.winWidth
+	if m.todoPanelOpen {
+		if w := m.winWidth - m.panelWidth(); w > 0 {
+			msgWidth = w
+		}
+	}
+	m.message_area.SetSize(msgWidth, msgAreaHeight)
+}
+
+func (m *model) toggleTodoPanel() {
+	m.todoPanelOpen = !m.todoPanelOpen
+	m.applyPanelSize()
 }
 
 func (m model) promptTop() int {
@@ -699,7 +766,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msgAreaHeight < 0 {
 			msgAreaHeight = 0
 		}
-		m.message_area.SetSize(m.winWidth, msgAreaHeight)
+		msgWidth := m.winWidth
+		if m.todoPanelOpen {
+			if w := m.winWidth - m.panelWidth(); w > 0 {
+				msgWidth = w
+			}
+		}
+		m.message_area.SetSize(msgWidth, msgAreaHeight)
 		m.changesList.SetSize(m.winWidth, msgAreaHeight)
 		m.popUp.SetSize(m.winWidth, m.winHeight)
 		m.modal.SetSize(m.winWidth, m.winHeight)
@@ -974,6 +1047,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// screen either is rendered on. Once the message area needs its
 			// own click handling (e.g. selecting a message), this is where
 			// its Y range gets checked too.
+			// The todo panel toggle arrow, drawn at the middle of the
+			// message band. Clicking it flips the sidebar open/closed.
+			if m.tabs.Active().Name == "code" && msg.Y == m.arrowRow() && msg.X == m.arrowCol() {
+				m.toggleTodoPanel()
+				return m, nil
+			}
+			// Starting a drag anywhere on the panel's left edge (the same
+			// column as the toggle arrow, but any band row) arms the resize
+			// handle MouseMotionMsg then follows with the live cursor.
+			if m.todoPanelOpen && m.tabs.Active().Name == "code" &&
+				msg.Y > m.panelTop() && msg.Y < m.promptTop() &&
+				abs(msg.X-m.arrowCol()) <= 1 {
+				m.panelDragActive = true
+				m.panelDragStartX = msg.X
+				m.panelDragWidth = m.panelWidth()
+				return m, nil
+			}
 			switch {
 			case msg.Y < m.tabs.Height():
 				m.tabs.HandleClick(msg.X)
@@ -1021,6 +1111,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		return m, nil
+	case tea.MouseMotionMsg:
+		if m.panelDragActive && m.todoPanelOpen && m.tabs.Active().Name == "code" {
+			delta := msg.X - m.panelDragStartX
+			w := m.panelDragWidth + delta
+			if w < 20 {
+				w = 20
+			}
+			if w > m.winWidth/2 {
+				w = m.winWidth / 2
+			}
+			m.todoPanelWidth = w
+			m.applyPanelSize()
+			return m, nil
+		}
+		return m, nil
+	case tea.MouseReleaseMsg:
+		m.panelDragActive = false
 		return m, nil
 	case spinner.TickMsg:
 		// Only keep re-ticking while we're actually waiting on a response,
@@ -1209,7 +1317,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.endTurn()
 				return m, nil
 			}
-			return m, compactCmd(p, m.context, m.status.contextWindow)
+			return m, compactCmd(p, m.context, m.status.contextWindow, todo.GetTodoList().String())
 		}
 
 		m.endTurn()
@@ -1344,9 +1452,13 @@ func (m model) emptyStateHeight() int {
 }
 
 func (m model) renderLogo() string {
+	return m.renderLogoWidth(m.winWidth)
+}
+
+func (m model) renderLogoWidth(width int) string {
 	availH := m.emptyStateHeight()
 	if len(m.logoLines) == 0 {
-		return lipgloss.Place(m.winWidth, availH, lipgloss.Center, lipgloss.Center, "")
+		return lipgloss.Place(width, availH, lipgloss.Center, lipgloss.Center, "")
 	}
 
 	logoWidth := 0
@@ -1359,7 +1471,7 @@ func (m model) renderLogo() string {
 	block := strings.Join(m.logoLines, "\n")
 
 	return lipgloss.Place(
-		m.winWidth, availH,
+		width, availH,
 		lipgloss.Center, lipgloss.Center,
 		lipgloss.NewStyle().Width(logoWidth).Render(block),
 	)
@@ -1376,13 +1488,29 @@ func (m model) View() tea.View {
 		content = top + "\n" + m.skills.View()
 	default:
 		content += top + "\n"
-		if m.mode == modeChangeHandling {
-			content += m.changesList.View()
-		} else if m.message_area.Size() == 0 {
-			content += m.renderLogo()
-		} else {
-			content += m.message_area.View()
+		msgWidth := m.winWidth
+		if m.todoPanelOpen {
+			if w := m.winWidth - m.panelWidth(); w > 0 {
+				msgWidth = w
+			}
 		}
+		var band string
+		if m.mode == modeChangeHandling {
+			band = m.changesList.View()
+		} else if m.message_area.Size() == 0 {
+			band = m.renderLogoWidth(msgWidth)
+		} else {
+			band = m.message_area.View()
+		}
+		if m.todoPanelOpen && m.mode != modeChangeHandling {
+				panel := todo.RenderTodoList(
+				todo.GetTodoList().List(),
+				m.panelWidth(),
+				m.promptTop()-m.panelTop(),
+			)
+			band = lipgloss.JoinHorizontal(lipgloss.Top, band, panel)
+		}
+		content += band
 		content += "\n"
 		if *m.aiThink {
 			content += lipgloss.NewStyle().Margin(0, 3).Foreground(style.Info).Render(m.spinner.View() + " thinking....")
@@ -1390,6 +1518,7 @@ func (m model) View() tea.View {
 		content += "\n"
 		content += m.prompt.View() + "\n"
 		content += renderStatusLine(m)
+		content = m.overlayTodoArrow(content)
 	}
 
 	if m.mode == modeProviderSelect {
@@ -1418,6 +1547,34 @@ func envOr(keys ...string) string {
 		}
 	}
 	return ""
+}
+
+// abs returns the absolute value of n. Go's math.Abs only works on floats,
+// so ints get this tiny helper.
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
+
+func (m model) overlayTodoArrow(content string) string {
+	glyph := todo.Arrow(m.todoPanelOpen)
+	x := m.arrowCol()
+	y := m.arrowRow()
+	if x < 0 || y < 0 {
+		return content
+	}
+
+	stylized := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(style.Border).
+		Background(style.Muted).
+		Render(glyph)
+
+	base := lipgloss.NewLayer(content).X(0).Y(0).Z(0)
+	floating := lipgloss.NewLayer(stylized).X(x).Y(y).Z(1)
+	return lipgloss.NewCompositor(base, floating).Render()
 }
 
 // maxChangePreviewLines caps how many diff lines an accept/reject message

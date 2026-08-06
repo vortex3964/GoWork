@@ -74,7 +74,6 @@ llama.cpp
 - ? add a way to copy text from promptbar and message area
 - ? update prompt bar to also grow up to 5 rows instead of being just 2 lines staticaly
 - multithread (probably) what we do in main to avoid slugish start times
-- 3. add tools to track todos or plan mode maybe
 - 2. add the ability for the ai to create questioners for users that they answer with options
 
 ## common errors we check for 

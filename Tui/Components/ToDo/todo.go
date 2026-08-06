@@ -10,6 +10,8 @@ type Todoitem struct {
 	marked      bool
 }
 
+const MaxTodos = 7
+
 type TodoList struct {
 	Items []Todoitem
 	Index int
@@ -37,6 +39,10 @@ func GetTodoList() *TodoList {
 func (t *TodoList) AddItems(items []Todoitem) {
 	t.Items = append(t.Items, items...)
 	t.Size += len(items)
+	for len(t.Items) > MaxTodos {
+		t.Items = t.Items[1:]
+		t.Size = len(t.Items)
+	}
 }
 
 func (t *TodoList) Clear() {

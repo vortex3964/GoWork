@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+
+	"GoWork/Tui/Components/ToDo"
 )
 
 const statusLineHeight = 1
@@ -39,6 +41,7 @@ const (
 	statusRootBG     = "#3b4261" // project root
 	statusCtxBG      = "#e0af68" // context window % used
 	statusTokBG      = "#9ece6a" // session token total
+	statusTodoBG     = "#8B5A2B" // todo panel open (brown)
 
 	statusFG = "#1a1b26"
 )
@@ -84,6 +87,12 @@ func renderStatusLine(m model) string {
 		{bg: statusModelBG, text: m.status.modelID},
 		{bg: statusProviderBG, text: m.status.providerName},
 	})
+	if m.todoPanelOpen {
+		todoCount := todo.GetTodoList().Size
+		left += renderChain([]segment{
+			{bg: statusTodoBG, text: fmt.Sprintf("TASKS %d", todoCount)},
+		})
+	}
 
 	center := renderChain([]segment{
 		{bg: statusRootBG, text: m.status.projectRoot},

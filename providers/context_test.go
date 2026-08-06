@@ -261,3 +261,32 @@ func TestCompactionMessagesTruncatesToolOutput(t *testing.T) {
 		}
 	}
 }
+
+func TestCompactionMessagesAppendsTodoState(t *testing.T) {
+	InitToolsDef(nil)
+	InitCompactionPrompt("Condense this.")
+	msgs := []Message{
+		{Role: "user", Content: "task"},
+		{Role: "assistant", Content: "ok"},
+	}
+	todoState := "1. build todo panel [x]\n2. wire toggle [ ]"
+	got := CompactionMessages(msgs, 1<<20, todoState)
+	last := got[len(got)-1]
+	wantBlock := "## Current todo list\n" + todoState
+	if last.Role != "user" || !strings.Contains(last.Content, wantBlock) {
+		t.Errorf("todo state not appended to compaction prompt\n got: %q\nwant block: %q", last.Content, wantBlock)
+	}
+	if !strings.Contains(last.Content, "Base the Work State section on this list") {
+		t.Errorf("compaction prompt should ask to base Work State on todo list\n got: %q", last.Content)
+	}
+
+	noState := CompactionMessages(msgs, 1<<20)
+	if noState[len(noState)-1].Content != "Condense this." {
+		t.Errorf("empty todoState should leave prompt unchanged")
+	}
+
+	blankState := CompactionMessages(msgs, 1<<20, "   \n\t ")
+	if blankState[len(blankState)-1].Content != "Condense this." {
+		t.Errorf("blank todoState should leave prompt unchanged")
+	}
+}

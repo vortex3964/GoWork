@@ -167,7 +167,9 @@ func ShouldCompact(window, promptTokens int) bool {
 // CompactionMessages builds the message list for a compaction call: the
 // current history (bounded to the window) with oversized tool results
 // truncated, followed by a final user message carrying the compaction prompt.
-func CompactionMessages(messages []Message, window int) []Message {
+// todoState is an optional snapshot of the current todo list; it is appended
+// to the compaction prompt so the summary's work-state reflects live tasks.
+func CompactionMessages(messages []Message, window int, todoState ...string) []Message {
 	history := TrimContext(messages, window, "")
 	msgs := make([]Message, 0, len(history)+1)
 	for _, msg := range history {
@@ -180,6 +182,9 @@ func CompactionMessages(messages []Message, window int) []Message {
 	prompt := compaction_prompt
 	if prompt == "" {
 		prompt = "Condense the conversation above into a summary for a coding agent. Keep it accurate and complete."
+	}
+	if len(todoState) > 0 && strings.TrimSpace(todoState[0]) != "" {
+		prompt += "\n\n## Current todo list\n" + todoState[0] + "\nBase the Work State section on this list."
 	}
 	msgs = append(msgs, Message{Role: "user", Content: prompt})
 	return msgs

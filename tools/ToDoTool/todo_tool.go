@@ -11,8 +11,8 @@ import (
 	"fmt"
 	"strings"
 
-	"GoWork/tools"
 	todo "GoWork/Tui/Components/ToDo"
+	"GoWork/tools"
 )
 
 type Input struct {
@@ -23,7 +23,7 @@ type Input struct {
 
 type Tool struct{}
 
-//NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface
+// NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface
 func New() tools.AgentTool { return &Tool{} }
 
 func (t *Tool) Name() string { return "todo_list" }
@@ -42,7 +42,9 @@ Actions:
 - "clear": empty the list (for when the task is finished or you restart).
 - "list": return the current list unchanged.
 
-Keep tasks specific and actionable. When you are blocked, keep the task open and push a new one describing the blocker.`
+Keep tasks specific and actionable. When you are blocked, keep the task open and push a new one describing the blocker.
+
+The list is a sliding window capped at 7 tasks. Adding more drops the oldest tasks off the front, so keep the plan to the 7 most important active steps and mark steps done as they complete.`
 }
 
 func (t *Tool) InputSchema() json.RawMessage {
@@ -65,7 +67,7 @@ func (t *Tool) InputSchema() json.RawMessage {
 				"description": "Zero-based indices of tasks to mark done. Required for mark.",
 			},
 		},
-		"required":               []string{"action"},
+		"required":             []string{"action"},
 		"additionalProperties": false,
 	}
 	b, _ := json.Marshal(schema)
