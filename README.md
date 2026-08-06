@@ -52,11 +52,9 @@ llama.cpp
 
 ## TODO
 - 6. update read and edit so that we handle pdfs and images we will ignore images and read pdfs with the new tool we will make in the future
-- 1. update move delete tools to also track files with the changes list command and the watcer
 - @ update move delete websearch webfetch to have a permision window from the user before running
 - @ adding bash tool (some bash commands need permisions)
 - @ add debug mode
-- -> context handling
 - designing skills
 - sql db for storing stats and messages and session data etch
 - add slash commands (with window for autocomplete)
@@ -100,7 +98,8 @@ These are the tools the agent has access to when making tool calls
 read_file(path, start_line?, end_line?) - reads a file, optional line range for large files so you don't blow the context window reading a 2000 line Typst doc.\
 write_file(path, old_str, new_str) - targeted find and replace, errors if old_str matches zero or more than one place.\
 edit_file(path , newContent , linenums) - replace text with percision\
-grep_files(path, pattern) - grep across files, returns file path and line number for each match.
+grep_search(path, pattern) - grep across file contents, returns file path and line number for each match.\
+file_search(path, pattern) - locate files by name or path pattern, returns one relative path per line.\
 create_file(path, content?) - creates a new file, errors if it already exists.\
 move_file(srcpath , dstpath) - moves a file from one dir to another (it can also rename it)\
 delete_file(path) - deletes a file.\

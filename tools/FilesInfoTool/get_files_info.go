@@ -63,7 +63,7 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		return tools.Errf("error reading directory: %s", err), nil
 	}
 
-	ignores := tools.LoadIgnores(args.RootPath)
+	ignores := tools.LoadIgnores(*args.RootPath)
 
 	var body strings.Builder
 	for _, entry := range entries {

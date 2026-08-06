@@ -631,7 +631,6 @@ func (m *Model) AcceptAll() tea.Cmd {
 	}
 	m.Watch.Changeslist = make(map[string]ChangeList)
 	m.Watch.WatchedFiles = make(map[string]struct{})
-	m.Watch.absWatched = make(map[string]string)
 	m.Watch.mu.Unlock()
 
 	m.explorer.Invalidate()
@@ -654,7 +653,6 @@ func (m *Model) RejectAll() tea.Cmd {
 	}
 	m.Watch.Changeslist = make(map[string]ChangeList)
 	m.Watch.WatchedFiles = make(map[string]struct{})
-	m.Watch.absWatched = make(map[string]string)
 	m.Watch.mu.Unlock()
 
 	m.explorer.Invalidate()

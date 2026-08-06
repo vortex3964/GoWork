@@ -57,9 +57,15 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs ,rawInput json.R
 		return tools.Errf("error deleting file: %s", err), nil
 	}
 
-	// The file is gone drop its read-state entry too.
+	p := args.PathKey(input.Path)
+
+	// The file is gone; drop its read-state entry too.
 	if args.ReadState != nil {
-		args.ReadState.Forget(args.PathKey(input.Path))
+		args.ReadState.Forget(p)
+	}
+	//also get rid of it if its in the WatchList
+	if args.WatchList != nil {
+		args.WatchList.Remove(p)
 	}
 
 	return tools.Ok("successfully deleted the file"), nil

@@ -133,7 +133,7 @@ func TestOllamaStream(t *testing.T) {
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		fmt.Fprintln(w, `{"message":{"role":"assistant","content":"Reading"},"done":false}`)
 		fmt.Fprintln(w, `{"message":{"role":"assistant","content":" files"},"done":false}`)
-		fmt.Fprintln(w, `{"message":{"role":"assistant","content":"","tool_calls":[{"id":"","function":{"name":"grep_file","arguments":{"pattern":"x","path":"."}}}]},"done":true,"done_reason":"stop","prompt_eval_count":5,"eval_count":3}`)
+		fmt.Fprintln(w, `{"message":{"role":"assistant","content":"","tool_calls":[{"id":"","function":{"name":"grep_search","arguments":{"pattern":"x","path":"."}}}]},"done":true,"done_reason":"stop","prompt_eval_count":5,"eval_count":3}`)
 	}))
 	defer srv.Close()
 
@@ -148,8 +148,8 @@ func TestOllamaStream(t *testing.T) {
 	if got.String() != "Reading files" {
 		t.Errorf("streamed = %q, want %q", got.String(), "Reading files")
 	}
-	if len(res.ToolCalls) != 1 || res.ToolCalls[0].Tool_name != "grep_file" {
-		t.Fatalf("expected grep_file tool call, got %+v", res.ToolCalls)
+	if len(res.ToolCalls) != 1 || res.ToolCalls[0].Tool_name != "grep_search" {
+		t.Fatalf("expected grep_search tool call, got %+v", res.ToolCalls)
 	}
 	if res.ToolCalls[0].Tool_call_id == "" {
 		t.Error("synthesized tool_call_id should not be empty")

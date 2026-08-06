@@ -1,4 +1,4 @@
-package grepfiletool_test
+package grepsearchtool_test
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	grepfiletool "GoWork/tools/GrepFileTool"
+	grepsearchtool "GoWork/tools/GrepSearchTool"
 	"GoWork/tools"
 )
 
@@ -41,7 +41,7 @@ func writeFile(t *testing.T, dir, rel, content string) {
 	}
 }
 
-func run(t *testing.T, tool tools.AgentTool, args tools.DispatchArgs, input grepfiletool.Input) tools.ToolResult {
+func run(t *testing.T, tool tools.AgentTool, args tools.DispatchArgs, input grepsearchtool.Input) tools.ToolResult {
 	t.Helper()
 	raw, err := json.Marshal(input)
 	if err != nil {
@@ -55,10 +55,10 @@ func run(t *testing.T, tool tools.AgentTool, args tools.DispatchArgs, input grep
 }
 
 func TestInterfaceConformance(t *testing.T) {
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
-	if got := tool.Name(); got != "grep_file" {
-		t.Errorf("Name() = %q, want %q", got, "grep_file")
+	if got := tool.Name(); got != "grep_search" {
+		t.Errorf("Name() = %q, want %q", got, "grep_search")
 	}
 	if tool.Description() == "" {
 		t.Error("Description() is empty")
@@ -84,9 +84,9 @@ func TestMissingPattern(t *testing.T) {
 	requireRG(t)
 	dir := t.TempDir()
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
-	res := run(t, tool, args, grepfiletool.Input{Pattern: ""})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: ""})
 	if !res.IsError {
 		t.Fatalf("expected IsError for empty pattern, got: %+v", res)
 	}
@@ -96,9 +96,9 @@ func TestAbsolutePathRejected(t *testing.T) {
 	requireRG(t)
 	dir := t.TempDir()
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
-	res := run(t, tool, args, grepfiletool.Input{Pattern: "foo", Path: "/etc/passwd"})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "foo", Path: "/etc/passwd"})
 	if !res.IsError {
 		t.Fatalf("expected IsError for absolute path, got: %+v", res)
 	}
@@ -108,9 +108,9 @@ func TestParentTraversalRejected(t *testing.T) {
 	requireRG(t)
 	dir := t.TempDir()
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
-	res := run(t, tool, args, grepfiletool.Input{Pattern: "foo", Path: "../outside"})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "foo", Path: "../outside"})
 	if !res.IsError {
 		t.Fatalf("expected IsError for '..' path, got: %+v", res)
 	}
@@ -120,9 +120,9 @@ func TestNonexistentPath(t *testing.T) {
 	requireRG(t)
 	dir := t.TempDir()
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
-	res := run(t, tool, args, grepfiletool.Input{Pattern: "foo", Path: "does/not/exist.go"})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "foo", Path: "does/not/exist.go"})
 	if !res.IsError {
 		t.Fatalf("expected IsError for nonexistent path, got: %+v", res)
 	}
@@ -136,9 +136,9 @@ func TestBasicMatch(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "main.go", "package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n")
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
-	res := run(t, tool, args, grepfiletool.Input{Pattern: "func main"})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "func main"})
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content)
 	}
@@ -152,9 +152,9 @@ func TestNoMatches(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "main.go", "package main\n")
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
-	res := run(t, tool, args, grepfiletool.Input{Pattern: "nonexistentPattern12345"})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "nonexistentPattern12345"})
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content)
 	}
@@ -168,10 +168,10 @@ func TestIgnoreCase(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "main.go", "package main\n\n// TODO: fix this\n")
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
 	// Without ignore_case, lowercase "todo" shouldn't match "TODO".
-	res := run(t, tool, args, grepfiletool.Input{Pattern: "todo"})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "todo"})
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content)
 	}
@@ -179,7 +179,7 @@ func TestIgnoreCase(t *testing.T) {
 		t.Errorf("expected no case-sensitive match, got:\n%s", res.Content)
 	}
 
-	res = run(t, tool, args, grepfiletool.Input{Pattern: "todo", IgnoreCase: true})
+	res = run(t, tool, args, grepsearchtool.Input{Pattern: "todo", IgnoreCase: true})
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content)
 	}
@@ -193,12 +193,12 @@ func TestLiteralMode(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "main.go", "if x == 1 {\n\tdoStuff()\n}\n")
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
 	// "(" is a regex metacharacter; as a literal it should match
 	// doStuff( exactly, but as a regex it's an unmatched paren and would
 	// cause rg to error out unless treated literally.
-	res := run(t, tool, args, grepfiletool.Input{Pattern: "doStuff(", Literal: true})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "doStuff(", Literal: true})
 	if res.IsError {
 		t.Fatalf("unexpected error for literal search: %s", res.Content)
 	}
@@ -212,9 +212,9 @@ func TestRegexMode(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "main.go", "var a1 int\nvar b2 int\nvar cc int\n")
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
-	res := run(t, tool, args, grepfiletool.Input{Pattern: `var [a-z]\d`})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: `var [a-z]\d`})
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content)
 	}
@@ -226,15 +226,33 @@ func TestRegexMode(t *testing.T) {
 	}
 }
 
+func TestInvalidRegexPattern(t *testing.T) {
+	requireRG(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "main.go", "some text\n")
+	args := newDispatchArgs(t, dir)
+	tool := grepsearchtool.New()
+
+	// "(" alone is not a valid regex; rg should fail and the tool must
+	// surface that as an error result rather than a silent no-match.
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "("})
+	if !res.IsError {
+		t.Fatalf("expected IsError for invalid regex, got: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "regex parse error") {
+		t.Errorf("expected 'regex parse error' in message, got: %q", res.Content)
+	}
+}
+
 func TestIncludeGlobFilter(t *testing.T) {
 	requireRG(t)
 	dir := t.TempDir()
 	writeFile(t, dir, "main.go", "needle here\n")
 	writeFile(t, dir, "main.txt", "needle here\n")
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
-	res := run(t, tool, args, grepfiletool.Input{Pattern: "needle", Include: "*.go"})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "needle", Include: "*.go"})
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content)
 	}
@@ -251,9 +269,9 @@ func TestContextLines(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "main.go", "line1\nline2\nMATCHME\nline4\nline5\n")
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
-	res := run(t, tool, args, grepfiletool.Input{Pattern: "MATCHME", ContextLines: 1})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "MATCHME", ContextLines: 1})
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content)
 	}
@@ -266,6 +284,26 @@ func TestContextLines(t *testing.T) {
 	}
 	if !strings.Contains(res.Content, "main.go-4- line4") {
 		t.Errorf("expected context line after match with '-' separators, got:\n%s", res.Content)
+	}
+}
+
+func TestContextLinesNoLeadingContext(t *testing.T) {
+	requireRG(t)
+	dir := t.TempDir()
+	// Match on the first line: there is no line 0 to show as context.
+	writeFile(t, dir, "main.go", "MATCHME\nline2\n")
+	args := newDispatchArgs(t, dir)
+	tool := grepsearchtool.New()
+
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "MATCHME", ContextLines: 1})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "main.go:1: MATCHME") {
+		t.Errorf("expected match line, got:\n%s", res.Content)
+	}
+	if strings.Contains(res.Content, "line 0") || strings.Contains(res.Content, "-0-") {
+		t.Errorf("did not expect a phantom leading context line, got:\n%s", res.Content)
 	}
 }
 
@@ -287,9 +325,9 @@ func TestContextLinesBlockBreak(t *testing.T) {
 	}
 	writeFile(t, dir, "main.go", strings.Join(lines, "\n")+"\n")
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
-	res := run(t, tool, args, grepfiletool.Input{Pattern: "MATCHME", ContextLines: 1})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "MATCHME", ContextLines: 1})
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content)
 	}
@@ -304,9 +342,9 @@ func TestMultipleFilesBlankLineSeparator(t *testing.T) {
 	writeFile(t, dir, "a.go", "needle\n")
 	writeFile(t, dir, "b.go", "needle\n")
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
-	res := run(t, tool, args, grepfiletool.Input{Pattern: "needle"})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "needle"})
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content)
 	}
@@ -326,9 +364,9 @@ func TestSubdirectoryRelativePaths(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "pkg/sub/file.go", "needle\n")
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
-	res := run(t, tool, args, grepfiletool.Input{Pattern: "needle"})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "needle"})
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content)
 	}
@@ -347,9 +385,9 @@ func TestSearchScopedToPath(t *testing.T) {
 	writeFile(t, dir, "pkg/a.go", "needle\n")
 	writeFile(t, dir, "other/b.go", "needle\n")
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
-	res := run(t, tool, args, grepfiletool.Input{Pattern: "needle", Path: "pkg"})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "needle", Path: "pkg"})
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content)
 	}
@@ -370,9 +408,9 @@ func TestMatchLimit(t *testing.T) {
 	}
 	writeFile(t, dir, "main.go", sb.String())
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
-	res := run(t, tool, args, grepfiletool.Input{Pattern: "needle", Limit: 3})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "needle", Limit: 3})
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content)
 	}
@@ -394,16 +432,39 @@ func TestDefaultLimitApplied(t *testing.T) {
 	}
 	writeFile(t, dir, "main.go", sb.String())
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
 	// No explicit Limit -> should fall back to DEFAULT_LIMIT (100) and
 	// still report truncation since the file has 150 matching lines.
-	res := run(t, tool, args, grepfiletool.Input{Pattern: "needle"})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "needle"})
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content)
 	}
 	if !strings.Contains(res.Content, "matches limit reached") {
 		t.Errorf("expected default-limit notice, got tail:\n%s", tail(res.Content, 200))
+	}
+}
+
+func TestByteCapTruncation(t *testing.T) {
+	requireRG(t)
+	dir := t.TempDir()
+	// ~460 chars per matching line, 200 lines: about 100KB of output,
+	// far over DEFAULT_MAX_BYTES (50KB). Limit is raised past the number
+	// of matches so the BYTE cap is what stops the search.
+	var sb strings.Builder
+	for i := 0; i < 200; i++ {
+		sb.WriteString("needle " + strings.Repeat("x", 450) + "\n")
+	}
+	writeFile(t, dir, "main.go", sb.String())
+	args := newDispatchArgs(t, dir)
+	tool := grepsearchtool.New()
+
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "needle", Limit: 1000})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "byte limit reached") {
+		t.Errorf("expected byte-limit notice, got tail:\n%s", tail(res.Content, 200))
 	}
 }
 
@@ -413,9 +474,9 @@ func TestLineLengthTruncation(t *testing.T) {
 	longLine := "needle " + strings.Repeat("x", 1000)
 	writeFile(t, dir, "main.go", longLine+"\n")
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
-	res := run(t, tool, args, grepfiletool.Input{Pattern: "needle"})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "needle"})
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content)
 	}
@@ -427,6 +488,24 @@ func TestLineLengthTruncation(t *testing.T) {
 	}
 	if strings.Contains(res.Content, strings.Repeat("x", 1000)) {
 		t.Errorf("expected line to be shortened, but full 1000-char run is present")
+	}
+}
+
+func TestBinaryFileSkipped(t *testing.T) {
+	requireRG(t)
+	dir := t.TempDir()
+	// A NUL byte makes rg treat the file as binary; without --text it
+	// won't report the matching "needle" text inside it.
+	writeFile(t, dir, "main.go", "needle\x00binary payload\n")
+	args := newDispatchArgs(t, dir)
+	tool := grepsearchtool.New()
+
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "needle"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if res.Content != "No matches found" {
+		t.Errorf("expected binary file to be skipped, got:\n%s", res.Content)
 	}
 }
 
@@ -447,9 +526,9 @@ func TestGitignoreRespected(t *testing.T) {
 	writeFile(t, dir, "kept.go", "needle\n")
 
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
-	res := run(t, tool, args, grepfiletool.Input{Pattern: "needle"})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "needle"})
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content)
 	}
@@ -469,9 +548,9 @@ func TestAgentignoreRespected(t *testing.T) {
 	writeFile(t, dir, "kept.go", "needle\n")
 
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
-	res := run(t, tool, args, grepfiletool.Input{Pattern: "needle"})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "needle"})
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content)
 	}
@@ -490,9 +569,9 @@ func TestHiddenFilesSearched(t *testing.T) {
 	// should still be searched.
 	writeFile(t, dir, ".env", "needle\n")
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
-	res := run(t, tool, args, grepfiletool.Input{Pattern: "needle"})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "needle"})
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content)
 	}
@@ -506,12 +585,12 @@ func TestContextCancellation(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "main.go", "needle\n")
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel before calling Run
 
-	raw, err := json.Marshal(grepfiletool.Input{Pattern: "needle"})
+	raw, err := json.Marshal(grepsearchtool.Input{Pattern: "needle"})
 	if err != nil {
 		t.Fatalf("marshal input: %v", err)
 	}
@@ -525,7 +604,7 @@ func TestInvalidJSONInput(t *testing.T) {
 	requireRG(t)
 	dir := t.TempDir()
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
 	_, err := tool.Run(context.Background(), args, json.RawMessage(`{not valid json`))
 	if err == nil {
@@ -539,10 +618,10 @@ func TestDefaultPathSearchesWholeProject(t *testing.T) {
 	writeFile(t, dir, "top.go", "needle\n")
 	writeFile(t, dir, "nested/deep/file.go", "needle\n")
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
 	// No Path specified -> defaults to ".", i.e. the whole project root.
-	res := run(t, tool, args, grepfiletool.Input{Pattern: "needle"})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "needle"})
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content)
 	}
@@ -560,9 +639,9 @@ func TestSingleFileAsPath(t *testing.T) {
 	writeFile(t, dir, "a.go", "needle\n")
 	writeFile(t, dir, "b.go", "needle\n")
 	args := newDispatchArgs(t, dir)
-	tool := grepfiletool.New()
+	tool := grepsearchtool.New()
 
-	res := run(t, tool, args, grepfiletool.Input{Pattern: "needle", Path: "a.go"})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "needle", Path: "a.go"})
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content)
 	}
@@ -580,4 +659,3 @@ func tail(s string, n int) string {
 	}
 	return "..." + s[len(s)-n:]
 }
-

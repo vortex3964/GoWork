@@ -291,7 +291,7 @@ func (t *Tool) persist(args tools.DispatchArgs, sourceURL, text string) (tools.T
 		return tools.Errf("fetched %s but failed to save it to disk: %s", sourceURL, err), nil
 	}
 
-	fullPath := filepath.Join(args.RootPath, name)
+	fullPath := filepath.Join(*args.RootPath, name)
 	return tools.Ok(fmt.Sprintf(
 		"fetched %s (%d chars - too long to inline, saved to %s).\nPreview:\n\n%s\n\nUse a read tool on %s for the full content.",
 		sourceURL, len(text), fullPath, preview, fullPath,

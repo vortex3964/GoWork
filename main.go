@@ -34,8 +34,9 @@ import (
 	"GoWork/tools/CreateFileTool"
 	"GoWork/tools/DeleteFileTool"
 	"GoWork/tools/EditFileTool"
+	"GoWork/tools/FileSearchTool"
 	"GoWork/tools/FilesInfoTool"
-	"GoWork/tools/GrepFileTool"
+	"GoWork/tools/GrepSearchTool"
 	"GoWork/tools/MoveFileTool"
 	"GoWork/tools/ReadFileTool"
 	"GoWork/tools/WebFetchTool"
@@ -96,7 +97,7 @@ func buildProjectTree(root string) string {
 	}
 	rgPath, err := exec.LookPath("rg")
 	if err != nil {
-		return "(ripgrep (rg) not found - use list_directory and grep_file instead)"
+		return "(ripgrep (rg) not found - use list_directory, file_search, and grep_search instead)"
 	}
 	rgArgs := []string{"--files", "--color=never", "--no-messages"}
 	if ignore := filepath.Join(root, ".agentignore"); fileExists(ignore) {
@@ -326,8 +327,9 @@ func initTools() []tools.AgentTool {
 		createfiletool.New(),
 		deletefiletool.New(),
 		editfiletool.New(),
+		filesearchtool.New(),
 		fileinfo.New(),
-		grepfiletool.New(),
+		grepsearchtool.New(),
 		movefiletool.New(),
 		readfiletool.New(),
 		webfetchtool.New(),

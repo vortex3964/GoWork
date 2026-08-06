@@ -99,7 +99,10 @@ func (h *ProviderHolder) Set(p providers.Provider) {
 // Built once by the dispatcher at startup and passed into every Run call.
 type DispatchArgs struct {
 	Root *os.Root
-	RootPath string
+	// RootPath points at the dispatcher's root string: the single source of
+	// truth for the absolute project root. Everything that needs the root
+	// shares this pointer, so changing the root means changing one string.
+	RootPath *string
 	WatchList *cl.WatchList
 	Provider ProviderGetter
 	// ReadState tracks the last modification time the agent saw for each
@@ -171,7 +174,16 @@ func InitDispatchArgs(projectRoot string , wl *cl.WatchList , getProvider Provid
 		return DispatchArgs{} , fmt.Errorf("opening project root failed:%w" , err)
 	}
 
-	return DispatchArgs{Root: root , RootPath: abs , WatchList: wl , Provider: getProvider , ReadState: NewReadState()} , nil
+	// rootPath is the dispatcher's root string. Its address is shared by
+	// DispatchArgs.RootPath and the watch list, so it can be updated in one
+	// place. It escapes to the heap so the pointer stays valid.
+	rootPath := abs
+
+	if wl != nil {
+		wl.SetRoot(&rootPath)
+	}
+
+	return DispatchArgs{Root: root , RootPath: &rootPath , WatchList: wl , Provider: getProvider , ReadState: NewReadState()} , nil
 }
 
 //DESC: AgentTool is the contract every tool must satisfy. A tool is anything
