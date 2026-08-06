@@ -42,14 +42,6 @@ func newOllama(model string) *ollamaProvider {
 	return o
 }
 
-// NewOllama is a temporary exported escape hatch so callers outside this
-// package can get an ollama Provider directly, since Select_provider only
-// wires up gemini for now. Drop this once provider selection covers ollama
-// too and go through Select_provider instead.
-func NewOllama(model string) Provider {
-	return newOllama(model)
-}
-
 // doRequest is shared by every endpoint below (chat, show, tags) so they
 // all build/send/read requests the same way.
 func (o *ollamaProvider) doRequest(ctx context.Context, method, url string, reqBody interface{}) ([]byte, error) {
@@ -58,9 +50,9 @@ func (o *ollamaProvider) doRequest(ctx context.Context, method, url string, reqB
 
 // toOllamaMessages turns our Message slice into ollama's chat shape.
 // Assistant tool calls echo back as tool_calls; results go out as "tool".
-func toOllamaMessages(messages []Message) []map[string]interface{} {
+func toOllamaMessages(ctx context.Context, messages []Message) []map[string]interface{} {
 	out := make([]map[string]interface{}, 0, len(messages)+1)
-	if sm := systemMessage(); sm != nil {
+	if sm := systemMessage(ctx); sm != nil {
 		out = append(out, map[string]interface{}{"role": "system", "content": sm.Content})
 	}
 	for _, msg := range messages {
@@ -96,7 +88,10 @@ func toOllamaMessages(messages []Message) []map[string]interface{} {
 }
 
 // toOllamaTools wraps each ToolDef into ollama's openai-style tools array.
-func toOllamaTools() []map[string]interface{} {
+func toOllamaTools(ctx context.Context) []map[string]interface{} {
+	if omitSystem(ctx) {
+		return nil
+	}
 	tools := make([]map[string]interface{}, 0, len(tools_def))
 	for _, td := range tools_def {
 		tools = append(tools, map[string]interface{}{
@@ -116,11 +111,11 @@ func toOllamaTools() []map[string]interface{} {
 func (o *ollamaProvider) Generate(ctx context.Context, messages []Message) (GenerateResult, error) {
 	reqBody := map[string]interface{}{
 		"model":    o.model,
-		"messages": toOllamaMessages(messages),
+		"messages": toOllamaMessages(ctx, messages),
 		"stream":   false,
 	}
 	if o.toolsEnabled && len(tools_def) > 0 {
-		reqBody["tools"] = toOllamaTools()
+		reqBody["tools"] = toOllamaTools(ctx)
 	}
 
 	url := o.baseURL + "/api/chat"
@@ -181,11 +176,11 @@ func (o *ollamaProvider) Generate(ctx context.Context, messages []Message) (Gene
 func (o *ollamaProvider) GenerateStream(ctx context.Context, messages []Message, onDelta StreamFunc) (GenerateResult, error) {
 	reqBody := map[string]interface{}{
 		"model":    o.model,
-		"messages": toOllamaMessages(messages),
+		"messages": toOllamaMessages(ctx, messages),
 		"stream":   true,
 	}
 	if o.toolsEnabled && len(tools_def) > 0 {
-		reqBody["tools"] = toOllamaTools()
+		reqBody["tools"] = toOllamaTools(ctx)
 	}
 
 	resp, err := streamRequest(ctx, http.MethodPost, o.baseURL+"/api/chat", nil, reqBody)
@@ -254,36 +249,6 @@ func (o *ollamaProvider) GenerateStream(ctx context.Context, messages []Message,
 		StopReason: finish,
 		Usage:      usage,
 	}, nil
-}
-
-func (o *ollamaProvider) EstimateTokens(ctx context.Context, messages []Message) (int, error) {
-	// ollama doesn't have a standalone "count tokens" endpoint. The closest
-	// honest equivalent is asking it to evaluate the prompt and generate as
-	// little as possible, then reading prompt_eval_count back off the
-	// response - num_predict: 1 caps that generation to a single token.
-	reqBody := map[string]interface{}{
-		"model":    o.model,
-		"messages": toOllamaMessages(messages),
-		"stream":   false,
-		"options": map[string]interface{}{
-			"num_predict": 1,
-		},
-	}
-
-	url := o.baseURL + "/api/chat"
-	body, err := o.doRequest(ctx, http.MethodPost, url, reqBody)
-	if err != nil {
-		return 0, err
-	}
-
-	var parsed struct {
-		PromptEvalCount int `json:"prompt_eval_count"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return 0, fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	return parsed.PromptEvalCount, nil
 }
 
 // ollamaShowResponse mirrors the bits of /api/show we care about.

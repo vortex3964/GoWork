@@ -65,7 +65,6 @@ llama.cpp
 - * no render logic on smaller windows its displayed poorly
 - * needs to have a section for explaining the key binds
 - * proper resizing for changes list
-- -> context handling
 - designing skills
 - sql db for storing stats and messages and session data etch
 - add slash commands (with window for autocomplete)
@@ -90,7 +89,6 @@ llama.cpp
 - multithread (probably) what we do in main to avoid slugish start times
 - 3. add tools to track todos or plan mode maybe
 - 2. add the ability for the ai to create questioners for users that they answer with options
-- -> simplify tokenizer logic
 
 ## common errors we check for 
 invalid request\

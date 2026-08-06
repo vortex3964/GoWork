@@ -28,8 +28,8 @@ func (o *openaiProvider) doRequest(ctx context.Context, method, url string, reqB
 
 // toOpenAIMessages is the openai alias for the shared OpenAI-compatible
 // lowering.
-func toOpenAIMessages(messages []Message) []map[string]interface{} {
-	return openAICompatMessages(messages)
+func toOpenAIMessages(ctx context.Context, messages []Message) []map[string]interface{} {
+	return openAICompatMessages(ctx, messages)
 }
 
 // implementations of the Provider interface
@@ -37,10 +37,10 @@ func toOpenAIMessages(messages []Message) []map[string]interface{} {
 func (o *openaiProvider) Generate(ctx context.Context, messages []Message) (GenerateResult, error) {
 	reqBody := map[string]interface{}{
 		"model":    o.model,
-		"messages": toOpenAIMessages(messages),
+		"messages": toOpenAIMessages(ctx, messages),
 	}
 	if len(tools_def) > 0 {
-		reqBody["tools"] = openAICompatTools()
+		reqBody["tools"] = openAICompatTools(ctx)
 	}
 
 	url := openaiBaseURL + "/chat/completions"
@@ -102,21 +102,11 @@ func (o *openaiProvider) Generate(ctx context.Context, messages []Message) (Gene
 func (o *openaiProvider) GenerateStream(ctx context.Context, messages []Message, onDelta StreamFunc) (GenerateResult, error) {
 	var tools []map[string]interface{}
 	if len(tools_def) > 0 {
-		tools = openAICompatTools()
+		tools = openAICompatTools(ctx)
 	}
 	return streamOpenAICompat(ctx, openaiBaseURL+"/chat/completions", o.model,
 		map[string]string{"Authorization": "Bearer " + o.api_key},
-		toOpenAIMessages(messages), tools, true, onDelta)
-}
-
-// openai doesn't expose a free token-counting endpoint, so this counts tokens
-// locally with the model's own BPE vocabulary (openai-compatible tiktoken).
-func (o *openaiProvider) EstimateTokens(ctx context.Context, messages []Message) (int, error) {
-	total := 0
-	for _, msg := range messages {
-		total += EstimateMessageTokensForModel(msg, o.model)
-	}
-	return total, nil
+		toOpenAIMessages(ctx, messages), tools, true, onDelta)
 }
 
 // openaiModel mirrors the model object openai's API returns. NOTE: unlike
