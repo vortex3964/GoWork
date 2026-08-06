@@ -28,9 +28,6 @@ var (
 	userBodyColor  = lipgloss.Color("252")
 )
 
-***REMOVED***
-***REMOVED***
-
 type ToolStatus int
 
 const (
@@ -304,7 +301,6 @@ func (m *Model) markdownRenderer(width int) *glamour.TermRenderer {
 }
 
 func (m *Model) renderBlock(msg message, width int) string {
-	***REMOVED***
 	***REMOVED***
 	***REMOVED***
 	
