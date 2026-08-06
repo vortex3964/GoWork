@@ -51,11 +51,10 @@ ollama\
 llama.cpp
 
 ## TODO
-- 6. update read and edit so that we handle pdfs and images we will ignore images and read pdfs with the new tool we will make in the future
 - @ update move delete websearch webfetch to have a permision window from the user before running
 - @ adding bash tool (some bash commands need permisions)
 - @ add debug mode
-- -> context handling
+- make the prompt bar extend up to 5 lines and then scroll
 - designing skills
 - sql db for storing stats and messages and session data etch
 - add slash commands (with window for autocomplete)
@@ -66,13 +65,9 @@ llama.cpp
 - add skills loading guidance to the system prompt once skills are actually supported
 - maybe make llama and lmstuido have an in app launch button in case the user forgot to start them
 - maybe add lsp support?
-- 4. add pdf support
-- 5. handle images
 - make an installer
 - add a prompt message queue or block while the ai is generating (would prefer the first solution)
-- mcp support?
-- token counting is broken on mlstudio
-- excell support
+- mcp support
 - @ handling permisions for tool calls from ai
 - make docs
 - ? have atatchments like images pdfs or copied and pasted text on the promptbar so that a large copied text doesnt take up the entire screen
@@ -81,7 +76,7 @@ llama.cpp
 - multithread (probably) what we do in main to avoid slugish start times
 - 3. add tools to track todos or plan mode maybe
 - 2. add the ability for the ai to create questioners for users that they answer with options
-
+- make the makefile start the venv and create it or find another way to automate it (maybe)
 ## common errors we check for 
 invalid request\
 Auth err\
@@ -120,18 +115,14 @@ SearchWebUrl(url) - used to search the url for docs etch or things not in traini
 ### Pdf
 ReadPdf() - used to parse a pdf for an assigment 
 
+marker , pymupdf4llm
+
 will use pymupdf4llm as default since its small but if user has marker installed it will default to it\
 (we dont force marker on everyone cause its too big)
 
 The goal is to not force a big install on anyone. Instead, we will probe at runtime and pick the best available backend.\
 this will be a python sub process the tui app will use 
 
-Run() {
-    if python3 -c "import marker" works → use marker 
-    else if python3 -c "import pymupdf4llm" works → use pymupdf4llm 
-    else if command -v pdftotext exists → use pdftotext
-    else → return error with install instructions
-}
 The install instructions would recommend the lightweight option first and go as follows in the installel:
 
 #### Install the recommended parser (Most lightweight no gpu needed):
@@ -140,9 +131,23 @@ pip install pymupdf4llm
 #### For higher accuracy with OCR/tables/equations (Heaviest but better results)
 pip install marker-pdf
 
+will have to have a venv nadled to use those libs
+
+for development you should go to scripts and initialise a venv in there
+
 ## Instalation
 
 COMING SOON
+
+requirements:
+make it accessible everywhere
+windows linux
+installs venv with pdf parcer
+installs app
+
+has open path command
+has -v command
+hooks up for updates (maybe)
 
 ## Running GoWork
 

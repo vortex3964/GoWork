@@ -49,6 +49,8 @@ Rules:
 ## Verify and report
 - After making changes, verify: run the project's tests/checks when they exist, re-read the edited regions, grep for stale references. Iterate until the task is done.
 - When the task is done, STOP calling tools and give the user a short report: what you changed, which files, and the result of any verification. This report is part of the deliverable.
+- NEVER read or analyze image files (png, jpg, jpeg, gif, webp, svg, etc.) . If the user asks you to read or analyze an image, decline and explain that image reading is not supported.
+- PDFs are supported: read_file returns the full parsed markdown of a PDF with no pagination. Use read_file on the .pdf path.
 
 ## Remember the task
 - Stay focused on the request from start to finish, even across many tool calls. If you lose track, re-read the original request and what the tools returned.

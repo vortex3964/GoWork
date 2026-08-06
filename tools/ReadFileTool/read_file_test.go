@@ -322,3 +322,95 @@ func TestRun_InvalidJSONReturnsAGoError(t *testing.T) {
 	}
 }
 
+// makeStubPDF installs a fake venv python under dir that behaves like the pdf
+// parser: it cats its second argument (the pdf path) to stdout. Returns the
+// dir root unchanged (dir itself is the sandbox root).
+func makeStubPDF(t *testing.T, dir string, fail bool) {
+	t.Helper()
+	venvBin := filepath.Join(dir, "tools", "Scripts", "venv", "bin")
+	if err := os.MkdirAll(venvBin, 0755); err != nil {
+		t.Fatalf("mkdir venv bin: %v", err)
+	}
+	script := filepath.Join(dir, "tools", "Scripts", "read_pdf.py")
+	if err := os.WriteFile(script, []byte("# stub\n"), 0644); err != nil {
+		t.Fatalf("writing stub read_pdf.py: %v", err)
+	}
+	stub := "#!/bin/sh\n"
+	if fail {
+		stub += "echo 'backend exploded' >&2\nexit 1\n"
+	} else {
+		stub += "cat \"$2\"\n"
+	}
+	if err := os.WriteFile(filepath.Join(venvBin, "python"), []byte(stub), 0755); err != nil {
+		t.Fatalf("writing stub python: %v", err)
+	}
+}
+
+func TestRun_ImageIsRefusedWithError(t *testing.T) {
+	dir := t.TempDir()
+	args := newArgs(t, dir)
+	tool := readfiletool.New()
+
+	// binary-ish content, but the extension alone is enough to refuse
+	if err := os.WriteFile(filepath.Join(dir, "pic.png"), []byte("not really a png"), 0644); err != nil {
+		t.Fatalf("writing png: %v", err)
+	}
+
+	for _, ext := range []string{"png", "jpg", "jpeg", "gif", "webp", "svg", "ico"} {
+		p := "pic." + ext
+		if err := os.WriteFile(filepath.Join(dir, p), []byte("x"), 0644); err != nil {
+			t.Fatalf("writing %s: %v", p, err)
+		}
+		res := run(t, tool, args, readfiletool.Input{Path: p})
+		if !res.IsError {
+			t.Errorf("%s: expected IsError=true", p)
+		}
+		if !strings.Contains(res.Content, "cannot read image files") {
+			t.Errorf("%s: Content = %q, want it to mention images are unreadable", p, res.Content)
+		}
+	}
+}
+
+func TestRun_PDFFullOutputViaStubParser(t *testing.T) {
+	dir := t.TempDir()
+	makeStubPDF(t, dir, false)
+	args := newArgs(t, dir)
+	tool := readfiletool.New()
+
+	// content mimicking parsed markdown, spread over multiple lines
+	pdfContent := "# Title\n\nsome body text\nsecond line\n"
+	if err := os.WriteFile(filepath.Join(dir, "doc.pdf"), []byte(pdfContent), 0644); err != nil {
+		t.Fatalf("writing pdf: %v", err)
+	}
+
+	res := run(t, tool, args, readfiletool.Input{Path: "doc.pdf"})
+
+	if res.IsError {
+		t.Fatalf("unexpected: error: %s", res.Content)
+	}
+	// full output, verbatim, no line numbers, no truncation
+	if res.Content != pdfContent {
+		t.Errorf("Content = %q, want full pdf output %q", res.Content, pdfContent)
+	}
+}
+
+func TestRun_PDFParserFailureSurfacesStderr(t *testing.T) {
+	dir := t.TempDir()
+	makeStubPDF(t, dir, true)
+	args := newArgs(t, dir)
+	tool := readfiletool.New()
+
+	if err := os.WriteFile(filepath.Join(dir, "doc.pdf"), []byte("x"), 0644); err != nil {
+		t.Fatalf("writing pdf: %v", err)
+	}
+
+	res := run(t, tool, args, readfiletool.Input{Path: "doc.pdf"})
+
+	if !res.IsError {
+		t.Fatalf("expected an error, got content=%q", res.Content)
+	}
+	if !strings.Contains(res.Content, "backend exploded") {
+		t.Errorf("Content = %q, want it to surface the parser's stderr", res.Content)
+	}
+}
+

@@ -36,3 +36,7 @@ out/
 bin/
 
 context.txt
+
+# Python ignores
+venv/
+__pycache__/

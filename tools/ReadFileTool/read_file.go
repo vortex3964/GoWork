@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"io"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -18,6 +19,17 @@ import (
 
 const DEFAULT_MAX_BYTES int = 50 * 1024
 const DEFAULT_MAX_LINES int = 1800
+
+// pdfScriptRel is the pdf parser subprocess, relative to the project root.
+const pdfScriptRel = "tools/Scripts/read_pdf.py"
+
+// imageExtensions are refused with an error: the provider layer is text-only,
+// so the model can never actually see an image, and dumping base64 into the
+// context just wastes tokens.
+var imageExtensions = map[string]bool{
+	"png": true, "jpg": true, "jpeg": true, "gif": true, "webp": true,
+	"bmp": true, "tiff": true, "svg": true, "ico": true,
+}
 
 type Input struct {
 	Path   string `json:"path"`
@@ -127,6 +139,63 @@ func readRange(root *os.Root, wl *cl.WatchList, relPath string, start, offset in
 	return sb.String(), truncated, true, lineNo, nil
 }
 
+// findPDFPython returns the venv interpreter for the pdf parser, preferring
+// the project's own venv (unix and windows layouts) and falling back to the
+// system PATH, or "" if nothing usable exists.
+func findPDFPython(root string) string {
+	for _, c := range []string{
+		filepath.Join(root, "tools", "Scripts", "venv", "bin", "python"),
+		filepath.Join(root, "tools", "Scripts", "venv", "Scripts", "python.exe"),
+	} {
+		if st, err := os.Stat(c); err == nil && !st.IsDir() {
+			return c
+		}
+	}
+	for _, c := range []string{"python3", "python"} {
+		if p, err := exec.LookPath(c); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// readPDFViaScript runs the read_pdf.py parser over absPDF and returns its
+// stdout verbatim. There is no timeout: a conversion may legitimately take a
+// long time (marker's first run downloads its models), so it runs until it
+// finishes or the caller's context is cancelled (ctrl+i). Errors (missing
+// venv, backend not installed, conversion failure) come back wrapped with
+// the script's stderr so the model can act on them.
+func readPDFViaScript(ctx context.Context, root, absPDF string) (string, error) {
+	python := findPDFPython(root)
+	if python == "" {
+		return "", fmt.Errorf("pdf parser not installed: initialize the venv in tools/Scripts (pip install pymupdf4llm, or marker-pdf for better accuracy)")
+	}
+
+	cmd := exec.CommandContext(ctx, python, filepath.Join(root, pdfScriptRel), absPDF)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return "", fmt.Errorf("pdf parser failed: %s", msg)
+	}
+	if stdout.Len() == 0 {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = "pdf parser produced no output"
+		}
+		return "", fmt.Errorf("pdf parser failed: %s", msg)
+	}
+	return stdout.String(), nil
+}
+
 func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.RawMessage) (tools.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
 		return tools.ToolResult{}, err
@@ -170,6 +239,25 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	// model last looked" from "the model wrote it itself".
 	if args.ReadState != nil {
 		args.ReadState.Record(args.PathKey(relPath), info.ModTime())
+	}
+
+	ext := strings.ToLower(filepath.Ext(relPath))
+
+	// pdfs delegate to the python parser and return the full markdown
+	if ext == ".pdf" {
+		if err := ctx.Err(); err != nil {
+			return tools.ToolResult{}, err
+		}
+		md, err := readPDFViaScript(ctx, *args.RootPath, filepath.Join(*args.RootPath, relPath))
+		if err != nil {
+			return tools.Errf("%v", err), nil
+		}
+		return tools.Ok(md), nil
+	}
+
+	// images are refused may change in the future.
+	if imageExtensions[strings.TrimPrefix(ext, ".")] {
+		return tools.Errf("cannot read image files (%s): the model has no way to see images. Do not attempt to read or analyze image files.", ext), nil
 	}
 
 	start := input.Start

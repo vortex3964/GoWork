@@ -7,7 +7,6 @@ package style
 
 import "charm.land/lipgloss/v2"
 
-
 var (
 	Primary    = lipgloss.Color("#E6B450") // Ayu accent gold
 	Border     = lipgloss.Color("#E6B450") // Ayu accent gold
