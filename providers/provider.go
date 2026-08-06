@@ -33,7 +33,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -175,12 +174,31 @@ func InitSystemPrompt(s string) {
 }
 
 // systemMessage returns the system prompt as a Message for providers whose
-// API expresses it as a leading role:system message. Nil when unset.
-func systemMessage() *Message {
-	if system_prompt == "" {
+// API expresses it as a leading role:system message. Nil when unset or when
+// the request opts out (context compaction).
+func systemMessage(ctx context.Context) *Message {
+	if system_prompt == "" || omitSystem(ctx) {
 		return nil
 	}
 	return &Message{Role: "system", Content: system_prompt}
+}
+
+// noSystemKey marks a request as an internal call (context compaction) where
+// the fixed per-request overhead - the system prompt and the tool schemas -
+// is useless and would only eat tokens, so providers skip both.
+type noSystemKey struct{}
+
+// WithoutSystem returns a context that makes providers omit the system prompt
+// and tool schemas from the request. Used for the compaction call, which only
+// needs the conversation history and the compaction prompt.
+func WithoutSystem(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noSystemKey{}, true)
+}
+
+// omitSystem reports whether ctx was produced by WithoutSystem.
+func omitSystem(ctx context.Context) bool {
+	v, _ := ctx.Value(noSystemKey{}).(bool)
+	return v
 }
 
 // hasToolCapability reports whether a server-reported capabilities list
@@ -249,9 +267,9 @@ func dropAdditionalProperties(v any) any {
 //   - assistant calls echo their tool_calls so the model can reference its ids;
 //   - results go out under role "tool", tied to the call by tool_call_id;
 //   - everything else passes through as role/content.
-func openAICompatMessages(messages []Message) []map[string]interface{} {
+func openAICompatMessages(ctx context.Context, messages []Message) []map[string]interface{} {
 	out := make([]map[string]interface{}, 0, len(messages)+1)
-	if sm := systemMessage(); sm != nil {
+	if sm := systemMessage(ctx); sm != nil {
 		out = append(out, map[string]interface{}{"role": "system", "content": sm.Content})
 	}
 	for _, msg := range messages {
@@ -287,7 +305,10 @@ func openAICompatMessages(messages []Message) []map[string]interface{} {
 }
 
 // openAICompatTools wraps each ToolDef into OpenAI's tools array shape.
-func openAICompatTools() []map[string]interface{} {
+func openAICompatTools(ctx context.Context) []map[string]interface{} {
+	if omitSystem(ctx) {
+		return nil
+	}
 	tools := make([]map[string]interface{}, 0, len(tools_def))
 	for _, td := range tools_def {
 		tools = append(tools, map[string]interface{}{
@@ -310,7 +331,6 @@ type Provider interface {
 	// with each chunk of assistant text as it arrives and returns the fully
 	// assembled result (content, tool calls, usage) once the stream ends.
 	GenerateStream(ctx context.Context, messages []Message, onDelta StreamFunc) (GenerateResult, error)
-	EstimateTokens(ctx context.Context, messages []Message) (int, error)
 	Info(ctx context.Context, model string) (ModelInfo, error)
 	ListModels(ctx context.Context) ([]ModelInfo, error)
 }
@@ -710,10 +730,6 @@ func (r *retryingProvider) Generate(ctx context.Context, messages []Message) (Ge
 	return GenerateResult{}, lastErr
 }
 
-func (r *retryingProvider) EstimateTokens(ctx context.Context, messages []Message) (int, error) {
-	return r.inner.EstimateTokens(ctx, messages)
-}
-
 // GenerateStream forwards to the inner provider without retrying. Retrying a
 // stream that partially delivered would re-emit the already-streamed tokens,
 // so streams are single-shot: any error bubbles straight back to the caller.
@@ -797,13 +813,4 @@ func IsLocalProvider(providerName string) bool {
 // For cloud providers api_key must be set; for local ones it may be empty.
 func NewForListing(providerName string, api_key string) (Provider, error) {
 	return Select_provider(providerName, "", api_key)
-}
-
-func ExportContext(context []Message) error {
-	var sb strings.Builder
-	for _, msg := range context {
-		sb.WriteString(fmt.Sprintf("[%s]\n%s\n\n", strings.ToUpper(msg.Role), msg.Content))
-	}
-
-	return os.WriteFile("context.txt", []byte(sb.String()), 0644)
 }

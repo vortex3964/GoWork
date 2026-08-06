@@ -27,8 +27,8 @@ func (g *groqProvider) doRequest(ctx context.Context, method, url string, reqBod
 }
 
 // toGroqMessages is groq's alias for the shared OpenAI-compatible lowering.
-func toGroqMessages(messages []Message) []map[string]interface{} {
-	return openAICompatMessages(messages)
+func toGroqMessages(ctx context.Context, messages []Message) []map[string]interface{} {
+	return openAICompatMessages(ctx, messages)
 }
 
 // implementations of the Provider interface
@@ -36,10 +36,10 @@ func toGroqMessages(messages []Message) []map[string]interface{} {
 func (g *groqProvider) Generate(ctx context.Context, messages []Message) (GenerateResult, error) {
 	reqBody := map[string]interface{}{
 		"model":    g.model,
-		"messages": toGroqMessages(messages),
+		"messages": toGroqMessages(ctx, messages),
 	}
 	if len(tools_def) > 0 {
-		reqBody["tools"] = openAICompatTools()
+		reqBody["tools"] = openAICompatTools(ctx)
 	}
 
 	url := groqBaseURL + "/chat/completions"
@@ -101,25 +101,14 @@ func (g *groqProvider) Generate(ctx context.Context, messages []Message) (Genera
 func (g *groqProvider) GenerateStream(ctx context.Context, messages []Message, onDelta StreamFunc) (GenerateResult, error) {
 	var tools []map[string]interface{}
 	if len(tools_def) > 0 {
-		tools = openAICompatTools()
+		tools = openAICompatTools(ctx)
 	}
 	return streamOpenAICompat(ctx, groqBaseURL+"/chat/completions", g.model,
 		map[string]string{"Authorization": "Bearer " + g.api_key},
-		toGroqMessages(messages), tools, true, onDelta)
+		toGroqMessages(ctx, messages), tools, true, onDelta)
 }
 
 //TODO: find a better function for estimating tokens
-
-// groq doesn't expose a dedicated token-counting endpoint like gemini's
-// countTokens, so this falls back to a rough estimate until something
-// better is wired up.
-func (g *groqProvider) EstimateTokens(ctx context.Context, messages []Message) (int, error) {
-	total := 0
-	for _, msg := range messages {
-		total += EstimateMessageTokensForModel(msg, g.model)
-	}
-	return total, nil
-}
 
 // groqModel mirrors the model object groq's API returns. Both Info
 // (single model) and ListModels (all models) parse into this and convert

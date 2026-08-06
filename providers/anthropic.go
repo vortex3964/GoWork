@@ -110,10 +110,10 @@ func (a *anthropicProvider) Generate(ctx context.Context, messages []Message) (G
 		"max_tokens": anthropicDefaultMaxTokens,
 		"messages":   toAnthropicMessages(messages),
 	}
-	if system_prompt != "" {
+	if system_prompt != "" && !omitSystem(ctx) {
 		reqBody["system"] = system_prompt
 	}
-	if len(tools_def) > 0 {
+	if len(tools_def) > 0 && !omitSystem(ctx) {
 		reqBody["tools"] = toAnthropicTools()
 	}
 
@@ -180,10 +180,10 @@ func (a *anthropicProvider) GenerateStream(ctx context.Context, messages []Messa
 		"messages":   toAnthropicMessages(messages),
 		"stream":     true,
 	}
-	if system_prompt != "" {
+	if system_prompt != "" && !omitSystem(ctx) {
 		reqBody["system"] = system_prompt
 	}
-	if len(tools_def) > 0 {
+	if len(tools_def) > 0 && !omitSystem(ctx) {
 		reqBody["tools"] = toAnthropicTools()
 	}
 
@@ -314,31 +314,6 @@ func (a *anthropicProvider) GenerateStream(ctx context.Context, messages []Messa
 		StopReason: finish,
 		Usage:      usage,
 	}, nil
-}
-
-func (a *anthropicProvider) EstimateTokens(ctx context.Context, messages []Message) (int, error) {
-	reqBody := map[string]interface{}{
-		"model":    a.model,
-		"messages": toAnthropicMessages(messages),
-	}
-	if system_prompt != "" {
-		reqBody["system"] = system_prompt
-	}
-
-	url := anthropicBaseURL + "/messages/count_tokens"
-	body, err := a.doRequest(ctx, http.MethodPost, url, reqBody)
-	if err != nil {
-		return 0, err
-	}
-
-	var parsed struct {
-		InputTokens int `json:"input_tokens"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return 0, fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	return parsed.InputTokens, nil
 }
 
 // anthropicModel mirrors the model object anthropic's API returns. Both

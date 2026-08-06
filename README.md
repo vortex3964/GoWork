@@ -65,7 +65,6 @@ llama.cpp
 - * no render logic on smaller windows its displayed poorly
 - * needs to have a section for explaining the key binds
 - * proper resizing for changes list
-- -> context handling
 - designing skills
 - sql db for storing stats and messages and session data etch
 - add slash commands (with window for autocomplete)
@@ -78,9 +77,7 @@ llama.cpp
 - maybe add lsp support?
 - 4. add pdf support
 - 5. handle images
-- -> add mode tracking to status bar with color changes similar to nvim
 - make an installer
-- -> probably will delete move tools feature to delete the dir if its empty after the move
 - add a prompt message queue or block while the ai is generating (would prefer the first solution)
 - mcp support?
 - excell support
@@ -92,7 +89,6 @@ llama.cpp
 - multithread (probably) what we do in main to avoid slugish start times
 - 3. add tools to track todos or plan mode maybe
 - 2. add the ability for the ai to create questioners for users that they answer with options
-- -> simplify tokenizer logic
 
 ## common errors we check for 
 invalid request\

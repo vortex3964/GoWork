@@ -37,9 +37,6 @@ func (f *fakeProvider) GenerateStream(_ context.Context, _ []providers.Message, 
 	}
 	return providers.GenerateResult{Content: f.content}, nil
 }
-func (f *fakeProvider) EstimateTokens(_ context.Context, _ []providers.Message) (int, error) {
-	return 0, nil
-}
 func (f *fakeProvider) Info(_ context.Context, _ string) (providers.ModelInfo, error) {
 	return providers.ModelInfo{}, nil
 }
