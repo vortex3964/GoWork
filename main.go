@@ -27,6 +27,7 @@ import (
 	"GoWork/Tui/Components/Skills"
 	"GoWork/Tui/Components/Stats"
 	"GoWork/Tui/Components/Tabs"
+	todo "GoWork/Tui/Components/ToDo"
 	"GoWork/Tui/Style"
 
 	//import all the tool packages
@@ -39,6 +40,7 @@ import (
 	"GoWork/tools/GrepSearchTool"
 	"GoWork/tools/MoveFileTool"
 	"GoWork/tools/ReadFileTool"
+	"GoWork/tools/ToDoTool"
 	"GoWork/tools/WebFetchTool"
 	"GoWork/tools/WebSearchTool"
 	"GoWork/tools/WriteFileTool"
@@ -332,6 +334,7 @@ func initTools() []tools.AgentTool {
 		grepsearchtool.New(),
 		movefiletool.New(),
 		readfiletool.New(),
+		todotool.New(),
 		webfetchtool.New(),
 		websearchtool.New(),
 		writefiletool.New(),
@@ -624,6 +627,9 @@ func (m *model) submitPrompt() []tea.Cmd {
 	}
 	*m.aiThink = true
 	m.changesList.PauseWatching()
+	// Each new task starts with a fresh todo list. The model lays down its
+	// own baseline with the todo_list tool from the system prompt.
+	todo.GetTodoList().Clear()
 	m.message_area.AppendMessage(val, true)
 	m.context = append(m.context, providers.Message{Role: "user", Content: val})
 	m.prompt.Reset()

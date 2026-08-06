@@ -23,7 +23,7 @@ type Tool struct {}
 //NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface 
 func New() tools.AgentTool { return &Tool{} }
 
-func (t *Tool) Name() string { return "create_file" }
+func (t *Tool) Name() string { return "create_file_tool" }
 
 func (t *Tool) Description() string {
 	return `Creates a file with the given content, relative to the project root, creating any missing parent directories. Content is REQUIRED and must be non-empty — creating empty, placeholder, or stub files is refused. To create an empty directory without a file, pass a "path" ending in "/" (e.g. "src/newdir/").`
