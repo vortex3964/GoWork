@@ -7,8 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/fs"
-	"path/filepath"
 
 	"GoWork/tools"
 )
@@ -70,16 +68,5 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs ,rawInput json.R
 		args.WatchList.Remove(p)
 	}
 
-	parent := filepath.Dir(input.Path)
-	extra := ""
-	// parent == "." means the file was at the project root itself; never attempt to remove the root.
-	if parent != "." {
-		if entries, err := fs.ReadDir(args.Root.FS(), parent); err == nil && len(entries) == 0 {
-			if err := args.Root.Remove(parent); err == nil {
-				extra = " also deleted directory " + parent
-			}
-		}
-	}
-
-	return tools.Ok("successfully deleted the file" + extra), nil
+	return tools.Ok("successfully deleted the file"), nil
 }

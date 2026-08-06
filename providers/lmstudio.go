@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -39,26 +40,22 @@ func newLMStudio(model string) *lmStudioProvider {
 	return l
 }
 
-func NewLMStudio(model string) Provider {
-	return newLMStudio(model)
-}
-
 func (l *lmStudioProvider) doRequest(ctx context.Context, method, endpoint string, reqBody interface{}) ([]byte, error) {
 	return doJSONRequest(ctx, method, endpoint, nil, reqBody)
 }
 
-func toLMStudioMessages(messages []Message) []map[string]interface{} {
-	return openAICompatMessages(messages)
+func toLMStudioMessages(ctx context.Context, messages []Message) []map[string]interface{} {
+	return openAICompatMessages(ctx, messages)
 }
 
 func (l *lmStudioProvider) Generate(ctx context.Context, messages []Message) (GenerateResult, error) {
 	reqBody := map[string]interface{}{
 		"model":    l.model,
-		"messages": toLMStudioMessages(messages),
+		"messages": toLMStudioMessages(ctx, messages),
 		"stream":   false,
 	}
 	if l.toolsEnabled && len(tools_def) > 0 {
-		reqBody["tools"] = openAICompatTools()
+		reqBody["tools"] = openAICompatTools(ctx)
 	}
 
 	body, err := l.doRequest(ctx, http.MethodPost, l.baseURL+"/chat/completions", reqBody)
@@ -119,18 +116,14 @@ func (l *lmStudioProvider) Generate(ctx context.Context, messages []Message) (Ge
 func (l *lmStudioProvider) GenerateStream(ctx context.Context, messages []Message, onDelta StreamFunc) (GenerateResult, error) {
 	var tools []map[string]interface{}
 	if l.toolsEnabled && len(tools_def) > 0 {
-		tools = openAICompatTools()
+		tools = openAICompatTools(ctx)
 	}
+	// requestUsage asks for stream_options.include_usage, which LM Studio
+	// honors since 0.3.18 (older versions ignore unknown fields). Without it
+	// the stream never reports usage, so the status line and compaction
+	// trigger stay stuck at zero.
 	return streamOpenAICompat(ctx, l.baseURL+"/chat/completions", l.model,
-		nil, toLMStudioMessages(messages), tools, false, onDelta)
-}
-
-func (l *lmStudioProvider) EstimateTokens(ctx context.Context, messages []Message) (int, error) {
-	total := 0
-	for _, msg := range messages {
-		total += EstimateMessageTokensForModel(msg, l.model)
-	}
-	return total, nil
+		nil, toLMStudioMessages(ctx, messages), tools, true, onDelta)
 }
 
 type lmStudioModel struct {
@@ -153,7 +146,11 @@ func (m lmStudioModel) toModelInfo() ModelInfo {
 }
 
 func (l *lmStudioProvider) Info(ctx context.Context, model string) (ModelInfo, error) {
-	// LM Studio's /models/{id} may not expose context limits; list and match.
+	// LM Studio's native REST API reports max_context_length; servers that
+	// don't expose it fall back to the /v1 model listing, then to bare info.
+	if info, err := l.infoV0(ctx, model); err == nil && info.ContextWindow > 0 {
+		return info, nil
+	}
 	models, err := l.ListModels(ctx)
 	if err != nil {
 		return ModelInfo{}, err
@@ -164,6 +161,36 @@ func (l *lmStudioProvider) Info(ctx context.Context, model string) (ModelInfo, e
 		}
 	}
 	return ModelInfo{ID: model, DisplayName: model}, nil
+}
+
+// infoV0 asks the native REST API (GET /api/v0/models/{model}) for the
+// model's real context length. The v0 endpoint lives under the server root,
+// not under /v1, so the /v1 suffix is stripped from the base URL.
+func (l *lmStudioProvider) infoV0(ctx context.Context, model string) (ModelInfo, error) {
+	serverRoot := strings.TrimSuffix(l.baseURL, "/v1")
+	body, err := l.doRequest(ctx, http.MethodGet, serverRoot+"/api/v0/models/"+url.PathEscape(model), nil)
+	if err != nil {
+		return ModelInfo{}, err
+	}
+
+	var parsed struct {
+		ID               string `json:"id"`
+		MaxContextLength int    `json:"max_context_length"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return ModelInfo{}, fmt.Errorf("failed to parse response: %w", err)
+	}
+	if parsed.ID == "" {
+		parsed.ID = model
+	}
+
+	return ModelInfo{
+		ID:              parsed.ID,
+		DisplayName:     parsed.ID,
+		ContextWindow:   parsed.MaxContextLength,
+		MaxOutputTokens: parsed.MaxContextLength,
+		SupportsTools:   ModelSupportsTools("lmstudio", parsed.ID),
+	}, nil
 }
 
 func (l *lmStudioProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {

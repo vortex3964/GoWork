@@ -41,18 +41,14 @@ func newLlamaCpp(model string) *llamaCppProvider {
 	return l
 }
 
-func NewLlamaCpp(model string) Provider {
-	return newLlamaCpp(model)
-}
-
 func (l *llamaCppProvider) doRequest(ctx context.Context, method, endpoint string, reqBody interface{}) ([]byte, error) {
 	return doJSONRequest(ctx, method, endpoint, nil, reqBody)
 }
 
 // toLlamaCppMessages is llama.cpp's alias for the shared OpenAI-compatible
 // lowering.
-func toLlamaCppMessages(messages []Message) []map[string]interface{} {
-	return openAICompatMessages(messages)
+func toLlamaCppMessages(ctx context.Context, messages []Message) []map[string]interface{} {
+	return openAICompatMessages(ctx, messages)
 }
 
 // implementations of the Provider interface
@@ -60,11 +56,11 @@ func toLlamaCppMessages(messages []Message) []map[string]interface{} {
 func (l *llamaCppProvider) Generate(ctx context.Context, messages []Message) (GenerateResult, error) {
 	reqBody := map[string]interface{}{
 		"model":    l.model,
-		"messages": toLlamaCppMessages(messages),
+		"messages": toLlamaCppMessages(ctx, messages),
 		"stream":   false,
 	}
 	if l.toolsEnabled && len(tools_def) > 0 {
-		reqBody["tools"] = openAICompatTools()
+		reqBody["tools"] = openAICompatTools(ctx)
 	}
 
 	body, err := l.doRequest(ctx, http.MethodPost, l.baseURL+"/v1/chat/completions", reqBody)
@@ -125,45 +121,13 @@ func (l *llamaCppProvider) Generate(ctx context.Context, messages []Message) (Ge
 func (l *llamaCppProvider) GenerateStream(ctx context.Context, messages []Message, onDelta StreamFunc) (GenerateResult, error) {
 	var tools []map[string]interface{}
 	if l.toolsEnabled && len(tools_def) > 0 {
-		tools = openAICompatTools()
+		tools = openAICompatTools(ctx)
 	}
+	// requestUsage asks for stream_options.include_usage; llama-server
+	// reports usage in the final stream chunk, without which the status
+	// line and compaction trigger would never see any tokens.
 	return streamOpenAICompat(ctx, l.baseURL+"/v1/chat/completions", l.model,
-		nil, toLlamaCppMessages(messages), tools, false, onDelta)
-}
-
-func (l *llamaCppProvider) EstimateTokens(ctx context.Context, messages []Message) (int, error) {
-	templateBody := map[string]interface{}{
-		"messages": toLlamaCppMessages(messages),
-	}
-	templateResp, err := l.doRequest(ctx, http.MethodPost, l.baseURL+"/apply-template", templateBody)
-	if err != nil {
-		return 0, err
-	}
-
-	var templateParsed struct {
-		Prompt string `json:"prompt"`
-	}
-	if err := json.Unmarshal(templateResp, &templateParsed); err != nil {
-		return 0, fmt.Errorf("failed to parse apply-template response: %w", err)
-	}
-
-	tokenizeBody := map[string]interface{}{
-		"content":     templateParsed.Prompt,
-		"add_special": true,
-	}
-	tokenizeResp, err := l.doRequest(ctx, http.MethodPost, l.baseURL+"/tokenize", tokenizeBody)
-	if err != nil {
-		return 0, err
-	}
-
-	var tokenizeParsed struct {
-		Tokens []int `json:"tokens"`
-	}
-	if err := json.Unmarshal(tokenizeResp, &tokenizeParsed); err != nil {
-		return 0, fmt.Errorf("failed to parse tokenize response: %w", err)
-	}
-
-	return len(tokenizeParsed.Tokens), nil
+		nil, toLlamaCppMessages(ctx, messages), tools, true, onDelta)
 }
 
 func (l *llamaCppProvider) Info(ctx context.Context, model string) (ModelInfo, error) {

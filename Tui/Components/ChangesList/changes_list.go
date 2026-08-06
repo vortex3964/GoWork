@@ -2,6 +2,7 @@ package changeslist
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,10 +23,10 @@ type WatcherEventMsg struct {
 // row is either a file header line or one of its changes (Id is
 // already "file/Cn" from GetDiffs).
 type row struct {
-	label    string
-	isHeader bool
-	change   Change
-	filePath string
+	label     string
+	isHeader  bool
+	change    Change
+	filePath  string
 	lowerFile string
 }
 
@@ -34,20 +35,27 @@ const (
 	gapWidth = 1
 )
 
+// botPad matches message_area's 1-row top/bottom breathing space so both
+// panes occupy the same vertical budget (see SetSize).
+const botPad = 1
+
 var (
 	headerColor = lipgloss.Color("111")
 	rowColor    = style.Text
 )
 
 const (
-	keyAccept = "cntrl+a"
-	keyReject = "cntrl+r"
+	keyAccept    = "cntrl+a"
+	keyReject    = "cntrl+r"
 	keyAcceptAll = "ctrl+f"
 	keyRejectAll = "cntrl+d"
 )
 
 type Model struct {
 	Watch *WatchList
+
+	// root is the project root; file paths are displayed relative to it.
+	root string
 
 	filter   textarea.Model
 	results  viewport.Model
@@ -57,7 +65,12 @@ type Model struct {
 	filtered []row
 	cursor   int
 
-	open bool
+	open     bool
+	showHelp bool
+
+	// filterBarHeight is how many rows the filter input currently occupies
+	// (3 with its border, 0 once the window gets too short to afford it).
+	filterBarHeight int
 
 	width          int
 	height         int
@@ -101,15 +114,47 @@ func New(watch *WatchList) Model {
 		BorderForeground(style.Muted).
 		PaddingLeft(1).
 		PaddingRight(1)
+	// Always render a full panel (padding with blank rows) so the left
+	// column's frame stays exactly as tall as the layout expects instead of
+	// collapsing when the filtered list is shorter than the pane.
+	rp.FillHeight = true
 
 	m := Model{
 		Watch:    watch,
 		filter:   ta,
 		results:  rp,
-		explorer: NewFileExplorer(),
+		explorer: NewFileExplorer(""),
 	}
 	m.rebuildRows()
 	return m
+}
+
+// SetRoot configures the project root used to display file paths relative
+// to the project instead of absolute.
+func (m *Model) SetRoot(root string) {
+	m.root = root
+	m.explorer.root = root
+}
+
+// TrackFile registers path in the watch list and scans it for diff markers
+// immediately, so it shows up in the changes list right away instead of
+// waiting for the next fsnotify event on it. Returns false if the file can't
+// be read or isn't already watched.
+func (m *Model) TrackFile(path string) bool {
+	if m.Watch == nil {
+		return false
+	}
+	difs, err := GetDiffs(path)
+	if err != nil {
+		return false
+	}
+	m.Watch.mu.Lock()
+	m.Watch.addLocked(path)
+	m.Watch.Changeslist[path] = ChangeList{difs}
+	m.Watch.addDirToWatcherLocked(path)
+	m.Watch.mu.Unlock()
+	m.rebuildRows()
+	return true
 }
 
 func (m *Model) RefreshDiffs() {
@@ -162,6 +207,12 @@ func watcherCmd(w *WatchList, ctx context.Context) tea.Cmd {
 	}
 }
 
+// HandleWatcherEvent re-scans a watched file after an external write (an
+// editor, git, the AI's own tools) and refreshes the change list for the
+// next rebuild, so the list shows whatever the write left behind. The
+// explorer picks the new content up on its own when it re-renders (it
+// compares the on-disk bytes/mtime against what it last drew). The bool
+// reports whether the event addressed a watched file at all.
 func (m *Model) HandleWatcherEvent(eventPath string) bool {
 	path, ok := m.Watch.hasWatchedFile(eventPath)
 	if !ok {
@@ -173,7 +224,7 @@ func (m *Model) HandleWatcherEvent(eventPath string) bool {
 	}
 	difs := GetDiffsBytes(data, filepath.Base(path))
 	m.Watch.mu.Lock()
-	m.Watch.Changeslist[path] = ChangeList{difs}
+	m.Watch.Changeslist[path] = ChangeList{Changes: difs}
 	m.Watch.mu.Unlock()
 	m.lastWatcherPath = path
 	m.lastWatcherData = data
@@ -216,7 +267,8 @@ func (m *Model) rebuildRows() {
 		files := m.Watch.Files()
 		sort.Strings(files)
 		for _, f := range files {
-			m.rows = append(m.rows, row{label: f, isHeader: true, filePath: f, lowerFile: strings.ToLower(f)})
+			label := relativePath(m.root, f)
+			m.rows = append(m.rows, row{label: label, isHeader: true, filePath: f, lowerFile: strings.ToLower(f)})
 			for _, c := range m.Watch.GetChanges(f) {
 				m.rows = append(m.rows, row{label: c.Id, change: c, filePath: f, lowerFile: strings.ToLower(f)})
 			}
@@ -255,37 +307,32 @@ func (m *Model) applyFilter() {
 	m.renderExplorer()
 }
 
-// same outer size as message_area. Results and its filter bar form
-// a left column; explorer is a separate right column with no filter
-// bar under it, so it uses the full outer height while results gives
-// up filterBarHeight worth of rows to make room underneath it.
 func (m *Model) SetSize(outerWidth, outerHeight int) {
+	outerHeight -= botPad * 2
+	if outerHeight < 1 {
+		outerHeight = 1
+	}
+
 	m.width = outerWidth
 	m.height = outerHeight
+	if m.width < 1 {
+		m.width = 1
+	}
+	if m.height < 1 {
+		m.height = 1
+	}
 
 	inner := outerWidth - padSide*2
 	if inner < 1 {
 		inner = 1
 	}
 
-	const paneBorderRows = 2
-	const filterBorderRows = 2
-	const filterTextRows = 1
-
-	filterBarHeight := filterBorderRows + filterTextRows
-
-	resultsOuterHeight := outerHeight - filterBarHeight
-	if resultsOuterHeight < 1 {
-		resultsOuterHeight = 1
-	}
-	resultsContentHeight := resultsOuterHeight - paneBorderRows
-	if resultsContentHeight < 1 {
-		resultsContentHeight = 1
-	}
-
-	explorerContentHeight := outerHeight - paneBorderRows
-	if explorerContentHeight < 1 {
-		explorerContentHeight = 1
+	// The filter bar gives up its 3 rows wholesale once the window gets too
+	// short to afford it. Dropping it keeps the two panes from eating into
+	// each other (or past the bottom) on tiny windows.
+	m.filterBarHeight = 3
+	if m.height < 13 {
+		m.filterBarHeight = 0
 	}
 
 	paneWidth := (inner - gapWidth) / 2
@@ -293,12 +340,19 @@ func (m *Model) SetSize(outerWidth, outerHeight int) {
 		paneWidth = 1
 	}
 
+	// The results viewport is sized so result panel + filter bar exactly
+	// fill the column; the explorer column matches the same height.
 	m.results.SetWidth(paneWidth)
-	m.results.SetHeight(resultsContentHeight)
-	m.explorerWidth = inner - paneWidth - gapWidth
-	m.explorerHeight = explorerContentHeight
+	m.results.SetHeight(m.height - m.filterBarHeight)
 
-	filterInner := paneWidth - 2 - 2
+	m.explorerWidth = inner - paneWidth - gapWidth
+	if m.explorerWidth < 1 {
+		m.explorerWidth = 1
+	}
+	m.explorerHeight = m.height
+	m.explorer.screenWidth = m.width
+
+	filterInner := paneWidth - 4
 	if filterInner < 1 {
 		filterInner = 1
 	}
@@ -331,6 +385,10 @@ func (m *Model) renderResults() {
 		b.WriteString("\n")
 	}
 	m.results.SetContent(strings.TrimRight(b.String(), "\n"))
+
+	if len(m.filtered) > 0 {
+		m.results.EnsureVisible(m.cursor, 0, 1)
+	}
 }
 
 // strips the file path off, so we just show "Cn" under the header
@@ -359,19 +417,27 @@ func (m *Model) renderExplorer() {
 }
 
 func (m *Model) CursorUp() {
-	if m.cursor > 0 {
-		m.cursor--
-		m.renderResults()
-		m.renderExplorer()
+	if len(m.filtered) == 0 {
+		return
 	}
+	m.cursor--
+	if m.cursor < 0 {
+		m.cursor = len(m.filtered) - 1
+	}
+	m.renderResults()
+	m.renderExplorer()
 }
 
 func (m *Model) CursorDown() {
-	if m.cursor < len(m.filtered)-1 {
-		m.cursor++
-		m.renderResults()
-		m.renderExplorer()
+	if len(m.filtered) == 0 {
+		return
 	}
+	m.cursor++
+	if m.cursor >= len(m.filtered) {
+		m.cursor = 0
+	}
+	m.renderResults()
+	m.renderExplorer()
 }
 
 func (m *Model) ExplorerScrollUp() {
@@ -408,22 +474,70 @@ func (m *Model) rejectChange(path string, c Change) {
 	}
 }
 
-func (m *Model) AcceptSelected() {
+// ChangeEventMsg is emitted after an accept/reject action. 
+type ChangeEventMsg struct {
+	Rejected bool
+	Summary  string
+	Lines []string
+}
+
+// changeCountLabel pluralizes "change" so summaries read naturally.
+func changeCountLabel(n int) string {
+	if n == 1 {
+		return "1 change"
+	}
+	return fmt.Sprintf("%d changes", n)
+}
+
+func (m *Model) eventCmd(rejected bool, summary string, lines []string) tea.Cmd {
+	return func() tea.Msg {
+		return ChangeEventMsg{Rejected: rejected, Summary: summary, Lines: lines}
+	}
+}
+
+// splitContentLines trims a hunk half's trailing newlines and splits it into
+// display lines; nil for empty content.
+func splitContentLines(s string) []string {
+	s = strings.TrimRight(s, "\r\n")
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, "\n")
+}
+
+func (m *Model) AcceptSelected() tea.Cmd {
 	if len(m.filtered) == 0 || m.Watch == nil {
-		return
+		return nil
 	}
 	sel := m.filtered[m.cursor]
+
 	m.Watch.mu.Lock()
 	cl, ok := m.Watch.Changeslist[sel.filePath]
 	if !ok {
 		m.Watch.mu.Unlock()
-		return
+		return nil
 	}
+
+	var summary string
+	var kept []string
 	if sel.isHeader {
+		data, err := os.ReadFile(sel.filePath)
+		if err == nil {
+			for _, c := range cl.Changes {
+				_, new := ChangeSections(data, c)
+				kept = append(kept, splitContentLines(new)...)
+			}
+		}
 		Accept_all_changes(sel.filePath, cl.Changes)
 		m.Watch.removeLocked(sel.filePath)
 		delete(m.Watch.Changeslist, sel.filePath)
+		summary = sel.filePath + " (" + changeCountLabel(len(cl.Changes)) + ")"
 	} else {
+		data, err := os.ReadFile(sel.filePath)
+		if err == nil {
+			_, new := ChangeSections(data, sel.change)
+			kept = splitContentLines(new)
+		}
 		Accept_change(sel.filePath, sel.change.Start, sel.change.Mid, sel.change.End)
 		difs, err := GetDiffs(sel.filePath)
 		if err != nil || len(difs) == 0 {
@@ -432,34 +546,55 @@ func (m *Model) AcceptSelected() {
 		} else {
 			m.Watch.Changeslist[sel.filePath] = ChangeList{difs}
 		}
+		summary = sel.filePath + "/" + shortChangeLabel(sel)
 	}
 	if len(m.Watch.Changeslist[sel.filePath].Changes) == 0 {
 		m.Watch.removeLocked(sel.filePath)
 		delete(m.Watch.Changeslist, sel.filePath)
 	}
 	m.Watch.mu.Unlock()
+
 	if m.cursor >= len(m.filtered) {
 		m.cursor = len(m.filtered) - 1
 	}
+	m.explorer.Invalidate()
 	m.rebuildRows()
+	return m.eventCmd(false, summary, kept)
 }
 
-func (m *Model) RejectSelected() {
+func (m *Model) RejectSelected() tea.Cmd {
 	if len(m.filtered) == 0 || m.Watch == nil {
-		return
+		return nil
 	}
 	sel := m.filtered[m.cursor]
+
 	m.Watch.mu.Lock()
 	cl, ok := m.Watch.Changeslist[sel.filePath]
 	if !ok {
 		m.Watch.mu.Unlock()
-		return
+		return nil
 	}
+
+	var summary string
+	var kept []string
 	if sel.isHeader {
+		data, err := os.ReadFile(sel.filePath)
+		if err == nil {
+			for _, c := range cl.Changes {
+				old, _ := ChangeSections(data, c)
+				kept = append(kept, splitContentLines(old)...)
+			}
+		}
 		Reject_all_changes(sel.filePath, cl.Changes)
 		m.Watch.removeLocked(sel.filePath)
 		delete(m.Watch.Changeslist, sel.filePath)
+		summary = sel.filePath + " (" + changeCountLabel(len(cl.Changes)) + ")"
 	} else {
+		data, err := os.ReadFile(sel.filePath)
+		if err == nil {
+			old, _ := ChangeSections(data, sel.change)
+			kept = splitContentLines(old)
+		}
 		Reject_change(sel.filePath, sel.change.Start, sel.change.Mid, sel.change.End)
 		difs, err := GetDiffs(sel.filePath)
 		if err != nil || len(difs) == 0 {
@@ -468,42 +603,64 @@ func (m *Model) RejectSelected() {
 		} else {
 			m.Watch.Changeslist[sel.filePath] = ChangeList{difs}
 		}
+		summary = sel.filePath + "/" + shortChangeLabel(sel)
 	}
 	if len(m.Watch.Changeslist[sel.filePath].Changes) == 0 {
 		m.Watch.removeLocked(sel.filePath)
 		delete(m.Watch.Changeslist, sel.filePath)
 	}
 	m.Watch.mu.Unlock()
+
 	if m.cursor >= len(m.filtered) {
 		m.cursor = len(m.filtered) - 1
 	}
+	m.explorer.Invalidate()
 	m.rebuildRows()
+	return m.eventCmd(true, summary, kept)
 }
 
-func (m *Model) AcceptAll() {
+func (m *Model) AcceptAll() tea.Cmd {
 	m.Watch.mu.Lock()
+	files, total := 0, 0
 	for path, cl := range m.Watch.Changeslist {
 		if len(cl.Changes) > 0 {
 			Accept_all_changes(path, cl.Changes)
+			files++
+			total += len(cl.Changes)
 		}
 	}
 	m.Watch.Changeslist = make(map[string]ChangeList)
 	m.Watch.WatchedFiles = make(map[string]struct{})
 	m.Watch.mu.Unlock()
+
+	m.explorer.Invalidate()
 	m.rebuildRows()
+	if total == 0 {
+		return nil
+	}
+	return m.eventCmd(false, fmt.Sprintf("%s across %d files", changeCountLabel(total), files), nil)
 }
 
-func (m *Model) RejectAll() {
+func (m *Model) RejectAll() tea.Cmd {
 	m.Watch.mu.Lock()
+	files, total := 0, 0
 	for path, cl := range m.Watch.Changeslist {
 		if len(cl.Changes) > 0 {
 			Reject_all_changes(path, cl.Changes)
+			files++
+			total += len(cl.Changes)
 		}
 	}
 	m.Watch.Changeslist = make(map[string]ChangeList)
 	m.Watch.WatchedFiles = make(map[string]struct{})
 	m.Watch.mu.Unlock()
+
+	m.explorer.Invalidate()
 	m.rebuildRows()
+	if total == 0 {
+		return nil
+	}
+	return m.eventCmd(true, fmt.Sprintf("%s across %d files", changeCountLabel(total), files), nil)
 }
 
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
@@ -516,38 +673,115 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m *Model) ToggleHelp() {
+	m.showHelp = !m.showHelp
+}
+
 func (m Model) View() string {
-	filterBar := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(style.Muted).
-		PaddingLeft(1).
-		PaddingRight(1).
-		Render(m.filter.View())
-
-	leftColumn := lipgloss.JoinVertical(lipgloss.Left, m.results.View(), filterBar)
-
-	expWidth := m.explorerWidth - 4
-	expHeight := m.explorerHeight - 2
-	if expWidth < 1 {
-		expWidth = 1
+	if m.showHelp {
+		return m.helpView()
 	}
-	if expHeight < 1 {
-		expHeight = 1
+
+	var left strings.Builder
+	left.WriteString(m.results.View())
+	if m.filterBarHeight > 0 {
+		left.WriteString("\n")
+		left.WriteString(m.renderFilterBar())
 	}
-	expView := m.explorer.View(expWidth, expHeight)
-	expPane := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(style.Muted).
-		PaddingLeft(1).
-		PaddingRight(1).
-		Render(expView)
+
+	expPane := m.explorer.View(m.explorerWidth, m.explorerHeight)
 
 	content := lipgloss.JoinHorizontal(
 		lipgloss.Top,
-		leftColumn,
+		left.String(),
 		strings.Repeat(" ", gapWidth),
 		expPane,
 	)
 
-	return lipgloss.NewStyle().Margin(0, padSide).Render(content)
+	// Last-resort clamp: even if a child renders a row too many, the joined
+	// panes can't spill past the space allocated to the whole component.
+	return lipgloss.NewStyle().
+		Margin(0, padSide).
+		MaxWidth(m.width).
+		MaxHeight(m.height).
+		Render(content)
+}
+
+func (m Model) renderFilterBar() string {
+	st := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(style.Muted).
+		PaddingLeft(1).
+		PaddingRight(1)
+	if m.filterBarHeight >= 3 {
+		return st.Render(m.filter.View())
+	}
+	return lipgloss.NewStyle().
+		Foreground(style.Muted).
+		MaxWidth(max(1, m.results.Width())).
+		Render(m.filter.View())
+}
+
+// helpView replaces the panes with a centered keybinds reference.
+func (m Model) helpView() string {
+	keys := [][2]string{
+		{"up / down", "move selection"},
+		{"ctrl+a", "accept selected change"},
+		{"ctrl+r", "reject selected change"},
+		{"ctrl+f", "accept all changes"},
+		{"ctrl+d", "reject all changes"},
+		{"type", "filter files by path"},
+		{"?", "toggle this help"},
+		{"esc / tab / enter", "close changes list"},
+		{"ctrl+l", "toggle changes list"},
+		{"ctrl+p", "pick provider / model"},
+		{"ctrl+i / tab", "interrupt the AI"},
+		{"up (empty prompt)", "recall last prompt"},
+		{"ctrl+a (prompt)", "copy prompt"},
+		{"ctrl+v", "paste into prompt"},
+		{"ctrl+u", "clear prompt"},
+		{"ctrl+c", "quit"},
+	}
+
+	keyW := 0
+	for _, row := range keys {
+		if w := lipgloss.Width(row[0]); w > keyW {
+			keyW = w
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(style.Primary).Render("keybinds"))
+	b.WriteString("\n")
+	for _, row := range keys {
+		b.WriteString(lipgloss.NewStyle().
+			Foreground(style.Muted).
+			Width(keyW).
+			Render(row[0]))
+		b.WriteString("  ")
+		b.WriteString(lipgloss.NewStyle().
+			Foreground(style.Text).
+			Render(row[1]))
+		b.WriteString("\n")
+	}
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(style.Muted).
+		Padding(1, 2).
+		Render(strings.TrimRight(b.String(), "\n"))
+
+	w, h := m.width-(padSide*2), m.height
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
+
+	return lipgloss.NewStyle().
+		Margin(0, padSide).
+		MaxWidth(m.width).
+		MaxHeight(m.height).
+		Render(lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, box))
 }

@@ -41,8 +41,8 @@ func TestOpenAICompatStream(t *testing.T) {
 	var mu sync.Mutex
 	res, err := streamOpenAICompat(context.Background(), srv.URL, "test",
 		map[string]string{"Authorization": "Bearer k"},
-		toOpenAIMessages([]Message{{Role: "user", Content: "hi"}}),
-		openAICompatTools(), true, func(d string) {
+		toOpenAIMessages(context.Background(), []Message{{Role: "user", Content: "hi"}}),
+		openAICompatTools(context.Background()), true, func(d string) {
 			mu.Lock()
 			got.WriteString(d)
 			mu.Unlock()
@@ -114,7 +114,7 @@ func TestStreamContextCancel(t *testing.T) {
 
 	_, err := streamOpenAICompat(ctx, srv.URL, "test",
 		map[string]string{"Authorization": "Bearer k"},
-		toOpenAIMessages([]Message{{Role: "user", Content: "hi"}}),
+		toOpenAIMessages(context.Background(), []Message{{Role: "user", Content: "hi"}}),
 		nil, false, func(string) {})
 	if err == nil {
 		t.Fatal("expected a cancel error, got nil")
