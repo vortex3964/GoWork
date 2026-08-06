@@ -76,7 +76,7 @@ llama.cpp
 - multithread (probably) what we do in main to avoid slugish start times
 - 3. add tools to track todos or plan mode maybe
 - 2. add the ability for the ai to create questioners for users that they answer with options
-- make the makefile start the venv and create it or find another way to automate it (maybe)
+
 ## common errors we check for 
 invalid request\
 Auth err\
@@ -152,6 +152,9 @@ hooks up for updates (maybe)
 ## Running GoWork
 
 ALSO COMMING SOON
+
+added a make venv with one depedency that must be runned
+(probably will be run by the installer maybe)
 
 ## run test
 
