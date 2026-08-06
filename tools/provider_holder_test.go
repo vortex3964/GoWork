@@ -18,9 +18,6 @@ func (s *stubProvider) Generate(_ context.Context, _ []providers.Message) (provi
 func (s *stubProvider) GenerateStream(_ context.Context, _ []providers.Message, _ providers.StreamFunc) (providers.GenerateResult, error) {
 	return providers.GenerateResult{Content: s.name}, nil
 }
-func (s *stubProvider) EstimateTokens(_ context.Context, _ []providers.Message) (int, error) {
-	return 0, nil
-}
 func (s *stubProvider) Info(_ context.Context, _ string) (providers.ModelInfo, error) {
 	return providers.ModelInfo{}, nil
 }

@@ -51,6 +51,8 @@ const spinnerHeight = 1
 
 const sys_prompt_path = "prompts/system_prompt.md"
 
+const compaction_prompt_path = "prompts/compaction_prompt.md"
+
 // inject_vars_in_sys_prompt reads prompts/system_prompt.md, substitutes the
 // ${...} environment placeholders, and returns the rendered prompt.
 // root is the already-resolved project root (only its last dir is used).
@@ -182,6 +184,15 @@ type modelInfoMsg struct {
 	err  error
 }
 
+// compactResultMsg reports the outcome of a context-compaction call: the
+// model's summary of the earlier conversation, plus the tokens the summary
+// itself cost.
+type compactResultMsg struct {
+	summary string
+	usage   providers.Usage
+	err     error
+}
+
 // pendingTool is one assistant-requested tool call waiting to run, paired
 // with the message-area index its status line is rendered at.
 type pendingTool struct {
@@ -191,8 +202,7 @@ type pendingTool struct {
 
 // defaultMaxAgentSteps is used when MAX_AGENT_STEPS isn't set (or parses to
 // zero). It guards the agentic loop against runaway tool-call chains (a model
-// stuck re-calling the same tool, etc.) - same role as opencode's "steps" /
-// MAX_STEPS_PROMPT guardrail.
+// stuck re-calling the same tool, etc.) 
 const defaultMaxAgentSteps = 40
 
 // maxToolsPerTurn caps how many tool calls are executed from a single model
@@ -209,6 +219,22 @@ const (
 	modeChangeHandling
 	modeRecall
 )
+
+type Mode struct {
+	mode  uiMode
+	label string
+	color string
+}
+
+func GetModes() []Mode {
+	return []Mode{
+		modeIdle: {mode: modeIdle, label: "IDLE", color: "#B3B1AD"},
+		modePrompt: {mode: modePrompt, label: "PROMPT", color: "#26ED79"},
+		modeProviderSelect: {mode: modeProviderSelect, label: "PROVIDER", color: "#59C2FF"},
+		modeChangeHandling: {mode: modeChangeHandling, label: "CHANGES", color: "#7C1EC9"},
+		modeRecall: {mode: modeRecall, label: "RECALL", color: "#95E6CB"},
+	}
+}
 
 type model struct {
 	tabs         tabs.Model
@@ -453,9 +479,8 @@ func streamReadCmd(ch <-chan tea.Msg) tea.Cmd {
 
 // runToolCmd executes a single tool call off the update loop. Panics inside a
 // tool are recovered and surfaced as an error result instead of killing the
-// whole app (same idea as opencode's runToolSafely). Running the calls of a
-// batch in parallel is what the caller arranges by issuing several of these
-// together via tea.Batch - the tools' shared WatchList is now mutex-guarded.
+// whole app . Running the calls of a batch in parallel is what the caller 
+// arranges by issuing several of these together via tea.Batch
 func runToolCmd(ctx context.Context, d *tools.Dispatcher, call providers.ToolCall, index int) tea.Cmd {
 	return func() tea.Msg {
 		var res tools.ToolResult
@@ -479,6 +504,37 @@ func (m *model) contextForModel() []providers.Message {
 	return providers.TrimContext(m.context, m.status.contextWindow, m.status.modelID)
 }
 
+// shouldCompact reports whether the provider-reported prompt usage from the
+// last request has crossed into the compaction zone for this model's context
+// window. 
+func (m *model) shouldCompact() bool {
+	return providers.ShouldCompact(m.status.contextWindow, m.status.lastPromptTokens)
+}
+
+func isCancelError(err error) bool {
+	var perr *providers.ProviderError
+	return errors.As(err, &perr) && perr.Kind == providers.ErrCanceled
+}
+
+// compactCmd runs a context-compaction call off the update loop: the model
+// condenses the conversation into a summary that then replaces the old
+// history (see compactResultMsg). It reads m's state once up front and never
+// touches the model from this goroutine.
+func compactCmd(p providers.Provider, messages []providers.Message, window int) tea.Cmd {
+	return func() tea.Msg {
+		// The compaction call only needs history + the compaction prompt:
+		// WithoutSystem makes providers skip the system prompt and tool
+		// schemas, which are useless for summarising and would waste tokens.
+		ctx, cancel := context.WithCancel(providers.WithoutSystem(context.Background()))
+		defer cancel()
+		res, err := p.Generate(ctx, providers.CompactionMessages(messages, window))
+		if err != nil {
+			return compactResultMsg{err: err}
+		}
+		return compactResultMsg{summary: res.Content, usage: res.Usage}
+	}
+}
+
 // endTurn resets all agentic-loop state and returns the app to idle, focusing
 // the prompt. Used when a turn finishes, errors, or is interrupted. It also
 // cancels any still-live context (harmless if the work already wound down).
@@ -497,8 +553,7 @@ func (m *model) endTurn() {
 }
 
 // toolOutputForContext bounds how much of a tool's output gets written back
-// into context so a single huge result can't blow the window (opencode caps
-// tool output at 50KB for the same reason).
+// into context so a single huge result can't blow the window 
 func toolOutputForContext(content string) string {
 	const maxChars = 24 * 1024
 	if len(content) <= maxChars {
@@ -993,6 +1048,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case streamEndMsg:
 		m.liveActive = false
 		m.changesList.RefreshDiffs()
+
+		// Token accounting. Exact usage arrives in the stream's final chunk;
+		// an interrupted stream (ctrl+i) never receives it, and a few older
+		// servers don't report usage at all. In both cases fall back to a
+		// local estimate so the session counter and window-fill % stay
+		// continuous instead of zeroing out.
+		usage := msg.result.Usage
+		if msg.err == nil || isCancelError(msg.err) {
+			if usage.TotalTokens == 0 {
+				prompt := providers.EstimateContextTokens(m.context, m.status.modelID)
+				completion := len(m.liveContent)/4 + 1
+				usage = providers.Usage{
+					PromptTokens:     prompt,
+					CompletionTokens: completion,
+					TotalTokens:      prompt + completion,
+				}
+			}
+			m.status.sessionTokens += usage.TotalTokens
+			m.status.lastPromptTokens = usage.PromptTokens
+		}
+
 		// The user pressed ctrl+i. Even if the provider ignored the cancel
 		// and returned happily, we honour the interrupt and stop here rather
 		// than launching another model turn or more tools.
@@ -1025,9 +1101,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-
-		m.status.sessionTokens += msg.result.Usage.TotalTokens
-		m.status.lastPromptTokens = msg.result.Usage.PromptTokens
 
 		// The live assistant message already shows the streamed text; write
 		// the canonical final content once more (the trailing partial chunk
@@ -1078,8 +1151,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Role: "assistant", Content: content, ToolCalls: toolCalls,
 			})
 
-			// Max-steps guardrail (opencode's MAX_STEPS_PROMPT analog) so a
-			// model stuck re-calling tools can't loop forever.
+			// Max-steps guardrail so a model stuck re-calling tools can't loop forever.
 			m.stepCount++
 			if m.stepCount > m.maxSteps {
 				m.endTurn()
@@ -1110,10 +1182,44 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Final answer - no more tool calls to run.
-		m.endTurn()
 		if content != "" {
 			m.context = append(m.context, providers.Message{Role: "assistant", Content: content})
 		}
+
+		// Context window nearly full: condense the conversation before the
+		// user can ask anything else, instead of old exchanges silently
+		// dropping out of the window. aiThink stays true while the
+		// compaction runs, so the spinner keeps going and no new prompt can
+		// batch up behind it.
+		if m.shouldCompact() {
+			m.message_area.AppendMessage(">**INFO** Context window nearly full - condensing the conversation...", false)
+			var p providers.Provider
+			if m.model != nil {
+				p = m.model.Get()
+			}
+			if p == nil {
+				m.endTurn()
+				return m, nil
+			}
+			return m, compactCmd(p, m.context, m.status.contextWindow)
+		}
+
+		m.endTurn()
+		if m.changesList.Open() {
+			return m, m.changesList.WatchCmd()
+		}
+		return m, nil
+	case compactResultMsg:
+		if msg.err != nil {
+			m.endTurn()
+			m.message_area.AppendMessage(">**ERROR** Context compaction failed: "+msg.err.Error(), false)
+			return m, nil
+		}
+		m.status.sessionTokens += msg.usage.TotalTokens
+		m.context = providers.CompactContext(m.context, msg.summary, 2)
+		m.status.lastPromptTokens = providers.EstimateContextTokens(m.context, m.status.modelID)
+		m.message_area.AppendMessage(">**INFO** Conversation condensed to fit the context window - continue when ready.", false)
+		m.endTurn()
 		if m.changesList.Open() {
 			return m, m.changesList.WatchCmd()
 		}
@@ -1388,6 +1494,13 @@ func main() {
 		fmt.Println("Warning: couldn't load system prompt:", err)
 	} else {
 		providers.InitSystemPrompt(sys)
+	}
+
+	comp, err := os.ReadFile(compaction_prompt_path)
+	if err != nil {
+		fmt.Println("Warning: couldn't load compaction prompt:", err)
+	} else {
+		providers.InitCompactionPrompt(string(comp))
 	}
 
 	p := tea.NewProgram(initialModel(root, provider, modelName, providerName))

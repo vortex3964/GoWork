@@ -28,9 +28,6 @@ var (
 	userBodyColor  = lipgloss.Color("252")
 )
 
-// ToolStatus is the lifecycle state of a tool call shown in the message
-// area, mirroring the "pending → success/error" states opencode and crush
-// use for their tool rows.
 type ToolStatus int
 
 const (
@@ -306,7 +303,6 @@ func (m *Model) markdownRenderer(width int) *glamour.TermRenderer {
 func (m *Model) renderBlock(msg message, width int) string {
 	// Tool-call messages get their own header (icon + tool name + a short
 	// arg summary) plus a body: "running…" while pending, or the truncated
-	// tool output once a result comes back. Icons mirror crush/opencode:
 	// ● pending, ✓ success, × error.
 	if msg.isTool {
 		icon := "●"
