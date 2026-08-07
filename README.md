@@ -51,29 +51,26 @@ ollama\
 llama.cpp
 
 ## TODO
-- @ update move delete websearch webfetch to have a permision window from the user before running
-- @ adding bash tool (some bash commands need permisions)
-- @ add debug mode where the user can also make manual tool calls
-- make the prompt bar extend up to 5 lines and then scroll
 - designing skills
 - sql db for storing stats and messages and session data etch
 - add slash commands (with window for autocomplete)
 - implement skills area
 - implement token usage area stats
 - tools for generating skills and handling them
-- implement skill managment area \
+- implement skill managment area
 - add skills loading guidance to the system prompt once skills are actually supported
 - maybe make llama and lmstuido have an in app launch button in case the user forgot to start them
-- maybe add lsp support?
+- add lsp support
 - make an installer
 - add a prompt message queue or block while the ai is generating (would prefer the first solution)
 - mcp support
-- @ handling permisions for tool calls from ai
 - make docs
-- ? have atatchments like images pdfs or copied and pasted text on the promptbar so that a large copied text doesnt take up the entire screen
+- ? have atatchments like pdfs or copied and pasted text on the promptbar so that a large copied text doesnt take up the entire screen
 - ? add a way to copy text from promptbar and message area
-- ? update prompt bar to also grow up to 5 rows instead of being just 2 lines staticaly
-- multithread (probably) what we do in main to avoid slugish start times
+- fix the readMe final version
+- @ add debug mode where the user can also make manual tool calls
+- make the prompt bar extend up to 5 lines and then scroll
+- make an installer
 
 ## common errors we check for 
 invalid request\

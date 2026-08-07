@@ -21,6 +21,7 @@ import (
 	changeslist "GoWork/Tui/Components/ChangesList"
 	dialog "GoWork/Tui/Components/Dialog"
 	"GoWork/Tui/Components/MessageArea"
+	permisionbox "GoWork/Tui/Components/PermisionBox"
 	popup "GoWork/Tui/Components/PopUp"
 	"GoWork/Tui/Components/Promptbar"
 	providerselect "GoWork/Tui/Components/ProviderSelect"
@@ -225,6 +226,7 @@ const (
 	modeChangeHandling
 	modeRecall
 	modeQuestionnaire
+	modePermission
 )
 
 type Mode struct {
@@ -241,6 +243,7 @@ func GetModes() []Mode {
 		modeChangeHandling: {mode: modeChangeHandling, label: "CHANGES", color: "#7C1EC9"},
 		modeRecall:         {mode: modeRecall, label: "RECALL", color: "#95E6CB"},
 		modeQuestionnaire:  {mode: modeQuestionnaire, label: "QUESTIONNAIRE", color: "#d10672"},
+		modePermission:     {mode: modePermission, label: "PERMISSION", color: "#e2eb98"},
 	}
 }
 
@@ -321,6 +324,23 @@ type model struct {
 	// questionnaire shown in place of the prompt bar while the turn waits
 	questionnaire     questionnaire.Model
 	questionnaireSlot int
+
+	// permission gate: when a requested tool needs approval the batch holds
+	// still and the permisionbox opens over everything. permissionSlot is the
+	// pendingTools index being asked about (-1 when none).
+	// permission gate: the batch holds still while a KindNotAllowed tool waits
+	// for the user's decision. permissionSlot is the pendingTools index being
+	// asked about (-1 when none).
+	permissionBox     permisionbox.Model
+	permissionSlot    int
+	permissionDecided []bool
+	autoAcceptTools   bool
+	// pendingNotes carries the user's typed reason per tool call so it
+	// reaches the AI with that tool's result either way.
+	pendingNotes []string
+	// batchCtx keeps the tool batch's context so it can launch once the
+	// user resolves a pending permission request.
+	batchCtx context.Context
 }
 
 func loadLogo() []string {
@@ -401,23 +421,25 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 	changesList.SetRoot(root)
 
 	return model{
-		tabs: tabs.New("code", "skills", "stats"),
-		prompt: p,
-		message_area: messagearea.New(),
-		mode: modePrompt,
-		spinner: sp,
-		context: []providers.Message{},
-		model: holder,
-		aiThink: &think,
-		maxSteps: maxAgentStepsFromEnv(),
-		status: newStatusLine(root, providerName, modelID),
-		logoLines: loadLogo(),
-		popUp: popup.New(),
-		modal: dialog.New(),
-		changesList: changesList,
-		tool_dispatcher: dispatcher,
-		questionnaire: questionnaire.New(nil),
+		tabs:              tabs.New("code", "skills", "stats"),
+		prompt:            p,
+		message_area:      messagearea.New(),
+		mode:              modePrompt,
+		spinner:           sp,
+		context:           []providers.Message{},
+		model:             holder,
+		aiThink:           &think,
+		maxSteps:          maxAgentStepsFromEnv(),
+		status:            newStatusLine(root, providerName, modelID),
+		logoLines:         loadLogo(),
+		popUp:             popup.New(),
+		modal:             dialog.New(),
+		changesList:       changesList,
+		tool_dispatcher:   dispatcher,
+		questionnaire:     questionnaire.New(nil),
 		questionnaireSlot: -1,
+		permissionBox:     permisionbox.New("", "", ""),
+		permissionSlot:    -1,
 	}
 }
 
@@ -517,6 +539,119 @@ func runToolCmd(ctx context.Context, d *tools.Dispatcher, call providers.ToolCal
 		}()
 		return toolResultMsg{index: index, result: res}
 	}
+}
+
+// nextPendingPermissionSlice returns the first batch slot that still needs a
+// user decision, or -1 when every call can run without asking.
+func (m *model) nextPendingPermissionSlice() int {
+	for i := range m.pendingTools {
+		if i < len(m.pendingResults) && m.pendingResults[i] != nil {
+			continue
+		}
+		if i < len(m.permissionDecided) && m.permissionDecided[i] {
+			continue
+		}
+		if m.autoAcceptTools {
+			continue
+		}
+		tool, ok := m.tool_dispatcher.Lookup(m.pendingTools[i].call.Tool_name)
+		if !ok || tool.Kind() == tools.KindAllowed {
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
+// openPermissionBox swaps into modePermission and shows the permisionbox for
+// the given slot. The batch stays frozen until the user answers.
+func (m *model) openPermissionBox(slot int) tea.Cmd {
+	pt := m.pendingTools[slot]
+	name := pt.call.Tool_name
+	action := messagearea.SummarizeToolInput(pt.call.Input)
+	desc := "no description provided"
+	if tool, ok := m.tool_dispatcher.Lookup(name); ok {
+		desc = tool.Description()
+	}
+	m.permissionSlot = slot
+	m.mode = modePermission
+	m.permissionBox = permisionbox.New(name, desc, action)
+	m.permissionBox.SetSize(m.winWidth, m.winHeight)
+	return nil
+}
+
+// resolvePermission applies the user's decision, then asks about the next
+// pending call or dispatches the whole batch.
+func (m *model) resolvePermission(dec permisionbox.DecisionMsg) tea.Cmd {
+	slot := m.permissionSlot
+	if slot < 0 || slot >= len(m.pendingTools) {
+		m.mode = modePrompt
+		m.permissionSlot = -1
+		m.prompt.Focus()
+		return nil
+	}
+
+	pt := m.pendingTools[slot]
+
+	// A rejected tool never runs, its result is the denial the model reads.
+	if dec.Type == permisionbox.ActionReject {
+		reason := strings.TrimSpace(dec.Reason)
+		if reason == "" {
+			reason = "no reason given"
+		}
+		res := tools.ToolResult{
+			Content: fmt.Sprintf(
+				">**PERMISSION DENIED** Tool `%s` was rejected by the user and did not run.\nUser reason: %s",
+				pt.call.Tool_name, reason,
+			),
+			IsError: true,
+		}
+		m.pendingResults[slot] = &res
+		m.message_area.UpdateToolMessage(pt.messageIdx, messagearea.ToolError, res.Content)
+	}
+
+	if dec.Type == permisionbox.ActionAcceptAll {
+		m.autoAcceptTools = true
+	}
+
+	if dec.Reason != "" && slot < len(m.pendingNotes) {
+		m.pendingNotes[slot] = dec.Reason
+	}
+
+	m.permissionDecided[slot] = true
+
+	// Any more calls waiting on a decision?
+	if next := m.nextPendingPermissionSlice(); next >= 0 {
+		m.openPermissionBox(next)
+		return nil
+	}
+
+	m.permissionSlot = -1
+	m.permissionBox.Hide()
+	m.mode = modePrompt
+	m.prompt.Focus()
+	if cmd := m.dispatchPendingBatch(); cmd != nil {
+		return cmd
+	}
+	// Everything in the batch was resolved without a runnable tool, so finalize.
+	return m.loopAfterBatch()
+}
+
+// dispatchPendingBatch launches every pending tool that has no result yet.
+// Rejected calls never run. Uses the batch's own context so the turn stays
+// cancellable.
+func (m *model) dispatchPendingBatch() tea.Cmd {
+	var cmds []tea.Cmd
+	for i, pt := range m.pendingTools {
+		if m.pendingResults[i] != nil {
+			continue
+		}
+		cmds = append(cmds, runToolCmd(m.batchCtx, m.tool_dispatcher, pt.call, i))
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
 }
 
 // contextForModel returns the message history we actually send to the
@@ -874,6 +1009,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.popUp.SetSize(m.winWidth, m.winHeight)
 		m.modal.SetSize(m.winWidth, m.winHeight)
 		m.questionnaire.SetWidth(m.winWidth)
+		m.permissionBox.SetSize(m.winWidth, m.winHeight)
 		if m.mode == modeProviderSelect {
 			m.providerSelect.SetSize(m.winWidth, m.winHeight)
 		}
@@ -940,6 +1076,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 			return m, tea.Quit
+		}
+
+		// While a permission request is up, every key goes to the permisionbox
+		// (except ctrl+c above, which still quits).
+		if m.mode == modePermission {
+			var cmd tea.Cmd
+			m.permissionBox, cmd = m.permissionBox.Update(msg)
+			return m, cmd
 		}
 
 		if msg_str == "ctrl+p" {
@@ -1149,7 +1293,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case tea.MouseClickMsg:
-		if m.mode == modeProviderSelect {
+		if m.mode == modeProviderSelect || m.mode == modePermission {
 			return m, nil
 		}
 		if m.mode == modeQuestionnaire {
@@ -1193,10 +1337,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.MouseWheelMsg:
-		if m.mode == modeProviderSelect {
-			var cmd tea.Cmd
-			m.providerSelect, cmd = m.providerSelect.Update(msg)
-			return m, cmd
+		if m.mode == modeProviderSelect || m.mode == modePermission {
+			return m, nil
 		}
 		if m.mode == modeQuestionnaire {
 			return m, nil
@@ -1234,6 +1376,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.MouseMotionMsg:
+		if m.mode == modePermission {
+			return m, nil
+		}
 		if m.panelDragActive && m.todoPanelOpen && m.tabs.Active().Name == "code" {
 			delta := msg.X - m.panelDragStartX
 			w := m.panelDragWidth + delta
@@ -1249,6 +1394,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.MouseReleaseMsg:
+		if m.mode == modePermission {
+			return m, nil
+		}
 		m.panelDragActive = false
 		return m, nil
 	case spinner.TickMsg:
@@ -1407,15 +1555,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ctx, cancel := context.WithCancel(context.Background())
 			m.cancel = cancel
 			m.stopRequested = false
+			m.batchCtx = ctx
 			m.pendingTools = m.pendingTools[:0]
 			m.pendingResults = make([]*tools.ToolResult, len(toolCalls))
-			cmds := make([]tea.Cmd, 0, len(toolCalls))
-			for i, tc := range toolCalls {
+			m.pendingNotes = make([]string, len(toolCalls))
+			m.permissionDecided = make([]bool, len(toolCalls))
+			m.permissionSlot = -1
+			for _, tc := range toolCalls {
 				idx := m.message_area.AppendTool(tc.Tool_name, messagearea.SummarizeToolInput(tc.Input))
 				m.pendingTools = append(m.pendingTools, pendingTool{call: tc, messageIdx: idx})
-				cmds = append(cmds, runToolCmd(ctx, m.tool_dispatcher, tc, i))
 			}
-			return m, tea.Batch(cmds...)
+
+			// Pause the batch and open the permisionbox if any call needs permission
+			// (and the user hasn't auto-approved everything).
+			if slot := m.nextPendingPermissionSlice(); slot >= 0 {
+				return m, m.openPermissionBox(slot)
+			}
+			return m, m.dispatchPendingBatch()
 		}
 
 		// Final answer - no more tool calls to run.
@@ -1486,11 +1642,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.message_area.UpdateToolMessage(pt.messageIdx, messagearea.ToolDone, msg.result.Content)
 		}
 
+		// A note the user typed while granting rides along with the tool's output
+		res := msg.result
+		if msg.index < len(m.pendingNotes) && m.pendingNotes[msg.index] != "" {
+			res.Content = ">**Allowed with a note from the user:**\n" + m.pendingNotes[msg.index] + "\n\n" + res.Content
+			if res.IsError {
+				m.message_area.UpdateToolMessage(pt.messageIdx, messagearea.ToolError, res.Content)
+			} else {
+				m.message_area.UpdateToolMessage(pt.messageIdx, messagearea.ToolDone, res.Content)
+			}
+			m.pendingNotes[msg.index] = ""
+		}
+
 		// Stash the result. Results are appended to context in call order
 		// once the whole batch reports back, keeping the assistant's
 		// tool_calls paired with their answers.
 		if msg.index < len(m.pendingResults) {
-			res := msg.result
 			m.pendingResults[msg.index] = &res
 		}
 		m.changesList.RefreshDiffs()
@@ -1503,6 +1670,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		return m, m.loopAfterBatch()
+	case permisionbox.DecisionMsg:
+		if m.mode == modePermission {
+			return m, m.resolvePermission(msg)
+		}
+		return m, nil
 	case questionnaire.DoneMsg:
 		if msg.Cancelled {
 			m.answerQuestionnaire(questionnairetool.FormatCancelled())
@@ -1635,6 +1807,10 @@ func (m model) View() tea.View {
 
 	if m.mode == modeProviderSelect {
 		content = m.providerSelect.Overlay(content)
+	}
+
+	if m.mode == modePermission {
+		content = m.permissionBox.Overlay(content)
 	}
 
 	if m.popUp.IsVisible() {

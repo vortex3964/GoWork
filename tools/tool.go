@@ -227,6 +227,11 @@ func (d *Dispatcher) Dispach(ctx context.Context , tu ToolUse )  ToolResult {
 	return res
 }
 
+func (d *Dispatcher) Lookup(name string) (AgentTool, bool) {
+	tool, ok := d.tools[name]
+	return tool, ok
+}
+
 // LoadIgnores loads .gitignore and .agentignore from root, if present.
 // Shared across any tool that needs to skip ignored paths
 func LoadIgnores(root string) []*ignore.GitIgnore {
