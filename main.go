@@ -613,10 +613,19 @@ func (m model) panelWidth() int {
 	return w
 }
 
-// messageBandHeight is the number of rows spanning the message area,
-// where the todo panel and its toggle arrow live.
+func (m model) msgAreaWidth() int {
+	if !m.todoPanelOpen {
+		return m.winWidth
+	}
+	w := m.winWidth - m.panelWidth()
+	if w < 0 {
+		w = 0
+	}
+	return w
+}
+
 func (m model) messageBandHeight() int {
-	h := m.winHeight - topBarHeight - spinnerHeight - statusLineHeight - promptbar.Height
+	h := m.promptTop() - m.panelTop()
 	if h < 0 {
 		return 0
 	}
@@ -636,7 +645,14 @@ func (m model) arrowRow() int {
 
 func (m model) arrowCol() int {
 	if m.todoPanelOpen {
-		return m.winWidth - m.panelWidth()
+		col := m.msgAreaWidth()
+		if col > m.winWidth-1 {
+			col = m.winWidth - 1
+		}
+		return col
+	}
+	if m.winWidth <= 0 {
+		return 0
 	}
 	return m.winWidth - 1
 }
@@ -646,13 +662,7 @@ func (m *model) applyPanelSize() {
 	if msgAreaHeight < 0 {
 		msgAreaHeight = 0
 	}
-	msgWidth := m.winWidth
-	if m.todoPanelOpen {
-		if w := m.winWidth - m.panelWidth(); w > 0 {
-			msgWidth = w
-		}
-	}
-	m.message_area.SetSize(msgWidth, msgAreaHeight)
+	m.message_area.SetSize(m.msgAreaWidth(), msgAreaHeight)
 }
 
 func (m *model) toggleTodoPanel() {
@@ -766,13 +776,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msgAreaHeight < 0 {
 			msgAreaHeight = 0
 		}
-		msgWidth := m.winWidth
-		if m.todoPanelOpen {
-			if w := m.winWidth - m.panelWidth(); w > 0 {
-				msgWidth = w
-			}
-		}
-		m.message_area.SetSize(msgWidth, msgAreaHeight)
+		m.message_area.SetSize(m.msgAreaWidth(), msgAreaHeight)
 		m.changesList.SetSize(m.winWidth, msgAreaHeight)
 		m.popUp.SetSize(m.winWidth, m.winHeight)
 		m.modal.SetSize(m.winWidth, m.winHeight)
@@ -1488,12 +1492,7 @@ func (m model) View() tea.View {
 		content = top + "\n" + m.skills.View()
 	default:
 		content += top + "\n"
-		msgWidth := m.winWidth
-		if m.todoPanelOpen {
-			if w := m.winWidth - m.panelWidth(); w > 0 {
-				msgWidth = w
-			}
-		}
+		msgWidth := m.msgAreaWidth()
 		var band string
 		if m.mode == modeChangeHandling {
 			band = m.changesList.View()
