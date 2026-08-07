@@ -64,7 +64,7 @@ func NewToolMessage(name, args string) message {
 }
 
 // SummarizeToolInput renders a compact one-line label for a tool call's
-// raw JSON input, preferring path/url-like values over the raw blob 
+// raw JSON input, preferring path/url-like values over the raw blob
 func SummarizeToolInput(input json.RawMessage) string {
 	if len(input) == 0 || string(input) == "{}" {
 		return ""
@@ -208,7 +208,7 @@ func (m *Model) ScrollDown() {
 	m.vp.ScrollDown(m.vp.MouseWheelDelta)
 }
 
-// Update forwards messages to the underlying viewport 
+// Update forwards messages to the underlying viewport
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.vp, cmd = m.vp.Update(msg)

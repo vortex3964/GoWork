@@ -28,7 +28,7 @@ func New() tools.AgentTool { return &Tool{} }
 
 func (t *Tool) Name() string { return "todo_list" }
 
-func (t *Tool) Kind() tools.Kind { return tools.KindWrite }
+func (t *Tool) Kind() tools.Kind { return tools.KindAllowed }
 
 func (t *Tool) Description() string {
 	return `Maintains the session's global todo list that keeps the agent on track and shows progress to the user.

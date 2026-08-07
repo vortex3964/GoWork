@@ -24,6 +24,7 @@ import (
 	popup "GoWork/Tui/Components/PopUp"
 	"GoWork/Tui/Components/Promptbar"
 	providerselect "GoWork/Tui/Components/ProviderSelect"
+	"GoWork/Tui/Components/Questionnaire"
 	"GoWork/Tui/Components/Skills"
 	"GoWork/Tui/Components/Stats"
 	"GoWork/Tui/Components/Tabs"
@@ -39,6 +40,7 @@ import (
 	"GoWork/tools/FilesInfoTool"
 	"GoWork/tools/GrepSearchTool"
 	"GoWork/tools/MoveFileTool"
+	"GoWork/tools/QuestionnaireTool"
 	"GoWork/tools/ReadFileTool"
 	"GoWork/tools/ToDoTool"
 	"GoWork/tools/WebFetchTool"
@@ -221,6 +223,7 @@ const (
 	modeProviderSelect
 	modeChangeHandling
 	modeRecall
+	modeQuestionnaire
 )
 
 type Mode struct {
@@ -236,6 +239,7 @@ func GetModes() []Mode {
 		modeProviderSelect: {mode: modeProviderSelect, label: "PROVIDER", color: "#59C2FF"},
 		modeChangeHandling: {mode: modeChangeHandling, label: "CHANGES", color: "#7C1EC9"},
 		modeRecall:         {mode: modeRecall, label: "RECALL", color: "#95E6CB"},
+		modeQuestionnaire:  {mode: modeQuestionnaire, label: "QUESTIONNAIRE", color: "#d10672"},
 	}
 }
 
@@ -306,12 +310,16 @@ type model struct {
 	popUp popup.Model
 
 	// Todo components
-	modal dialog.Model
-	todoPanelOpen bool
-	todoPanelWidth int
+	modal           dialog.Model
+	todoPanelOpen   bool
+	todoPanelWidth  int
 	panelDragActive bool
 	panelDragStartX int
 	panelDragWidth  int
+
+	// questionnaire shown in place of the prompt bar while the turn waits
+	questionnaire     questionnaire.Model
+	questionnaireSlot int
 }
 
 func loadLogo() []string {
@@ -338,6 +346,7 @@ func initTools() []tools.AgentTool {
 		fileinfo.New(),
 		grepsearchtool.New(),
 		movefiletool.New(),
+		questionnairetool.New(),
 		readfiletool.New(),
 		todotool.New(),
 		webfetchtool.New(),
@@ -390,21 +399,23 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 	changesList.SetRoot(root)
 
 	return model{
-		tabs:            tabs.New("code", "skills", "stats"),
-		prompt:          p,
-		message_area:    messagearea.New(),
-		mode:            modePrompt,
-		spinner:         sp,
-		context:         []providers.Message{},
-		model:           holder,
-		aiThink:         &think,
-		maxSteps:        maxAgentStepsFromEnv(),
-		status:          newStatusLine(root, providerName, modelID),
-		logoLines:       loadLogo(),
-		popUp:           popup.New(),
-		modal:           dialog.New(),
-		changesList:     changesList,
+		tabs: tabs.New("code", "skills", "stats"),
+		prompt: p,
+		message_area: messagearea.New(),
+		mode: modePrompt,
+		spinner: sp,
+		context: []providers.Message{},
+		model: holder,
+		aiThink: &think,
+		maxSteps: maxAgentStepsFromEnv(),
+		status: newStatusLine(root, providerName, modelID),
+		logoLines: loadLogo(),
+		popUp: popup.New(),
+		modal: dialog.New(),
+		changesList: changesList,
 		tool_dispatcher: dispatcher,
+		questionnaire: questionnaire.New(nil),
+		questionnaireSlot: -1,
 	}
 }
 
@@ -550,6 +561,15 @@ func compactCmd(p providers.Provider, messages []providers.Message, window int, 
 // the prompt. Used when a turn finishes, errors, or is interrupted. It also
 // cancels any still-live context (harmless if the work already wound down).
 func (m *model) endTurn() {
+	// A turn ending while the questionnaire is still up must drop it so the
+	// mode can't stay stuck answering a turn that's already gone.
+	if m.mode == modeQuestionnaire {
+		m.mode = modePrompt
+		m.questionnaire = questionnaire.New(nil)
+		m.questionnaireSlot = -1
+		questionnaire.Clear()
+		m.applyPanelSize()
+	}
 	*m.aiThink = false
 	m.stepCount = 0
 	m.pendingTools = m.pendingTools[:0]
@@ -561,6 +581,63 @@ func (m *model) endTurn() {
 		m.cancel = nil
 	}
 	m.prompt.Focus()
+}
+
+// answerQuestionnaire delivers the user's answers into the held batch slot,
+// clears the questionnaire, and returns the app to the prompt layout.
+func (m *model) answerQuestionnaire(content string) {
+	idx := m.questionnaireSlot
+	if idx < 0 || idx >= len(m.pendingTools) || idx >= len(m.pendingResults) {
+		return
+	}
+	res := tools.Ok(content)
+	m.pendingResults[idx] = &res
+	pt := m.pendingTools[idx]
+	m.message_area.UpdateToolMessage(pt.messageIdx, messagearea.ToolDone, content)
+	m.questionnaireSlot = -1
+	m.questionnaire = questionnaire.New(nil)
+	questionnaire.Clear()
+	m.mode = modePrompt
+	m.applyPanelSize()
+}
+
+// loopAfterBatch is the shared tail of the tool-batch path: every call in
+// the batch has answered, so append its results to context and call the
+// model again with the full history.
+func (m *model) loopAfterBatch() tea.Cmd {
+	for i, pt := range m.pendingTools {
+		m.context = append(m.context, providers.Message{
+			Role: "tool", ToolCallID: pt.call.Tool_call_id, Content: toolOutputForContext(m.pendingResults[i].Content),
+		})
+	}
+	m.pendingTools = m.pendingTools[:0]
+	m.pendingResults = m.pendingResults[:0]
+	m.cancel = nil
+
+	if m.stopRequested {
+		m.endTurn()
+		m.message_area.AppendMessage(">**INFO** Turn stopped.", false)
+		return nil
+	}
+
+	var p providers.Provider
+	if m.model != nil {
+		p = m.model.Get()
+	}
+	if p == nil {
+		m.endTurn()
+		m.message_area.AppendMessage(">**ERROR** No provider selected press ctrl+p to pick one.", false)
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	m.stopRequested = false
+	m.streamCh = make(chan tea.Msg, 16)
+	m.liveActive = true
+	m.liveContent = ""
+	m.liveMsgIdx = m.message_area.LiveAssistantStart()
+	startStreaming(ctx, p, m.contextForModel(), m.streamCh)
+	return streamReadCmd(m.streamCh)
 }
 
 // toolOutputForContext bounds how much of a tool's output gets written back
@@ -657,8 +734,17 @@ func (m model) arrowCol() int {
 	return m.winWidth - 1
 }
 
+// bottomBarHeight is the height of whatever sits between the band and the
+// statusline: the prompt bar normally, the taller questionnaire while one shows
+func (m model) bottomBarHeight() int {
+	if m.mode == modeQuestionnaire {
+		return questionnaire.Height
+	}
+	return promptbar.Height
+}
+
 func (m *model) applyPanelSize() {
-	msgAreaHeight := m.winHeight - topBarHeight - spinnerHeight - statusLineHeight - promptbar.Height
+	msgAreaHeight := m.winHeight - topBarHeight - spinnerHeight - statusLineHeight - m.bottomBarHeight()
 	if msgAreaHeight < 0 {
 		msgAreaHeight = 0
 	}
@@ -671,7 +757,7 @@ func (m *model) toggleTodoPanel() {
 }
 
 func (m model) promptTop() int {
-	return m.winHeight - statusLineHeight - promptbar.Height
+	return m.winHeight - statusLineHeight - m.bottomBarHeight()
 }
 
 // submitPrompt sends whatever's currently in the prompt bar as a user
@@ -718,6 +804,13 @@ func (m *model) submitPrompt() []tea.Cmd {
 	// Start a streamed generation. An empty assistant message is created now
 	// so deltas can be written straight into it. The context is owned here so
 	// ctrl+i can cancel the turn from the update loop.
+	cmds = append(cmds, m.beginStream(p)...)
+	return cmds
+}
+
+// beginStream starts a streamed generation with the current context and
+// returns the commands that pump it.
+func (m *model) beginStream(p providers.Provider) []tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 	m.stopRequested = false
@@ -726,9 +819,7 @@ func (m *model) submitPrompt() []tea.Cmd {
 	m.liveContent = ""
 	m.liveMsgIdx = m.message_area.LiveAssistantStart()
 	startStreaming(ctx, p, m.contextForModel(), m.streamCh)
-	cmds = append(cmds, streamReadCmd(m.streamCh))
-	cmds = append(cmds, m.spinner.Tick)
-	return cmds
+	return []tea.Cmd{streamReadCmd(m.streamCh), m.spinner.Tick}
 }
 
 func popupCopyMessage(val string) string {
@@ -772,7 +863,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// message area fills everything between the tabs and the prompt
 		// bar, minus the reserved spinner row and the statusline row.
-		msgAreaHeight := m.winHeight - topBarHeight - spinnerHeight - statusLineHeight - promptbar.Height
+		msgAreaHeight := m.winHeight - topBarHeight - spinnerHeight - statusLineHeight - m.bottomBarHeight()
 		if msgAreaHeight < 0 {
 			msgAreaHeight = 0
 		}
@@ -780,6 +871,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.changesList.SetSize(m.winWidth, msgAreaHeight)
 		m.popUp.SetSize(m.winWidth, m.winHeight)
 		m.modal.SetSize(m.winWidth, m.winHeight)
+		m.questionnaire.SetWidth(m.winWidth)
 		if m.mode == modeProviderSelect {
 			m.providerSelect.SetSize(m.winWidth, m.winHeight)
 		}
@@ -874,6 +966,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.stopRequested = true
 			m.cancel()
+			if m.mode == modeQuestionnaire {
+				// Abort the open questionnaire so the batch can wind down.
+				m.answerQuestionnaire(questionnairetool.FormatCancelled())
+				for _, r := range m.pendingResults {
+					if r == nil {
+						return m, nil
+					}
+				}
+				return m, m.loopAfterBatch()
+			}
 			m.message_area.AppendMessage(">**INFO** Stopping…", false)
 			return m, nil
 		}
@@ -901,6 +1003,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.prompt.Blur()
 			m.mode = modeChangeHandling
 			return m, tea.Batch(m.changesList.Toggle(), m.changesList.WatchCmd())
+		}
+
+		// A pending questionnaire owns every key until the user answers
+		if m.mode == modeQuestionnaire {
+			var cmd tea.Cmd
+			m.questionnaire, cmd = m.questionnaire.Update(msg)
+			return m, cmd
 		}
 
 		// Tab navigation works in every mode: ctrl+tab / tab = next,
@@ -1041,6 +1150,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == modeProviderSelect {
 			return m, nil
 		}
+		if m.mode == modeQuestionnaire {
+			return m, nil
+		}
 		if msg.Button == tea.MouseLeft {
 			// The tab strip renders taller than one line (its border adds top
 			// and bottom rows), so let clicks anywhere on it switch tabs. The
@@ -1083,6 +1195,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.providerSelect, cmd = m.providerSelect.Update(msg)
 			return m, cmd
+		}
+		if m.mode == modeQuestionnaire {
+			return m, nil
 		}
 		// Scrolling either box doesn't require focus — same as scrolling
 		// a window you're not "in" in nvim.
@@ -1350,6 +1465,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		pt := m.pendingTools[msg.index]
 
+		// The questions_tool parks the ai here: hold its batch slot open
+		// and render the questionnaire in place of the prompt bar until
+		// the user answers. aiThink stays true so the model can't continue.
+		if pt.call.Tool_name == questionnairetool.ToolName &&
+			questionnaire.Active() != nil && m.questionnaireSlot == -1 && !m.stopRequested {
+			m.questionnaireSlot = msg.index
+			m.mode = modeQuestionnaire
+			m.questionnaire = questionnaire.New(questionnaire.Active())
+			m.questionnaire.SetWidth(m.winWidth)
+			m.applyPanelSize()
+			return m, nil
+		}
+
 		if msg.result.IsError {
 			m.message_area.UpdateToolMessage(pt.messageIdx, messagearea.ToolError, msg.result.Content)
 		} else {
@@ -1372,41 +1500,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Every tool in the batch ran - loop back to the model with all
-		// results in context, unless the user interrupted the batch.
-		for i, pt := range m.pendingTools {
-			m.context = append(m.context, providers.Message{
-				Role: "tool", ToolCallID: pt.call.Tool_call_id, Content: toolOutputForContext(m.pendingResults[i].Content),
-			})
+		return m, m.loopAfterBatch()
+	case questionnaire.DoneMsg:
+		if msg.Cancelled {
+			m.answerQuestionnaire(questionnairetool.FormatCancelled())
+		} else {
+			m.answerQuestionnaire(questionnairetool.FormatAnswers(m.questionnaire.Questions(), msg.Answers))
 		}
-		m.pendingTools = m.pendingTools[:0]
-		m.pendingResults = m.pendingResults[:0]
-		m.cancel = nil
-
-		if m.stopRequested {
-			m.endTurn()
-			m.message_area.AppendMessage(">**INFO** Turn stopped.", false)
-			return m, nil
+		for _, r := range m.pendingResults {
+			if r == nil {
+				return m, nil
+			}
 		}
-
-		var p providers.Provider
-		if m.model != nil {
-			p = m.model.Get()
-		}
-		if p == nil {
-			m.endTurn()
-			m.message_area.AppendMessage(">**ERROR** No provider selected press ctrl+p to pick one.", false)
-			return m, nil
-		}
-		ctx, cancel := context.WithCancel(context.Background())
-		m.cancel = cancel
-		m.stopRequested = false
-		m.streamCh = make(chan tea.Msg, 16)
-		m.liveActive = true
-		m.liveContent = ""
-		m.liveMsgIdx = m.message_area.LiveAssistantStart()
-		startStreaming(ctx, p, m.contextForModel(), m.streamCh)
-		return m, streamReadCmd(m.streamCh)
+		return m, m.loopAfterBatch()
 	case modelInfoMsg:
 		if msg.err == nil {
 			m.status.contextWindow = msg.info.ContextWindow
@@ -1447,7 +1553,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) emptyStateHeight() int {
-	h := m.winHeight - topBarHeight - spinnerHeight - statusLineHeight - promptbar.Height
+	h := m.winHeight - topBarHeight - spinnerHeight - statusLineHeight - m.bottomBarHeight()
 	h -= 2
 	if h < 0 {
 		h = 0
@@ -1502,7 +1608,7 @@ func (m model) View() tea.View {
 			band = m.message_area.View()
 		}
 		if m.todoPanelOpen && m.mode != modeChangeHandling {
-				panel := todo.RenderTodoList(
+			panel := todo.RenderTodoList(
 				todo.GetTodoList().List(),
 				m.panelWidth(),
 				m.promptTop()-m.panelTop(),
@@ -1511,11 +1617,16 @@ func (m model) View() tea.View {
 		}
 		content += band
 		content += "\n"
-		if *m.aiThink {
+		if *m.aiThink && m.mode != modeQuestionnaire {
 			content += lipgloss.NewStyle().Margin(0, 3).Foreground(style.Info).Render(m.spinner.View() + " thinking....")
 		}
 		content += "\n"
-		content += m.prompt.View() + "\n"
+		if m.mode == modeQuestionnaire {
+			content += m.questionnaire.View()
+		} else {
+			content += m.prompt.View()
+		}
+		content += "\n"
 		content += renderStatusLine(m)
 		content = m.overlayTodoArrow(content)
 	}

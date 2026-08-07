@@ -53,7 +53,7 @@ llama.cpp
 ## TODO
 - @ update move delete websearch webfetch to have a permision window from the user before running
 - @ adding bash tool (some bash commands need permisions)
-- @ add debug mode
+- @ add debug mode where the user can also make manual tool calls
 - make the prompt bar extend up to 5 lines and then scroll
 - designing skills
 - sql db for storing stats and messages and session data etch
@@ -74,7 +74,6 @@ llama.cpp
 - ? add a way to copy text from promptbar and message area
 - ? update prompt bar to also grow up to 5 rows instead of being just 2 lines staticaly
 - multithread (probably) what we do in main to avoid slugish start times
-- 2. add the ability for the ai to create questioners for users that they answer with options
 
 ## common errors we check for 
 invalid request\

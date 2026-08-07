@@ -31,6 +31,7 @@ const (
 	KindSearch
 	KindWebSearch
 	KindExec
+	KindAllowed
 )
 
 func (k Kind) String() string {
