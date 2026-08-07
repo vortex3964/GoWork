@@ -31,7 +31,7 @@ func New() tools.AgentTool { return &Tool{} }
 
 func (t *Tool) Name() string { return "edit_file" }
 
-func (t *Tool) Kind() tools.Kind { return tools.KindWrite }
+func (t *Tool) Kind() tools.Kind { return tools.KindAllowed }
 
 func (t *Tool) Description() string {
 	return `Replaces a specific range of lines in an existing file with new content, addressed by line number.

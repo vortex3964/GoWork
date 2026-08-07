@@ -33,6 +33,7 @@ import (
 
 	//import all the tool packages
 	"GoWork/tools"
+	"GoWork/tools/BashTool"
 	"GoWork/tools/CreateFileTool"
 	"GoWork/tools/DeleteFileTool"
 	"GoWork/tools/EditFileTool"
@@ -339,6 +340,7 @@ func loadLogo() []string {
 // call new on all of our tools
 func initTools() []tools.AgentTool {
 	return []tools.AgentTool{
+		bashtool.New(),
 		createfiletool.New(),
 		deletefiletool.New(),
 		editfiletool.New(),

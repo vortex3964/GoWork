@@ -29,7 +29,7 @@ func New() tools.AgentTool { return &Tool{} }
 
 func (t *Tool) Name() string { return "write_file" }
 
-func (t *Tool) Kind() tools.Kind { return tools.KindWrite }
+func (t *Tool) Kind() tools.Kind { return tools.KindNotAllowed }
 
 func (t *Tool) Description() string {
 	return `Edits an existing file by replacing an exact snippet of text with new text.

@@ -89,7 +89,7 @@ func (t *Tool) InputSchema() json.RawMessage {
 	return b
 }
 
-func (t *Tool) Kind() tools.Kind { return tools.KindSearch }
+func (t *Tool) Kind() tools.Kind { return tools.KindAllowed }
 
 // rgEvent mirrors the subset of ripgrep's --json event schema we care
 // about. rg emits one of these per line: "begin"/"end" per file, "match"

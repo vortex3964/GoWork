@@ -83,7 +83,7 @@ func (t *Tool) InputSchema() json.RawMessage {
 	return b
 }
 
-func (t *Tool) Kind() tools.Kind { return tools.KindSearch }
+func (t *Tool) Kind() tools.Kind { return tools.KindAllowed }
 
 // cleanRelPath validates a user-supplied path the same way read_file does:
 // reject absolute paths and ".." escapes so everything stays under the

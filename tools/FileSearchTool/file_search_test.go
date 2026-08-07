@@ -64,9 +64,7 @@ func TestInterfaceConformance(t *testing.T) {
 	if tool.Description() == "" {
 		t.Error("Description() is empty")
 	}
-	if tool.Kind() != tools.KindSearch {
-		t.Errorf("Kind() = %v, want %v", tool.Kind(), tools.KindSearch)
-	}
+
 	schema := tool.InputSchema()
 	var m map[string]any
 	if err := json.Unmarshal(schema, &m); err != nil {

@@ -44,7 +44,7 @@ func (t *Tool) InputSchema() json.RawMessage {
 	return b
 }
 
-func (t *Tool) Kind() tools.Kind { return tools.KindRead }
+func (t *Tool) Kind() tools.Kind { return tools.KindAllowed }
 
 func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.RawMessage) (tools.ToolResult, error) {
 	var input Input

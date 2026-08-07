@@ -72,9 +72,6 @@ func TestMetadata(t *testing.T) {
 	if got := tool.Name(); got != "read_file" {
 		t.Errorf("Name() = %q, want %q", got, "read_file")
 	}
-	if got := tool.Kind(); got != tools.KindRead {
-		t.Errorf("Kind() = %v, want %v", got, tools.KindRead)
-	}
 	if desc := tool.Description(); desc == "" {
 		t.Error("Description() is empty")
 	}

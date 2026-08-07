@@ -49,7 +49,7 @@ func (t *Tool) InputSchema() json.RawMessage {
 	return b
 }
 
-func (t *Tool) Kind() tools.Kind { return tools.KindWrite }
+func (t *Tool) Kind() tools.Kind { return tools.KindNotAllowed }
 
 func wrapInMarkers(content string) []byte {
 	var b strings.Builder

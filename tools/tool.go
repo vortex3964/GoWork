@@ -25,33 +25,9 @@ import (
 type Kind int
 
 const (
-	KindRead Kind = iota
-	KindWrite
-	KindDelete
-	KindSearch
-	KindWebSearch
-	KindExec
+	KindNotAllowed Kind = iota
 	KindAllowed
 )
-
-func (k Kind) String() string {
-	switch k {
-	case KindRead:
-		return "read"
-	case KindWrite:
-		return "write"
-	case KindDelete:
-		return "delete"
-	case KindExec:
-		return "exec"
-	case KindWebSearch:
-		return "web"
-	case KindSearch:
-		return "search"
-	default:
-		return "unknown"
-	}
-}
 
 //IMPORTANT: ToolResult is what every tool returns on a completed run, whether the
 // underlying operation succeeded or failed. Using one type for both cases

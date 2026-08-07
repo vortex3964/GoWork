@@ -74,7 +74,7 @@ func (t *Tool) InputSchema() json.RawMessage {
 	return b
 }
 
-func (t *Tool) Kind() tools.Kind { return tools.KindRead }
+func (t *Tool) Kind() tools.Kind { return tools.KindAllowed }
 
 // readRange reads relPath from the sandboxed root into memory, applies any
 // pending changes from the WatchList in memory and scans forward through the 
