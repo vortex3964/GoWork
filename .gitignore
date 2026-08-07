@@ -37,6 +37,10 @@ bin/
 
 context.txt
 
+# sqlite database (runtime data)
+Db/gowork.db
+Db/gowork.db-journal
+
 # Python ignores
 venv/
 __pycache__/

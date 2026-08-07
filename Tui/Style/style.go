@@ -5,7 +5,11 @@
 // change instead of a grep-and-replace.
 package style
 
-import "charm.land/lipgloss/v2"
+import (
+	"image/color"
+
+	"charm.land/lipgloss/v2"
+)
 
 var (
 	Primary       = lipgloss.Color("#E6B450") // Ayu accent gold
@@ -28,6 +32,18 @@ var (
 // Tabs are the one component kept on the original brand purple
 // instead of following the theme swap.
 var TabAccent = lipgloss.Color("#7010E3")
+
+// GraphColors is the fixed 6-color ramp used by the stats bar chart:
+// one color per slot, the first 5 mapped to the 5 most-used models and the
+// 6th ("others") for whatever's left.
+var GraphColors = []color.Color{
+	Primary,               // gold
+	lipgloss.Color("#7010E3"), // brand purple
+	Special,               // teal
+	Success,               // green
+	Warning,               // orange
+	Danger,                // red
+}
 
 // Tabs
 
