@@ -32,6 +32,8 @@ import (
 	todo "GoWork/Tui/Components/ToDo"
 	"GoWork/Tui/Style"
 
+	db "GoWork/Db"
+
 	//import all the tool packages
 	"GoWork/tools"
 	"GoWork/tools/BashTool"
@@ -227,6 +229,7 @@ const (
 	modeRecall
 	modeQuestionnaire
 	modePermission
+	modeStats
 )
 
 type Mode struct {
@@ -244,6 +247,7 @@ func GetModes() []Mode {
 		modeRecall:         {mode: modeRecall, label: "RECALL", color: "#95E6CB"},
 		modeQuestionnaire:  {mode: modeQuestionnaire, label: "QUESTIONNAIRE", color: "#d10672"},
 		modePermission:     {mode: modePermission, label: "PERMISSION", color: "#e2eb98"},
+		modeStats:          {mode: modeStats, label: "STATS", color: "#FFB454"},
 	}
 }
 
@@ -341,6 +345,10 @@ type model struct {
 	// batchCtx keeps the tool batch's context so it can launch once the
 	// user resolves a pending permission request.
 	batchCtx context.Context
+
+	// db is the local usage/session store. Nil when the database couldn't be
+	// opened - the app keeps working, it just records nothing.
+	db *db.Store
 }
 
 func loadLogo() []string {
@@ -420,6 +428,19 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 	// Show paths relative to the project root instead of absolute.
 	changesList.SetRoot(root)
 
+	// Open the local usage/session database and start this app run's session
+	// record (one app run = one session).
+	var store *db.Store
+	s, err := db.Open(filepath.Join(root, db.DefaultPath))
+	if err != nil {
+		log.Printf("failed to open database: %v; usage stats disabled", err)
+	} else {
+		store = s
+		if err := store.StartSession(modelID, providerName); err != nil {
+			log.Printf("failed to start session: %v", err)
+		}
+	}
+
 	return model{
 		tabs:              tabs.New("code", "skills", "stats"),
 		prompt:            p,
@@ -440,6 +461,7 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 		questionnaireSlot: -1,
 		permissionBox:     permisionbox.New("", "", ""),
 		permissionSlot:    -1,
+		db:                store,
 	}
 }
 
@@ -893,6 +915,55 @@ func (m *model) toggleTodoPanel() {
 	m.applyPanelSize()
 }
 
+// syncModeToTab keeps the active mode in step with the active tab: the stats
+// tab runs in its own stats mode (prompt bar hidden, statusline pinned), any
+// other tab returns to the normal prompt layout.
+func (m *model) syncModeToTab() {
+	if m.tabs.Active().Name == "stats" {
+		m.mode = modeStats
+		m.prompt.Blur()
+		m.refreshStats()
+	} else if m.mode == modeStats {
+		m.mode = modePrompt
+		m.prompt.Focus()
+	}
+}
+
+// refreshStats reloads the dashboard data. Called when entering the stats tab
+// and after every recorded generation (only while the tab is live to keep it
+// cheap).
+func (m *model) refreshStats() {
+	if m.db == nil {
+		return
+	}
+	rows, err := m.db.Stats()
+	if err != nil {
+		log.Printf("failed to load stats: %v", err)
+		return
+	}
+	daily, err := m.db.DailyStats()
+	if err != nil {
+		log.Printf("failed to load daily stats: %v", err)
+		daily = nil
+	}
+	m.stats.SetData(rows, daily)
+}
+
+// flushSession is the save-on-exit path: it finalizes the current session
+// (writes usage + messages), then closes the database. Fired from the
+// program's quit filter when a QuitMsg arrives.
+func (m model) flushSession() {
+	if m.db == nil {
+		return
+	}
+	if err := m.db.FinalizeSession(m.context, m.status.sessionTokens); err != nil {
+		log.Printf("failed to save session: %v", err)
+	}
+	if err := m.db.Close(); err != nil {
+		log.Printf("failed to close database: %v", err)
+	}
+}
+
 func (m model) promptTop() int {
 	return m.winHeight - statusLineHeight - m.bottomBarHeight()
 }
@@ -1163,10 +1234,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg_str {
 		case "ctrl+tab", "tab":
 			m.tabs.Next()
+			m.syncModeToTab()
 			return m, nil
 		case "ctrl+shift+tab", "shift+tab":
 			m.tabs.Prev()
+			m.syncModeToTab()
 			return m, nil
+		}
+
+		// In stats mode every remaining key is the stats screen's to handle:
+		// up/down navigate the list, left/right pan, enter magnifies, / or
+		// any printable char filters, and esc dismisses whatever's open
+		// (filter/detail) or leaves the tab altogether.
+		if m.mode == modeStats {
+			switch msg_str {
+			case "esc":
+				if m.stats.CanExitStatsMode() {
+					m.tabs.ActiveIdx = 0
+					m.syncModeToTab()
+					return m, nil
+				}
+			}
+			var cmd tea.Cmd
+			m.stats, cmd = m.stats.Update(msg)
+			return m, cmd
 		}
 
 		if m.mode == modeChangeHandling {
@@ -1300,6 +1391,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Button == tea.MouseLeft {
+			// On the stats tab the whole area below the tabs belongs to the
+			// dashboard: clicks select list rows, wheel scrolls.
+			if m.tabs.Active().Name == "stats" && msg.Y >= m.panelTop() {
+				m.stats.HandleMouseClick(msg.X, msg.Y-m.panelTop())
+				return m, nil
+			}
 			// The tab strip renders taller than one line (its border adds top
 			// and bottom rows), so let clicks anywhere on it switch tabs. The
 			// prompt bar sits pinned just above the statusline at the bottom
@@ -1329,6 +1426,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch {
 			case msg.Y < m.tabs.Height():
 				m.tabs.HandleClick(msg.X)
+				m.syncModeToTab()
 			case m.tabs.Active().Name == "code" && msg.Y >= m.promptTop() && msg.Y < m.promptTop()+promptbar.Height:
 				m.historyIdx = 0
 				m.mode = modePrompt
@@ -1345,6 +1443,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Scrolling either box doesn't require focus — same as scrolling
 		// a window you're not "in" in nvim.
+		if m.tabs.Active().Name == "stats" {
+			m.stats.HandleMouseWheel(msg.X, msg.Y-m.panelTop(), msg.Button == tea.MouseWheelUp)
+			return m, nil
+		}
 		if m.tabs.Active().Name == "code" {
 			promptTop := m.promptTop()
 			switch {
@@ -1452,6 +1554,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.status.sessionTokens += usage.TotalTokens
 			m.status.lastPromptTokens = usage.PromptTokens
+		}
+
+		// Record the generation in the local database (buffered, flushed on
+		// exit) so the stats screen can aggregate model usage.
+		if m.db != nil {
+			m.db.RecordUsage(m.status.modelID, m.status.providerName,
+				usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens,
+				len(msg.result.ToolCalls), time.Now())
 		}
 
 		// The user pressed ctrl+i. Even if the provider ignored the cancel
@@ -1609,6 +1719,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.status.sessionTokens += msg.usage.TotalTokens
+		if m.db != nil {
+			m.db.RecordUsage(m.status.modelID, m.status.providerName,
+				msg.usage.PromptTokens, msg.usage.CompletionTokens,
+				msg.usage.TotalTokens, 0, time.Now())
+		}
 		m.context = providers.CompactContext(m.context, msg.summary, 2)
 		m.status.lastPromptTokens = providers.EstimateContextTokens(m.context, m.status.modelID)
 		m.message_area.AppendMessage(">**INFO** Conversation condensed to fit the context window - continue when ready.", false)
@@ -1723,7 +1838,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.message_area, msgAreaCmd = m.message_area.Update(msg)
 	var popUpCmd tea.Cmd
 	m.popUp, popUpCmd = m.popUp.Update(msg)
-	return m, tea.Batch(tabsCmd, promptCmd, msgAreaCmd, popUpCmd)
+	// The stats screen's filter cursor blinks on the same loop; forward the
+	// leftover messages while the stats tab is live so it stays responsive.
+	var statsCmd tea.Cmd
+	if m.tabs.Active().Name == "stats" {
+		m.stats, statsCmd = m.stats.Update(msg)
+	}
+	return m, tea.Batch(tabsCmd, promptCmd, msgAreaCmd, popUpCmd, statsCmd)
 }
 
 func (m model) emptyStateHeight() int {
@@ -1767,7 +1888,9 @@ func (m model) View() tea.View {
 
 	switch m.tabs.Active().Name {
 	case "stats":
-		content = top + "\n" + m.stats.View()
+		// Stats mode hides the prompt bar and pins the statusline; only the
+		// dashboard sits between them.
+		content = top + "\n" + m.stats.View() + "\n" + renderStatusLine(m)
 	case "skills":
 		content = top + "\n" + m.skills.View()
 	default:
@@ -1956,7 +2079,18 @@ func main() {
 		providers.InitCompactionPrompt(string(comp))
 	}
 
-	p := tea.NewProgram(initialModel(root, provider, modelName, providerName))
+	m := initialModel(root, provider, modelName, providerName)
+
+	// Save-on-exit: intercept the quit before the terminal tears down so the
+	// current session's usage + messages land in the database.
+	p := tea.NewProgram(m, tea.WithFilter(func(mdl tea.Model, msg tea.Msg) tea.Msg {
+		if _, ok := msg.(tea.QuitMsg); ok {
+			if app, ok := mdl.(model); ok {
+				app.flushSession()
+			}
+		}
+		return msg
+	}))
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Oof: %v\n", err)
 		os.Exit(1)
