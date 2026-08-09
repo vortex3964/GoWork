@@ -361,6 +361,8 @@ type model struct {
 	// db is the local usage/session store. Nil when the database couldn't be
 	// opened - the app keeps working, it just records nothing.
 	db *db.Store
+
+	promptHeight int
 }
 
 func loadLogo() []string {
@@ -495,6 +497,7 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 		permissionSlot:    -1,
 		db:                store,
 		root:              root,
+		promptHeight:      p.Height(),
 		skills:            skills.New(),
 		stats:             stats.New(),
 		skillForm:         skillform.New(),
@@ -930,12 +933,13 @@ func (m model) arrowCol() int {
 }
 
 // bottomBarHeight is the height of whatever sits between the band and the
-// statusline: the prompt bar normally, the taller questionnaire while one shows
+// statusline: the prompt bar normally (its height grows up to 6 rows while
+// typing), the taller questionnaire while one shows
 func (m model) bottomBarHeight() int {
 	if m.mode == modeQuestionnaire {
 		return questionnaire.Height
 	}
-	return promptbar.Height
+	return m.prompt.Height()
 }
 
 func (m *model) applyPanelSize() {
@@ -945,6 +949,17 @@ func (m *model) applyPanelSize() {
 	}
 	m.message_area.SetSize(m.msgAreaWidth(), msgAreaHeight)
 	m.skills.SetSize(m.msgAreaWidth(), msgAreaHeight)
+}
+
+// syncPromptHeight re-layouts the band when the prompt bar's height changed
+// outside the normal Update path (Reset/SetValue/InsertNewline touch the bar
+// directly), so a shrunken bar frees band space and a grown one never
+// overlaps the message area.
+func (m *model) syncPromptHeight() {
+	if h := m.prompt.Height(); h != m.promptHeight {
+		m.promptHeight = h
+		m.applyPanelSize()
+	}
 }
 
 func (m *model) toggleTodoPanel() {
@@ -1147,6 +1162,7 @@ func (m *model) submitPrompt() []tea.Cmd {
 	if p == nil {
 		m.message_area.AppendMessage(">**ERROR** No provider selected press ctrl+p to pick one.", false)
 		m.prompt.Reset()
+		m.syncPromptHeight()
 		m.historyIdx = 0
 		m.mode = modeIdle
 		m.prompt.Blur()
@@ -1160,6 +1176,7 @@ func (m *model) submitPrompt() []tea.Cmd {
 	m.message_area.AppendMessage(val, true)
 	m.context = append(m.context, providers.Message{Role: "user", Content: val})
 	m.prompt.Reset()
+	m.syncPromptHeight()
 	m.historyIdx = 0
 	m.stepCount = 0
 	m.pendingTools = m.pendingTools[:0]
@@ -1213,11 +1230,19 @@ func (m *model) openProviderSelect() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	switch msg := msg.(type) {
+	case promptbar.HeightChangedMsg:
+		// The prompt bar grew/shrunk (typing past the 2-line resting size,
+		// or back down on reset/submit): shrink or free the band above it
+		// so the message area and the skills pane keep fitting.
+		m.applyPanelSize()
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.winWidth = msg.Width
 		m.winHeight = msg.Height
 		m.tabs.SetSize(m.winWidth)
 		m.prompt.SetWidth(m.winWidth)
+		m.syncPromptHeight()
 
 		// message area fills everything between the tabs and the prompt
 		// bar, minus the reserved spinner row and the statusline row.
@@ -1331,6 +1356,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the session's loaded set right away.
 		_ = mgr.Load(name)
 		m.prompt.Reset()
+		m.syncPromptHeight()
 		m.historyIdx = 0
 		m.syncSkillsState()
 		m.message_area.AppendMessage(
@@ -1486,6 +1512,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				case "shift+enter", "ctrl+j":
 					m.prompt.InsertNewline()
+					m.syncPromptHeight()
 					return m, nil
 				case "enter":
 					m.skillForm.Open()
@@ -1561,15 +1588,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if val := m.message_area.LastUserMessage(m.historyIdx + 1); val != "" {
 					m.historyIdx++
 					m.prompt.SetValue(val)
+					m.syncPromptHeight()
 				}
 				return m, nil
 			case "down":
 				if m.historyIdx > 1 {
 					m.historyIdx--
 					m.prompt.SetValue(m.message_area.LastUserMessage(m.historyIdx))
+					m.syncPromptHeight()
 				} else {
 					m.historyIdx = 0
 					m.prompt.Reset()
+					m.syncPromptHeight()
 					m.mode = modePrompt
 				}
 				return m, nil
@@ -1599,6 +1629,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "shift+enter", "ctrl+j":
 				m.prompt.InsertNewline()
+				m.syncPromptHeight()
 				return m, nil
 			case "up":
 				// Only recall history when the prompt is empty; otherwise
@@ -1607,6 +1638,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if val := m.message_area.LastUserMessage(1); val != "" {
 						m.historyIdx = 1
 						m.prompt.SetValue(val)
+						m.syncPromptHeight()
 						m.mode = modeRecall
 					}
 					return m, nil
@@ -1627,6 +1659,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "ctrl+u":
 				m.prompt.Reset()
+				m.syncPromptHeight()
 				m.historyIdx = 0
 				return m, nil
 			case "enter":
@@ -1664,7 +1697,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// The tab strip renders taller than one line (its border adds top
 			// and bottom rows), so let clicks anywhere on it switch tabs. The
 			// prompt bar sits pinned just above the statusline at the bottom
-			// of the screen, so it owns exactly promptbar.Height rows starting
+			// of the screen, so it owns exactly m.prompt.Height() rows starting
 			// at promptTop() - anything below that is the statusline, which
 			// isn't clickable. On the code and skills tabs, whose layouts
 			// pin the prompt bar, clicking it focuses it.
@@ -1690,7 +1723,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tabs.HandleClick(msg.X)
 				m.syncModeToTab()
 			case (m.tabs.Active().Name == "code" || m.tabs.Active().Name == "skills") &&
-				msg.Y >= m.promptTop() && msg.Y < m.promptTop()+promptbar.Height:
+				msg.Y >= m.promptTop() && msg.Y < m.promptTop()+m.prompt.Height():
 				m.historyIdx = 0
 				if m.tabs.Active().Name == "code" {
 					m.mode = modePrompt
@@ -1715,7 +1748,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.tabs.Active().Name == "skills" {
 			promptTop := m.promptTop()
 			switch {
-			case msg.Y >= promptTop && msg.Y < promptTop+promptbar.Height:
+			case msg.Y >= promptTop && msg.Y < promptTop+m.prompt.Height():
 				switch msg.Button {
 				case tea.MouseWheelUp:
 					m.prompt.ScrollUp()
@@ -1730,7 +1763,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.tabs.Active().Name == "code" {
 			promptTop := m.promptTop()
 			switch {
-			case msg.Y >= promptTop && msg.Y < promptTop+promptbar.Height:
+			case msg.Y >= promptTop && msg.Y < promptTop+m.prompt.Height():
 				switch msg.Button {
 				case tea.MouseWheelUp:
 					m.prompt.ScrollUp()

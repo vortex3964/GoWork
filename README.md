@@ -62,8 +62,8 @@ llama.cpp
 - ? add a way to copy text from promptbar and message area
 - fix the readMe final version
 - @ add debug mode where the user can also make manual tool calls
-- make the prompt bar extend up to 6 lines and then scroll
 - make an installer
+- arrow on todo renders incorectly on smaller screens too far on the right
 
 ## common errors we check for 
 invalid request\
