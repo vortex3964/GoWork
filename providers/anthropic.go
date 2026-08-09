@@ -91,8 +91,9 @@ func toAnthropicMessages(messages []Message) []map[string]interface{} {
 // toAnthropicTools maps ToolDefs into anthropic's flat {name, description,
 // input_schema} tools array (no "type"/"function" wrapper).
 func toAnthropicTools() []map[string]interface{} {
-	tools := make([]map[string]interface{}, 0, len(tools_def))
-	for _, td := range tools_def {
+	defs := toolDefs()
+	tools := make([]map[string]interface{}, 0, len(defs))
+	for _, td := range defs {
 		tools = append(tools, map[string]interface{}{
 			"name":         td.Name,
 			"description":  td.Description,
@@ -113,7 +114,7 @@ func (a *anthropicProvider) Generate(ctx context.Context, messages []Message) (G
 	if system_prompt != "" && !omitSystem(ctx) {
 		reqBody["system"] = system_prompt
 	}
-	if len(tools_def) > 0 && !omitSystem(ctx) {
+	if hasTools() && !omitSystem(ctx) {
 		reqBody["tools"] = toAnthropicTools()
 	}
 
@@ -183,7 +184,7 @@ func (a *anthropicProvider) GenerateStream(ctx context.Context, messages []Messa
 	if system_prompt != "" && !omitSystem(ctx) {
 		reqBody["system"] = system_prompt
 	}
-	if len(tools_def) > 0 && !omitSystem(ctx) {
+	if hasTools() && !omitSystem(ctx) {
 		reqBody["tools"] = toAnthropicTools()
 	}
 

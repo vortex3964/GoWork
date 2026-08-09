@@ -37,3 +37,11 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+
+CREATE TABLE IF NOT EXISTS session_skills (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    skill_name TEXT NOT NULL,
+    loaded_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_skills ON session_skills(session_id);

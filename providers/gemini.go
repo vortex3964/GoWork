@@ -97,8 +97,9 @@ func toContents(messages []Message) []map[string]interface{} {
 // toGeminiTools wraps each ToolDef into gemini's {functionDeclarations:[...]}
 // shape, each declaration's parameters being a JSON schema.
 func toGeminiTools() []map[string]interface{} {
-	decls := make([]map[string]interface{}, 0, len(tools_def))
-	for _, td := range tools_def {
+	defs := toolDefs()
+	decls := make([]map[string]interface{}, 0, len(defs))
+	for _, td := range defs {
 		decls = append(decls, map[string]interface{}{
 			"name":        td.Name,
 			"description": td.Description,
@@ -119,7 +120,7 @@ func (g *geminiProvider) Generate(ctx context.Context, messages []Message) (Gene
 			"parts": []map[string]string{{"text": system_prompt}},
 		}
 	}
-	if len(tools_def) > 0 && !omitSystem(ctx) {
+	if hasTools() && !omitSystem(ctx) {
 		reqBody["tools"] = toGeminiTools()
 		reqBody["toolConfig"] = map[string]interface{}{
 			"functionCallingConfig": map[string]interface{}{"mode": "AUTO"},
@@ -206,7 +207,7 @@ func (g *geminiProvider) GenerateStream(ctx context.Context, messages []Message,
 			"parts": []map[string]string{{"text": system_prompt}},
 		}
 	}
-	if len(tools_def) > 0 && !omitSystem(ctx) {
+	if hasTools() && !omitSystem(ctx) {
 		reqBody["tools"] = toGeminiTools()
 		reqBody["toolConfig"] = map[string]interface{}{
 			"functionCallingConfig": map[string]interface{}{"mode": "AUTO"},

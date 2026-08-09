@@ -49,6 +49,7 @@ func TestStartAndRecord(t *testing.T) {
 		{Role: "assistant", Content: "hello", ToolCalls: []providers.ToolCall{{Tool_call_id: "c1", Tool_name: "read_file"}}},
 		{Role: "tool", Content: "ok", ToolCallID: "c1"},
 	}
+	s.SetSessionSkills([]string{"hello", "refactor"})
 	if err := s.FinalizeSession(msgs, 180); err != nil {
 		t.Fatalf("finalize: %v", err)
 	}
@@ -72,6 +73,9 @@ func TestStartAndRecord(t *testing.T) {
 	}
 	if ls.TotalTokens != 180 {
 		t.Fatalf("session total mismatch: %d", ls.TotalTokens)
+	}
+	if len(ls.Skills) != 2 || ls.Skills[0] != "hello" || ls.Skills[1] != "refactor" {
+		t.Fatalf("session skills not restored correctly: %+v", ls.Skills)
 	}
 }
 

@@ -10,7 +10,7 @@ import "strings"
 // unavailable tokenizers degrade to a chars/4 estimate.
 func EstimateOverheadTokensForModel(model string) int {
 	tokens := countTokensForModel(model, system_prompt)
-	for _, td := range tools_def {
+	for _, td := range toolDefs() {
 		tokens += countTokensForModel(model, td.Name)
 		tokens += countTokensForModel(model, td.Description)
 		tokens += countTokensForModel(model, string(td.InputSchema))

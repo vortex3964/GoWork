@@ -56,6 +56,16 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+
+-- which skills the session had loaded, so a restored session can re-load
+-- them automatically.
+CREATE TABLE IF NOT EXISTS session_skills (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    skill_name TEXT NOT NULL,
+    loaded_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_skills ON session_skills(session_id);
 `
 
 // Store wraps the SQLite handle plus the in-memory buffer that gets flushed
@@ -75,6 +85,11 @@ type Store struct {
 	// stats screen can reflect the live session without a table read on
 	// every token count.
 	pendingUsage []UsageRecord
+
+	// sessionSkills is the session's loaded-skill set, buffered the same way
+	// and written as session_skills rows on finalize so a restored session
+	// comes back with its skills already loaded.
+	sessionSkills map[string]struct{}
 }
 
 // Open opens (creating if needed) the database at path and guarantees the
@@ -106,7 +121,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("db: schema: %w", err)
 	}
 
-	return &Store{hnd: h, path: path}, nil
+	return &Store{hnd: h, path: path, sessionSkills: make(map[string]struct{})}, nil
 }
 
 // Close frees the handle. Call it after FinalizeSession.

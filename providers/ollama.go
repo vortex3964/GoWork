@@ -92,8 +92,9 @@ func toOllamaTools(ctx context.Context) []map[string]interface{} {
 	if omitSystem(ctx) {
 		return nil
 	}
-	tools := make([]map[string]interface{}, 0, len(tools_def))
-	for _, td := range tools_def {
+	defs := toolDefs()
+	tools := make([]map[string]interface{}, 0, len(defs))
+	for _, td := range defs {
 		tools = append(tools, map[string]interface{}{
 			"type": "function",
 			"function": map[string]interface{}{
@@ -114,7 +115,7 @@ func (o *ollamaProvider) Generate(ctx context.Context, messages []Message) (Gene
 		"messages": toOllamaMessages(ctx, messages),
 		"stream":   false,
 	}
-	if o.toolsEnabled && len(tools_def) > 0 {
+	if o.toolsEnabled && hasTools() {
 		reqBody["tools"] = toOllamaTools(ctx)
 	}
 
@@ -179,7 +180,7 @@ func (o *ollamaProvider) GenerateStream(ctx context.Context, messages []Message,
 		"messages": toOllamaMessages(ctx, messages),
 		"stream":   true,
 	}
-	if o.toolsEnabled && len(tools_def) > 0 {
+	if o.toolsEnabled && hasTools() {
 		reqBody["tools"] = toOllamaTools(ctx)
 	}
 

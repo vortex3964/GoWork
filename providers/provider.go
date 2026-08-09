@@ -154,11 +154,48 @@ type ToolDef struct {
 	InputSchema json.RawMessage
 }
 
-// this will be used by every provider in the generate method
+// this will be used by every provider in the generate method. The slice is
+// read on streaming goroutines, so every access goes through the lock: the
+// skills tab swaps one entry (the skill tool) at runtime via UpdateToolDef.
+var toolsMu sync.RWMutex
 var tools_def []ToolDef
 
 func InitToolsDef(t []ToolDef) {
+	toolsMu.Lock()
+	defer toolsMu.Unlock()
 	tools_def = t
+}
+
+// UpdateToolDef replaces a single tool's registration (name/description/
+// schema). The skills tab uses it to keep the skill tool's available-skills
+// list in sync with the session's loaded skills. Reports whether the tool
+// was found.
+func UpdateToolDef(name string, td ToolDef) bool {
+	toolsMu.Lock()
+	defer toolsMu.Unlock()
+	for i := range tools_def {
+		if tools_def[i].Name == name {
+			tools_def[i] = td
+			return true
+		}
+	}
+	return false
+}
+
+// toolDefs returns a snapshot of the registered tools for one request.
+func toolDefs() []ToolDef {
+	toolsMu.RLock()
+	defer toolsMu.RUnlock()
+	out := make([]ToolDef, len(tools_def))
+	copy(out, tools_def)
+	return out
+}
+
+// hasTools reports whether any tools are registered.
+func hasTools() bool {
+	toolsMu.RLock()
+	defer toolsMu.RUnlock()
+	return len(tools_def) > 0
 }
 
 // system_prompt holds the rendered system prompt. It's a first-class
@@ -309,8 +346,9 @@ func openAICompatTools(ctx context.Context) []map[string]interface{} {
 	if omitSystem(ctx) {
 		return nil
 	}
-	tools := make([]map[string]interface{}, 0, len(tools_def))
-	for _, td := range tools_def {
+	defs := toolDefs()
+	tools := make([]map[string]interface{}, 0, len(defs))
+	for _, td := range defs {
 		tools = append(tools, map[string]interface{}{
 			"type": "function",
 			"function": map[string]interface{}{

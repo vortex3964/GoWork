@@ -54,7 +54,7 @@ func (l *lmStudioProvider) Generate(ctx context.Context, messages []Message) (Ge
 		"messages": toLMStudioMessages(ctx, messages),
 		"stream":   false,
 	}
-	if l.toolsEnabled && len(tools_def) > 0 {
+	if l.toolsEnabled && hasTools() {
 		reqBody["tools"] = openAICompatTools(ctx)
 	}
 
@@ -115,7 +115,7 @@ func (l *lmStudioProvider) Generate(ctx context.Context, messages []Message) (Ge
 
 func (l *lmStudioProvider) GenerateStream(ctx context.Context, messages []Message, onDelta StreamFunc) (GenerateResult, error) {
 	var tools []map[string]interface{}
-	if l.toolsEnabled && len(tools_def) > 0 {
+	if l.toolsEnabled && hasTools() {
 		tools = openAICompatTools(ctx)
 	}
 	// requestUsage asks for stream_options.include_usage, which LM Studio

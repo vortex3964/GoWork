@@ -38,7 +38,7 @@ func (g *groqProvider) Generate(ctx context.Context, messages []Message) (Genera
 		"model":    g.model,
 		"messages": toGroqMessages(ctx, messages),
 	}
-	if len(tools_def) > 0 {
+	if hasTools() {
 		reqBody["tools"] = openAICompatTools(ctx)
 	}
 
@@ -100,7 +100,7 @@ func (g *groqProvider) Generate(ctx context.Context, messages []Message) (Genera
 
 func (g *groqProvider) GenerateStream(ctx context.Context, messages []Message, onDelta StreamFunc) (GenerateResult, error) {
 	var tools []map[string]interface{}
-	if len(tools_def) > 0 {
+	if hasTools() {
 		tools = openAICompatTools(ctx)
 	}
 	return streamOpenAICompat(ctx, groqBaseURL+"/chat/completions", g.model,

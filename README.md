@@ -51,14 +51,7 @@ ollama\
 llama.cpp
 
 ## TODO
-- designing skills
-- sql db for storing stats and messages and session data etch
 - add slash commands (with window for autocomplete)
-- implement skills area
-- implement token usage area stats
-- tools for generating skills and handling them
-- implement skill managment area
-- add skills loading guidance to the system prompt once skills are actually supported
 - maybe make llama and lmstuido have an in app launch button in case the user forgot to start them
 - add lsp support
 - make an installer
@@ -69,7 +62,7 @@ llama.cpp
 - ? add a way to copy text from promptbar and message area
 - fix the readMe final version
 - @ add debug mode where the user can also make manual tool calls
-- make the prompt bar extend up to 5 lines and then scroll
+- make the prompt bar extend up to 6 lines and then scroll
 - make an installer
 
 ## common errors we check for 
@@ -150,6 +143,11 @@ ALSO COMMING SOON
 
 added a make venv with one depedency that must be runned
 (probably will be run by the installer maybe)
+
+## Resuming sessions
+Run `GoWork -S <sessionID>` to restore a previous session: its conversation is
+replayed and its loaded skills come back automatically, so they're visible to
+the model again without reloading them by hand.
 
 ## run test
 

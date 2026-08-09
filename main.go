@@ -26,7 +26,8 @@ import (
 	"GoWork/Tui/Components/Promptbar"
 	providerselect "GoWork/Tui/Components/ProviderSelect"
 	"GoWork/Tui/Components/Questionnaire"
-	"GoWork/Tui/Components/Skills"
+	"GoWork/Tui/Components/SkillForm"
+	"GoWork/Tui/Components/SkillsTab"
 	"GoWork/Tui/Components/Stats"
 	"GoWork/Tui/Components/Tabs"
 	todo "GoWork/Tui/Components/ToDo"
@@ -46,6 +47,7 @@ import (
 	"GoWork/tools/MoveFileTool"
 	"GoWork/tools/QuestionnaireTool"
 	"GoWork/tools/ReadFileTool"
+	"GoWork/tools/SkillsTool"
 	"GoWork/tools/ToDoTool"
 	"GoWork/tools/WebFetchTool"
 	"GoWork/tools/WebSearchTool"
@@ -230,6 +232,7 @@ const (
 	modeQuestionnaire
 	modePermission
 	modeStats
+	modeSkills
 )
 
 type Mode struct {
@@ -248,6 +251,7 @@ func GetModes() []Mode {
 		modeQuestionnaire:  {mode: modeQuestionnaire, label: "QUESTIONNAIRE", color: "#d10672"},
 		modePermission:     {mode: modePermission, label: "PERMISSION", color: "#e2eb98"},
 		modeStats:          {mode: modeStats, label: "STATS", color: "#FFB454"},
+		modeSkills:         {mode: modeSkills, label: "SKILLS", color: "#F5E6B8"},
 	}
 }
 
@@ -259,6 +263,14 @@ type model struct {
 	message_area messagearea.Model
 	spinner      spinner.Model
 	changesList  changeslist.Model
+
+	// root is the absolute project root; the skills manager and the
+	// dispatcher resolve everything (skills discovery, writes) against it.
+	root string
+
+	// skillForm is the name/description modal that turns prompt-bar text
+	// into a new skill.
+	skillForm skillform.Model
 
 	// which UI mode we're in (idle, prompt entry, provider select, ...)
 	mode uiMode
@@ -378,6 +390,7 @@ func initTools() []tools.AgentTool {
 		movefiletool.New(),
 		questionnairetool.New(),
 		readfiletool.New(),
+		skillstool.New(),
 		todotool.New(),
 		webfetchtool.New(),
 		websearchtool.New(),
@@ -385,11 +398,30 @@ func initTools() []tools.AgentTool {
 	}
 }
 
+// appDataRoot is where GoWork keeps its own data (the .GoWork skills
+// folder). This is the directory the app binary lives in, NOT the project
+// the user happens to be working on, so a user's project is never touched
+// by the app's internal data. Falls back to the working directory when the
+// executable path can't be resolved (e.g. `go run`).
+func appDataRoot(projectRoot string) string {
+	exe, err := os.Executable()
+	if err != nil {
+		return projectRoot
+	}
+	return filepath.Dir(exe)
+}
+
 func initialModel(root string, provider providers.Provider, modelID string, providerName string) model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 
 	think := false
+
+	// The skills manager is a singleton the skill tool and the skills tab
+	// both read, so wire it before the tools compute their descriptions.
+	// Skills live in the app's own data folder (next to the executable),
+	// NOT in the project the user is working in.
+	skillstool.SetManager(skillstool.NewManager(appDataRoot(root)))
 
 	wl, err := changeslist.NewWatchList(&think)
 	if err != nil {
@@ -462,6 +494,10 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 		permissionBox:     permisionbox.New("", "", ""),
 		permissionSlot:    -1,
 		db:                store,
+		root:              root,
+		skills:            skills.New(),
+		stats:             stats.New(),
+		skillForm:         skillform.New(),
 	}
 }
 
@@ -908,6 +944,7 @@ func (m *model) applyPanelSize() {
 		msgAreaHeight = 0
 	}
 	m.message_area.SetSize(m.msgAreaWidth(), msgAreaHeight)
+	m.skills.SetSize(m.msgAreaWidth(), msgAreaHeight)
 }
 
 func (m *model) toggleTodoPanel() {
@@ -916,14 +953,19 @@ func (m *model) toggleTodoPanel() {
 }
 
 // syncModeToTab keeps the active mode in step with the active tab: the stats
-// tab runs in its own stats mode (prompt bar hidden, statusline pinned), any
+// tab runs in its own stats mode (statusline pinned, prompt bar hidden), the
+// skills tab pins both bars (the pane shares the message-area band), any
 // other tab returns to the normal prompt layout.
 func (m *model) syncModeToTab() {
 	if m.tabs.Active().Name == "stats" {
 		m.mode = modeStats
 		m.prompt.Blur()
 		m.refreshStats()
-	} else if m.mode == modeStats {
+	} else if m.tabs.Active().Name == "skills" {
+		m.mode = modeSkills
+		m.prompt.Blur()
+		m.refreshSkills()
+	} else if m.mode == modeStats || m.mode == modeSkills {
 		m.mode = modePrompt
 		m.prompt.Focus()
 	}
@@ -947,6 +989,120 @@ func (m *model) refreshStats() {
 		daily = nil
 	}
 	m.stats.SetData(rows, daily)
+}
+
+// refreshSkills rebuilds the skills tab's discovery snapshot: every skill
+// currently on disk (from the manager's registry), with each entry's Loaded
+// flag coming from what the session has loaded so far.
+func (m *model) refreshSkills() {
+	mgr := skillstool.GetManager()
+	if mgr == nil {
+		m.skills.SetData(nil)
+		return
+	}
+	mgr.Discover()
+	entries := make([]skills.Entry, 0, len(mgr.Entries()))
+	for _, e := range mgr.Entries() {
+		if e.Name == "" || strings.HasPrefix(e.Name, ".") {
+			continue
+		}
+		entries = append(entries, skills.Entry{
+			Name:        e.Name,
+			Description: e.Description,
+			Path:        e.Path,
+			Loaded:      mgr.IsLoaded(e.Name),
+		})
+	}
+	m.skills.SetData(entries)
+}
+
+// syncSkillToolDef re-registers the skill tool's definition with the
+// providers registry so the agent sees the current skill set every turn.
+func (m *model) syncSkillToolDef() {
+	providers.UpdateToolDef(skillstool.ToolName, skillstool.ToolDef())
+}
+
+// syncSkillsState runs everything that needs to happen after the session's
+// loaded set changes (load/unload/create): refresh the tab, re-register the
+// tool definitions for the next agent turn, and persist the loaded names to
+// the session record.
+func (m *model) syncSkillsState() {
+	m.refreshSkills()
+	m.syncSkillToolDef()
+	if m.db != nil {
+		mgr := skillstool.GetManager()
+		if mgr != nil {
+			m.db.SetSessionSkills(mgr.LoadedNames())
+		}
+	}
+}
+
+// resumeSession restores a previous session into this app run: its message
+// history is replayed into the message area and the model context, and every
+// skill the session had loaded is loaded again so the available-skills list
+// matches. Called at startup when GoWork is passed `-S <sessionID>`.
+func (m *model) resumeSession(id int64) {
+	if m.db == nil {
+		m.message_area.AppendMessage(">**ERROR** Database unavailable - cannot restore a previous session.", false)
+		return
+	}
+	ls, err := m.db.LoadSession(id)
+	if err != nil {
+		m.message_area.AppendMessage(">**ERROR** Could not restore session: "+err.Error(), false)
+		return
+	}
+	if ls == nil {
+		m.message_area.AppendMessage(fmt.Sprintf(">**ERROR** No stored session with id %d.", id), false)
+		return
+	}
+
+	// Replay the stored history into the message area. Assistant tool calls
+	// render as running rows; the matching "tool" role messages flick each
+	// one to done with its stored result, in order.
+	pendingTools := make([]int, 0, 4)
+	for _, msg := range ls.Messages {
+		switch msg.Role {
+		case "user":
+			m.message_area.AppendMessage(msg.Content, true)
+		case "assistant":
+			if len(msg.ToolCalls) > 0 {
+				if strings.TrimSpace(msg.Content) != "" {
+					m.message_area.AppendMessage(msg.Content, false)
+				}
+				for _, tc := range msg.ToolCalls {
+					idx := m.message_area.AppendTool(tc.Tool_name, messagearea.SummarizeToolInput(tc.Input))
+					pendingTools = append(pendingTools, idx)
+				}
+			} else {
+				m.message_area.AppendMessage(msg.Content, false)
+			}
+		case "tool":
+			if len(pendingTools) > 0 {
+				idx := pendingTools[0]
+				pendingTools = pendingTools[1:]
+				m.message_area.UpdateToolMessage(idx, messagearea.ToolDone, msg.Content)
+			}
+		}
+	}
+
+	// Restore the session's loaded skills so they are visible to the model
+	// again. Load() skips names that no longer exist on disk.
+	mgr := skillstool.GetManager()
+	if mgr != nil {
+		for _, name := range ls.Skills {
+			if !mgr.Load(name) {
+				m.message_area.AppendMessage(fmt.Sprintf(">**INFO** Session's skill %q no longer exists on disk; skipped.", name), false)
+			}
+		}
+		m.syncSkillsState()
+	}
+
+	m.context = ls.Messages
+	m.status.sessionTokens = ls.TotalTokens
+	m.message_area.AppendMessage(
+		fmt.Sprintf(">**INFO** Restored %d messages and %d skill(s) from session #%d.", len(ls.Messages), len(ls.Skills), ls.ID),
+		false,
+	)
 }
 
 // flushSession is the save-on-exit path: it finalizes the current session
@@ -1062,12 +1218,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.winHeight = msg.Height
 		m.tabs.SetSize(m.winWidth)
 		m.prompt.SetWidth(m.winWidth)
-		contentHeight := m.winHeight - topBarHeight
-		if contentHeight < 0 {
-			contentHeight = 0
-		}
-		m.stats.SetSize(m.winWidth, contentHeight)
-		m.skills.SetSize(m.winWidth, contentHeight)
 
 		// message area fills everything between the tabs and the prompt
 		// bar, minus the reserved spinner row and the statusline row.
@@ -1076,6 +1226,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			msgAreaHeight = 0
 		}
 		m.message_area.SetSize(m.msgAreaWidth(), msgAreaHeight)
+
+		// The skills pane uses the very same band as the message area: the
+		// prompt bar and the statusline stay pinned at the bottom, so the
+		// pane can never push them off-screen.
+		m.skills.SetSize(m.msgAreaWidth(), msgAreaHeight)
+
+		// Stats keeps its full-height dashboard: it renders its own
+		// statusline on its last row.
+		contentHeight := m.winHeight - topBarHeight
+		if contentHeight < 0 {
+			contentHeight = 0
+		}
+		m.stats.SetSize(m.winWidth, contentHeight)
+		m.skillForm.SetSize(m.winWidth, m.winHeight)
 		m.changesList.SetSize(m.winWidth, msgAreaHeight)
 		m.popUp.SetSize(m.winWidth, m.winHeight)
 		m.modal.SetSize(m.winWidth, m.winHeight)
@@ -1137,6 +1301,44 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.prompt.Focus()
 		return m, nil
 
+	case skills.SkillToggleMsg:
+		mgr := skillstool.GetManager()
+		if mgr == nil {
+			return m, nil
+		}
+		if msg.Unload {
+			mgr.Unload(msg.Name)
+		} else if !mgr.Load(msg.Name) {
+			m.message_area.AppendMessage(">**ERROR** No such skill on disk: "+msg.Name, false)
+			return m, nil
+		}
+		m.syncSkillsState()
+		return m, nil
+
+	case skillform.SubmitMsg:
+		mgr := skillstool.GetManager()
+		if mgr == nil {
+			return m, nil
+		}
+		name := skillstool.Slugify(msg.Name)
+		body := m.prompt.Value()
+		created, err := mgr.Create(name, msg.Description, body)
+		if err != nil {
+			m.message_area.AppendMessage(">**ERROR** "+err.Error(), false)
+			return m, nil
+		}
+		// A freshly created skill is the user's current intent, so it joins
+		// the session's loaded set right away.
+		_ = mgr.Load(name)
+		m.prompt.Reset()
+		m.historyIdx = 0
+		m.syncSkillsState()
+		m.message_area.AppendMessage(
+			fmt.Sprintf(">**INFO** Skill %q created and loaded for this session.", created.Name),
+			false,
+		)
+		return m, nil
+
 	case tea.KeyPressMsg:
 		msg_str := msg.String()
 
@@ -1175,9 +1377,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// ctrl+i interrupts the current turn - the streamed generation and/or
 		// the tool batch. A terminal delivers ctrl+i as the same byte as tab
-		// (0x09), so both spellings are accepted. With nothing running this is
-		// a no-op, so tab stays free while idle.
-		if msg_str == "ctrl+i" || msg_str == "tab" {
+		// (0x09), but plain tab must stay free for tab switching, so only the
+		// explicit ctrl+i spelling interrupts. With nothing running this is a
+		// no-op.
+		if msg_str == "ctrl+i" {
 			if !*m.aiThink || m.cancel == nil {
 				return m, nil
 			}
@@ -1229,6 +1432,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// An open skill form owns its keys before tab navigation kicks in,
+		// so tab/shift+tab move between its fields instead of the top tabs.
+		if m.mode == modeSkills && m.skillForm.Visible() {
+			var cmd tea.Cmd
+			m.skillForm, cmd = m.skillForm.Update(msg)
+			return m, cmd
+		}
+
 		// Tab navigation works in every mode: ctrl+tab / tab = next,
 		// ctrl+shift+tab / shift+tab = previous.
 		switch msg_str {
@@ -1242,7 +1453,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// In stats mode every remaining key is the stats screen's to handle:
+			// In stats mode every remaining key is the stats screen's to handle:
 		// up/down navigate the list, left/right pan, enter magnifies, / or
 		// any printable char filters, and esc dismisses whatever's open
 		// (filter/detail) or leaves the tab altogether.
@@ -1257,6 +1468,55 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			var cmd tea.Cmd
 			m.stats, cmd = m.stats.Update(msg)
+			return m, cmd
+		}
+
+		// Skills mode mirrors stats: the prompt bar is hidden, and the
+		// open skill-form modal or an active search swallows keys first.
+		if m.mode == modeSkills {
+			if m.skillForm.Visible() {
+				var cmd tea.Cmd
+				m.skillForm, cmd = m.skillForm.Update(msg)
+				return m, cmd
+			}
+			if m.prompt.Focused() {
+				switch msg_str {
+				case "esc":
+					m.prompt.Blur()
+					return m, nil
+				case "shift+enter", "ctrl+j":
+					m.prompt.InsertNewline()
+					return m, nil
+				case "enter":
+					m.skillForm.Open()
+					return m, nil
+				}
+				var cmd tea.Cmd
+				m.prompt, cmd = m.prompt.Update(msg)
+				return m, cmd
+			}
+			switch msg_str {
+			case "enter":
+				// A committed search keeps its Enter; otherwise Enter
+				// focuses the prompt bar (mirroring the code tab).
+				if m.skills.Filtering() {
+					var cmd tea.Cmd
+					m.skills, cmd = m.skills.Update(msg)
+					return m, cmd
+				}
+				return m, m.prompt.Focus()
+			case "i":
+				m.prompt.Focus()
+				return m, nil
+			case "esc":
+				if m.skills.CanExitSkillsMode() {
+					m.tabs.ActiveIdx = 0
+					m.syncModeToTab()
+					return m, nil
+				}
+			}
+			var cmd tea.Cmd
+			m.skills, cmd = m.skills.Update(msg)
 			return m, cmd
 		}
 
@@ -1397,15 +1657,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.stats.HandleMouseClick(msg.X, msg.Y-m.panelTop())
 				return m, nil
 			}
+			if m.tabs.Active().Name == "skills" && msg.Y >= m.panelTop() && msg.Y < m.promptTop() {
+				m.skills.HandleMouseClick(msg.X, msg.Y-m.panelTop())
+				return m, nil
+			}
 			// The tab strip renders taller than one line (its border adds top
 			// and bottom rows), so let clicks anywhere on it switch tabs. The
 			// prompt bar sits pinned just above the statusline at the bottom
 			// of the screen, so it owns exactly promptbar.Height rows starting
 			// at promptTop() - anything below that is the statusline, which
-			// isn't clickable. Only on the "code" tab, since that's the only
-			// screen either is rendered on. Once the message area needs its
-			// own click handling (e.g. selecting a message), this is where
-			// its Y range gets checked too.
+			// isn't clickable. On the code and skills tabs, whose layouts
+			// pin the prompt bar, clicking it focuses it.
 			// The todo panel toggle arrow, drawn at the middle of the
 			// message band. Clicking it flips the sidebar open/closed.
 			if m.tabs.Active().Name == "code" && msg.Y == m.arrowRow() && msg.X == m.arrowCol() {
@@ -1427,9 +1689,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case msg.Y < m.tabs.Height():
 				m.tabs.HandleClick(msg.X)
 				m.syncModeToTab()
-			case m.tabs.Active().Name == "code" && msg.Y >= m.promptTop() && msg.Y < m.promptTop()+promptbar.Height:
+			case (m.tabs.Active().Name == "code" || m.tabs.Active().Name == "skills") &&
+				msg.Y >= m.promptTop() && msg.Y < m.promptTop()+promptbar.Height:
 				m.historyIdx = 0
-				m.mode = modePrompt
+				if m.tabs.Active().Name == "code" {
+					m.mode = modePrompt
+				}
 				return m, m.prompt.Focus()
 			}
 		}
@@ -1445,6 +1710,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// a window you're not "in" in nvim.
 		if m.tabs.Active().Name == "stats" {
 			m.stats.HandleMouseWheel(msg.X, msg.Y-m.panelTop(), msg.Button == tea.MouseWheelUp)
+			return m, nil
+		}
+		if m.tabs.Active().Name == "skills" {
+			promptTop := m.promptTop()
+			switch {
+			case msg.Y >= promptTop && msg.Y < promptTop+promptbar.Height:
+				switch msg.Button {
+				case tea.MouseWheelUp:
+					m.prompt.ScrollUp()
+				case tea.MouseWheelDown:
+					m.prompt.ScrollDown()
+				}
+			case msg.Y >= topBarHeight && msg.Y < promptTop:
+				m.skills.HandleMouseWheel(msg.Button == tea.MouseWheelUp)
+			}
 			return m, nil
 		}
 		if m.tabs.Active().Name == "code" {
@@ -1862,6 +2142,13 @@ func (m model) renderLogo() string {
 
 func (m model) renderLogoWidth(width int) string {
 	availH := m.emptyStateHeight()
+
+	// The logo block is fixed-size: on short terminals it would overflow the
+	// band and squeeze the prompt bar and the statusline off-screen, so leave
+	// a bare band instead of centering an unclippable logo.
+	if availH < 6 || len(m.logoLines) > availH-2 {
+		return lipgloss.Place(width, availH, lipgloss.Center, lipgloss.Center, "")
+	}
 	if len(m.logoLines) == 0 {
 		return lipgloss.Place(width, availH, lipgloss.Center, lipgloss.Center, "")
 	}
@@ -1892,7 +2179,20 @@ func (m model) View() tea.View {
 		// dashboard sits between them.
 		content = top + "\n" + m.stats.View() + "\n" + renderStatusLine(m)
 	case "skills":
+		// Skills uses the same layout as the code tab: the pane sits in
+		// the message-area band, the prompt bar and the statusline stay
+		// pinned at the bottom, and the skill-form modal floats over the
+		// pane when it's open.
 		content = top + "\n" + m.skills.View()
+		content += "\n"
+		if *m.aiThink && m.mode != modeQuestionnaire {
+			content += lipgloss.NewStyle().Margin(0, 3).Foreground(style.Info).Render(m.spinner.View() + " thinking....")
+		}
+		content += "\n"
+		content += m.prompt.View()
+		content += "\n"
+		content += renderStatusLine(m)
+		content = m.skillForm.Overlay(content)
 	default:
 		content += top + "\n"
 		msgWidth := m.msgAreaWidth()
@@ -2065,6 +2365,21 @@ func main() {
 		root = ""
 	}
 
+	// GoWork -S <sessionID> restores a previous session: its message history
+	// is replayed into the conversation and its loaded skills come back too.
+	sessionID := int64(0)
+	for i := 1; i < len(os.Args)-1; i++ {
+		if os.Args[i] == "-S" || os.Args[i] == "--session" {
+			id, err := strconv.ParseInt(os.Args[i+1], 10, 64)
+			if err != nil || id < 1 {
+				fmt.Println("Warning: invalid -S session id:", os.Args[i+1])
+				break
+			}
+			sessionID = id
+			break
+		}
+	}
+
 	sys, err := inject_vars_in_sys_prompt(root)
 	if err != nil {
 		fmt.Println("Warning: couldn't load system prompt:", err)
@@ -2080,6 +2395,10 @@ func main() {
 	}
 
 	m := initialModel(root, provider, modelName, providerName)
+
+	if sessionID > 0 {
+		m.resumeSession(sessionID)
+	}
 
 	// Save-on-exit: intercept the quit before the terminal tears down so the
 	// current session's usage + messages land in the database.

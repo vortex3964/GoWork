@@ -30,9 +30,25 @@ func (s *Store) StartSession(model, provider string) error {
 	return nil
 }
 
+// SetSessionSkills replaces the session's buffered loaded-skill set. Called
+// whenever the user loads/unloads a skill so finalize writes the exact set.
+func (s *Store) SetSessionSkills(names []string) {
+	if s.sessionSkills == nil {
+		s.sessionSkills = make(map[string]struct{}, len(names))
+	} else {
+		clear(s.sessionSkills)
+	}
+	for _, name := range names {
+		if name != "" {
+			s.sessionSkills[name] = struct{}{}
+		}
+	}
+}
+
 // FinalizeSession is the single save-on-exit point: it stamps the session's
-// end, flushes every buffered usage row and the session's message history,
-// then prunes to the retention budgets (last 5 sessions, 30 days of usage).
+// end, flushes every buffered usage row, the session's loaded skills and its
+// message history, then prunes to the retention budgets (last 5 sessions,
+// 30 days of usage).
 func (s *Store) FinalizeSession(messages []providers.Message, totalTokens int) error {
 	if s == nil || s.hnd == nil {
 		return nil
@@ -84,6 +100,16 @@ func (s *Store) FinalizeSession(messages []providers.Message, totalTokens int) e
 		}
 	}
 
+	// The loaded skill names follow their session's cascade.
+	for name := range s.sessionSkills {
+		if _, err := tx.Exec(`
+			INSERT INTO session_skills (session_id, skill_name, loaded_at)
+			VALUES (?, ?, ?)`,
+			s.sessionID, name, now); err != nil {
+			return fmt.Errorf("db: insert session skill: %w", err)
+		}
+	}
+
 	if err := s.pruneLocked(tx); err != nil {
 		return err
 	}
@@ -128,6 +154,8 @@ type LoadedSession struct {
 	TotalTokens  int
 	MessageCount int
 	Messages     []providers.Message
+	// Skills are the session's loaded skill names, in load order.
+	Skills []string
 }
 
 // LoadSession reads a stored session and its message history by id. Returns
@@ -161,6 +189,23 @@ func (s *Store) LoadSession(id int64) (*LoadedSession, error) {
 	}
 	ls.StartedAt, _ = time.Parse(time.RFC3339, startS)
 	ls.EndedAt, _ = time.Parse(time.RFC3339, endS)
+
+	// The session's loaded skills come back with it so a restore can
+	// re-load them automatically.
+	skillRows, err := s.hnd.Query(`
+		SELECT skill_name FROM session_skills
+		WHERE session_id = ? ORDER BY id`, id)
+	if err != nil {
+		return nil, fmt.Errorf("db: load session skills: %w", err)
+	}
+	defer skillRows.Close()
+	for skillRows.Next() {
+		var name string
+		if err := skillRows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("db: scan session skill: %w", err)
+		}
+		ls.Skills = append(ls.Skills, name)
+	}
 
 	rows, err := s.hnd.Query(`
 		SELECT role, COALESCE(content, ''), COALESCE(tool_call_id, ''),

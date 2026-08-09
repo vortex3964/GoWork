@@ -39,7 +39,7 @@ func (o *openaiProvider) Generate(ctx context.Context, messages []Message) (Gene
 		"model":    o.model,
 		"messages": toOpenAIMessages(ctx, messages),
 	}
-	if len(tools_def) > 0 {
+	if hasTools() {
 		reqBody["tools"] = openAICompatTools(ctx)
 	}
 
@@ -101,7 +101,7 @@ func (o *openaiProvider) Generate(ctx context.Context, messages []Message) (Gene
 
 func (o *openaiProvider) GenerateStream(ctx context.Context, messages []Message, onDelta StreamFunc) (GenerateResult, error) {
 	var tools []map[string]interface{}
-	if len(tools_def) > 0 {
+	if hasTools() {
 		tools = openAICompatTools(ctx)
 	}
 	return streamOpenAICompat(ctx, openaiBaseURL+"/chat/completions", o.model,

@@ -44,7 +44,7 @@ func nextTextCallID() string {
 // InitToolsDef - the gate that stops legitimate JSON answers (configs,
 // data dumps, ...) from being executed as tool calls.
 func knownTool(name string) bool {
-	for _, td := range tools_def {
+	for _, td := range toolDefs() {
 		if td.Name == name {
 			return true
 		}
@@ -148,7 +148,7 @@ func parseCallChunk(chunk string) (ToolCall, bool) {
 // the model narrating. Falls back to true for a tool with an unknown/empty
 // schema so we err toward not executing garbage.
 func toolRequiresArgs(name string) bool {
-	for _, td := range tools_def {
+	for _, td := range toolDefs() {
 		if td.Name != name {
 			continue
 		}
