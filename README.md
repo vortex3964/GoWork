@@ -50,36 +50,6 @@ lmStudio\
 ollama\
 llama.cpp
 
-## TODO
-- add slash commands (with window for autocomplete)
-- maybe make llama and lmstuido have an in app launch button in case the user forgot to start them
-- add lsp support
-- make an installer
-- add a prompt message queue or block while the ai is generating (would prefer the first solution)
-- mcp support
-- make docs
-- ? have atatchments like pdfs or copied and pasted text on the promptbar so that a large copied text doesnt take up the entire screen
-- ? add a way to copy text from promptbar and message area
-- fix the readMe final version
-- @ add debug mode where the user can also make manual tool calls
-- make an installer
-- arrow on todo renders incorectly on smaller screens too far on the right
-
-### Perf known issues
-- cap the bash tool stdout/stderr buffers (they grow unbounded till result time, a chatty process can balloon memory) 
-- stop re-rendering the whole live markdown response on every streamed token (currently O(n^2) per long answer)
-- stop the full-history join/split/width-scan passes into the viewport on every streamed token
-- cache the token-overhead estimate per model (system prompt + every tool schema gets re-encoded ~46 times on every agent turn)
-- skip the full-context token recount on every agentic step when the context is under budget 
-- RefreshDiffs re-reads and re-scans every watched file on every tool result with no mtime check (and runs even when the changes pane is closed)
-- stop rebuilding tool schemas (unmarshal/rewrite/marshal)
-- reuse the provider-reported prompt tokens after compaction instead of recounting the whole context 
-- skip the full-file diff for merge markers on edits (O(file size) per hunk)
-- read only the requested range instead of slurping the whole file for paged reads
-- stop re-reading/re-parsing every SKILL.md body on skills tab entry, the tab only needs name + description
-- cache the compiled gitignore matcher instead of rebuilding it per call
-- hoist per-frame lipgloss.NewStyle() calls out of render loops
-
 ## common errors we check for 
 invalid request\
 Auth err\
