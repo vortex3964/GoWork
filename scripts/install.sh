@@ -9,13 +9,15 @@
 set -euo pipefail
 
 REPO="vortex3964/GoWork"
-RELEASES_URL="https://github.com/${REPO}/releases"
+RELEASES_URL="${GOWORK_RELEASES_URL:-https://github.com/${REPO}/releases}"
 PATH_START="# >>> GoWork installer >>>"
 PATH_END="# <<< GoWork installer <<<"
+PATH_BLOCK_MAX_LINES=16
 
 MODE="install"
 VERSION="latest"
 INSTALL_DIR=""
+DIR_SET=0
 MODIFY_PATH=1
 TMP_DIR=""
 OS=""
@@ -82,10 +84,12 @@ parse_args() {
 		--dir)
 			[ "$#" -ge 2 ] || die "--dir requires a path"
 			INSTALL_DIR="$2"
+			DIR_SET=1
 			shift
 			;;
 		--dir=*)
 			INSTALL_DIR="${1#*=}"
+			DIR_SET=1
 			;;
 		--no-modify-path)
 			MODIFY_PATH=0
@@ -150,6 +154,156 @@ absolute_dir() {
 		printf '%s/%s\n' "$(pwd -P)" "$1"
 		;;
 	esac
+}
+
+# normalize_path collapses duplicate separators, "." and ".." without touching
+# the filesystem. Paths passed here are already absolute.
+normalize_path() {
+	local path="$1"
+	local part=""
+	local result=""
+	local old_ifs="$IFS"
+	local -a parts=()
+
+	IFS='/'
+	read -r -a parts <<<"$path"
+	IFS="$old_ifs"
+
+	for part in "${parts[@]}"; do
+		case "$part" in
+		"" | ".")
+			;;
+		"..")
+			result="${result%/*}"
+			;;
+		*)
+			result="${result}/${part}"
+			;;
+		esac
+	done
+	printf '%s\n' "${result:-/}"
+}
+
+# canonical_dir resolves symlinks in the part of the path that exists and
+# appends the remaining components. The result is used only for safety checks,
+# never as a replacement for the user-supplied path.
+canonical_dir() {
+	local path="$1"
+	local normalized=""
+	local existing=""
+	local rest=""
+	local resolved=""
+
+	normalized="$(normalize_path "$path")"
+	existing="$normalized"
+
+	while [ ! -e "$existing" ] && [ ! -L "$existing" ] && [ "$existing" != "/" ]; do
+		rest="/${existing##*/}${rest}"
+		existing="${existing%/*}"
+		[ -n "$existing" ] || existing="/"
+	done
+
+	if [ -d "$existing" ]; then
+		resolved="$(cd -P -- "$existing" 2>/dev/null && pwd -P)" || resolved="$existing"
+	else
+		resolved="$existing"
+	fi
+
+	if [ "$resolved" = "/" ]; then
+		printf '/%s\n' "${rest#/}"
+	else
+		printf '%s%s\n' "${resolved%/}" "$rest"
+	fi
+}
+
+# validate_install_dir refuses paths where a bug, a typo or a hostile archive
+# could destroy user data. It runs before uninstall, update or install.
+validate_install_dir() {
+	local dir="$1"
+	local home=""
+	local config_dir=""
+	local protected=""
+	local rel=""
+	local segment=""
+	local depth=0
+
+	[ -n "$dir" ] || die "install directory must not be empty"
+	case "$dir" in
+	/*) ;;
+	*) die "install directory must be an absolute path: $dir" ;;
+	esac
+
+	dir="$(canonical_dir "$dir")"
+	[ "$dir" != "/" ] || die "refusing to use / as the install directory"
+
+	if [ -n "${HOME:-}" ]; then
+		home="$(canonical_dir "$HOME")"
+		[ "$dir" != "$home" ] || die "refusing to use your home directory ($home) as the install directory"
+		case "$home" in
+		"$dir"/*)
+			die "refusing to use $dir because it contains your home directory; choose a dedicated subdirectory"
+			;;
+		esac
+
+		for protected in \
+			"$home/.ssh" \
+			"$home/.gnupg" \
+			"$home/.config" \
+			"$home/.cache" \
+			"$home/.local" \
+			"$home/.local/bin" \
+			"$home/.local/share" \
+			"$home/Documents" \
+			"$home/Desktop" \
+			"$home/Downloads"
+		do
+			[ "$dir" != "$(canonical_dir "$protected")" ] ||
+				die "refusing to use $dir as the install directory; it is a well-known user directory"
+		done
+
+		# T71 stores installed skills in the user config directory. Never let
+		# the installer treat that directory (or anything below it) as its
+		# bundle, because uninstall would remove the skills with it.
+		config_dir="${GOWORK_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/GoWork}"
+		config_dir="$(absolute_dir "$(expand_dir "$config_dir")")"
+		config_dir="$(canonical_dir "$config_dir")"
+		case "$dir" in
+		"$config_dir" | "$config_dir"/*)
+			die "refusing to use $dir as the install directory; it is the GoWork user configuration directory"
+			;;
+		esac
+	fi
+
+	case "$dir" in
+	/bin | /boot | /dev | /etc | /home | /lib | /lib32 | /lib64 | /media | /mnt | \
+		/opt | /private/tmp | /private/var | /proc | /root | /run | /sbin | /srv | \
+		/sys | /tmp | /usr | /usr/local | /var | /var/log | /var/tmp)
+		die "refusing to use system directory $dir as the install directory"
+		;;
+	/bin/* | /boot/* | /dev/* | /etc/* | /lib/* | /lib32/* | /lib64/* | \
+		/proc/* | /run/* | /sbin/* | /sys/*)
+		die "refusing to use $dir as the install directory because it is inside a system directory"
+		;;
+	esac
+
+	# A dedicated install should have at least two path components below the
+	# root. This rejects paths such as /tmp or C:\Tools even when they are not
+	# in the explicit deny list above.
+	rel="${dir#/}"
+	while [ -n "$rel" ]; do
+		segment="${rel%%/*}"
+		[ -n "$segment" ] && depth=$((depth + 1))
+		case "$rel" in
+		*/*) rel="${rel#*/}" ;;
+		*) rel="" ;;
+		esac
+	done
+	[ "$depth" -ge 2 ] ||
+		die "refusing to use $dir as the install directory; the path is too short to be a dedicated GoWork directory"
+
+	if { [ -e "$dir" ] || [ -L "$dir" ]; } && [ ! -d "$dir" ]; then
+		die "install path exists but is not a directory: $dir"
+	fi
 }
 
 default_install_dir() {
@@ -280,19 +434,60 @@ installed_version() {
 	printf '%s\n' "$output"
 }
 
+# preserve_legacy_data merges the previous installation's .GoWork directory
+# (skills and any other user data) into the new bundle without deleting it.
+preserve_legacy_data() {
+	local source="$1"
+	local destination="$2"
+
+	[ -e "$source" ] || [ -L "$source" ] || return 0
+
+	if [ -L "$source" ]; then
+		if [ ! -e "$destination" ] && [ ! -L "$destination" ]; then
+			cp -a "$source" "$destination" 2>/dev/null || cp -pP "$source" "$destination"
+		fi
+		return 0
+	fi
+
+	if [ -d "$source" ]; then
+		mkdir -p "$destination" || return 1
+		if cp -a "$source/." "$destination/" 2>/dev/null; then
+			return 0
+		fi
+		cp -R -p "$source/." "$destination/"
+		return
+	fi
+
+	if [ ! -e "$destination" ] && [ ! -L "$destination" ]; then
+		cp -a "$source" "$destination" 2>/dev/null || cp -p "$source" "$destination"
+	fi
+}
+
 install_bundle() {
 	local source="$1"
 	local parent
 	local backup=""
+	local preserved=0
 
 	parent="$(dirname "$INSTALL_DIR")"
 	mkdir -p "$parent" || die "could not create $parent"
 
 	if [ -e "$INSTALL_DIR" ] || [ -L "$INSTALL_DIR" ]; then
+		[ -d "$INSTALL_DIR" ] || die "install path exists but is not a directory: $INSTALL_DIR"
 		backup="${INSTALL_DIR}.old.$$"
 		rm -rf "$backup"
 		if ! mv "$INSTALL_DIR" "$backup"; then
 			die "could not move the existing installation aside"
+		fi
+
+		if [ -e "$backup/.GoWork" ] || [ -L "$backup/.GoWork" ]; then
+			if ! preserve_legacy_data "$backup/.GoWork" "$source/.GoWork"; then
+				rm -rf "$INSTALL_DIR" 2>/dev/null || true
+				mv "$backup" "$INSTALL_DIR" ||
+					warn "could not restore the previous installation from $backup"
+				die "could not preserve user data from $backup/.GoWork; the existing installation was left in place"
+			fi
+			preserved=1
 		fi
 	fi
 
@@ -306,6 +501,9 @@ install_bundle() {
 
 	if [ -n "$backup" ]; then
 		rm -rf "$backup"
+	fi
+	if [ "$preserved" -eq 1 ]; then
+		say "Preserved existing user data at $INSTALL_DIR/.GoWork"
 	fi
 	say "Installed to $INSTALL_DIR"
 }
@@ -384,10 +582,35 @@ remove_path_block() {
 	[ -f "$file" ] || return 1
 	grep -Fq "$PATH_START" "$file" || return 1
 
+	# Only edit a well-formed block. A missing end marker (or an absurdly long
+	# block) means the file is not what the installer wrote, so leave it
+	# untouched instead of deleting everything that follows the start marker.
+	if ! awk -v start="$PATH_START" -v end="$PATH_END" -v max="$PATH_BLOCK_MAX_LINES" '
+		BEGIN { open = 0; count = 0; bad = 0 }
+		$0 == start {
+			if (open) { bad = 1 }
+			open = 1
+			count = 0
+			next
+		}
+		$0 == end {
+			if (open) { open = 0; count = 0 }
+			next
+		}
+		open {
+			count++
+			if (count > max) { bad = 1; open = 0 }
+		}
+		END { exit ((open || bad) ? 1 : 0) }
+	' "$file"; then
+		warn "$file contains an unterminated or oversized GoWork PATH block; leaving it unchanged"
+		return 1
+	fi
+
 	tmp="${file}.gowork.$$"
 	awk -v start="$PATH_START" -v end="$PATH_END" '
 		$0 == start { skip = 1; next }
-		$0 == end { skip = 0; next }
+		$0 == end && skip == 1 { skip = 0; next }
 		skip != 1 { print }
 	' "$file" >"$tmp" || {
 		rm -f "$tmp"
@@ -572,10 +795,24 @@ uninstall() {
 		warn "left $link in place because it is not a symlink"
 	fi
 
-	if [ -d "$INSTALL_DIR" ] || [ -L "$INSTALL_DIR" ]; then
-		rm -rf "$INSTALL_DIR"
-		say "Removed $INSTALL_DIR"
+	if [ -d "$INSTALL_DIR" ] && { [ -f "$INSTALL_DIR/gowork" ] || [ -L "$INSTALL_DIR/gowork" ]; }; then
+		if [ -d "$INSTALL_DIR/.GoWork" ] || [ -L "$INSTALL_DIR/.GoWork" ]; then
+			# Remove only files the installer owns; .GoWork may contain skills
+			# and other user data from the legacy layout.
+			if ! find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 ! -name '.GoWork' -exec rm -rf {} +; then
+				die "could not remove the GoWork files from $INSTALL_DIR"
+			fi
+			say "Removed GoWork from $INSTALL_DIR"
+			say "Preserved user data at $INSTALL_DIR/.GoWork"
+		else
+			if ! rm -rf "$INSTALL_DIR"; then
+				die "could not remove $INSTALL_DIR"
+			fi
+			say "Removed $INSTALL_DIR"
+		fi
 		found=1
+	elif [ -d "$INSTALL_DIR" ] || [ -L "$INSTALL_DIR" ]; then
+		warn "refusing to remove $INSTALL_DIR because it does not look like a GoWork installation"
 	else
 		say "No installation found at $INSTALL_DIR."
 	fi
@@ -615,16 +852,28 @@ main() {
 
 	VERSION="$(normalize_version "$VERSION")"
 
-	if [ -z "$INSTALL_DIR" ]; then
-		INSTALL_DIR="$(default_install_dir)"
-	else
+	if [ "$DIR_SET" -eq 1 ]; then
+		case "$INSTALL_DIR" in
+		*[![:space:]]*) ;;
+		*) die "install directory must not be empty" ;;
+		esac
+		# Trim incidental leading and trailing whitespace around a real path.
+		INSTALL_DIR="${INSTALL_DIR#"${INSTALL_DIR%%[![:space:]]*}"}"
+		INSTALL_DIR="${INSTALL_DIR%"${INSTALL_DIR##*[![:space:]]}"}"
+		case "$INSTALL_DIR" in
+		. | .. | ./ | ../)
+			die "refusing to use $INSTALL_DIR as the install directory; choose a dedicated subdirectory"
+			;;
+		esac
 		INSTALL_DIR="$(absolute_dir "$(expand_dir "$INSTALL_DIR")")"
+	else
+		INSTALL_DIR="$(default_install_dir)"
 	fi
 
 	BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
 	BIN_DIR="$(absolute_dir "$(expand_dir "$BIN_DIR")")"
 
-	[ "$INSTALL_DIR" != "/" ] || die "refusing to use / as the install directory"
+	validate_install_dir "$INSTALL_DIR"
 
 	trap cleanup EXIT
 

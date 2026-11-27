@@ -97,6 +97,128 @@ function Resolve-Directory([string]$Path) {
     return [System.IO.Path]::GetFullPath($Path)
 }
 
+function Get-DirectoryDepth([string]$Path, [string]$Root) {
+    $relative = $Path.Substring($Root.Length)
+    $relative = $relative.Trim([char[]]@('\', '/'))
+    if ([string]::IsNullOrWhiteSpace($relative)) {
+        return 0
+    }
+    $segments = @($relative -split '[\\/]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    return $segments.Count
+}
+
+function Assert-SafeInstallDirectory([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw "the install directory is empty"
+    }
+
+    $trimChars = [char[]]@('\', '/')
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $root = [System.IO.Path]::GetPathRoot($full)
+    if ([string]::IsNullOrWhiteSpace($root)) {
+        throw "install directory must be an absolute path: $Path"
+    }
+
+    $trimmed = $full.TrimEnd($trimChars)
+    $rootTrimmed = $root.TrimEnd($trimChars)
+    if ([string]::IsNullOrEmpty($trimmed)) {
+        throw "refusing to use $full as the install directory"
+    }
+    if ([string]::Equals($trimmed, $rootTrimmed, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "refusing to use a drive root ($full) as the install directory"
+    }
+
+    # Require a dedicated path with at least two components below the root.
+    # This rejects C:\Tools, C:\Users, C:\Windows and similar short paths.
+    $depth = Get-DirectoryDepth $trimmed $root
+    if ($depth -lt 2) {
+        throw "refusing to use $full as the install directory; the path is too short to be a dedicated GoWork directory"
+    }
+
+    $homeCandidates = @()
+    if (-not [string]::IsNullOrWhiteSpace($HOME)) {
+        $homeCandidates += $HOME
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        $homeCandidates += $env:USERPROFILE
+    }
+    foreach ($homeCandidate in $homeCandidates) {
+        $homeFull = [System.IO.Path]::GetFullPath($homeCandidate).TrimEnd($trimChars)
+        if ([string]::Equals($trimmed, $homeFull, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "refusing to use your home directory ($homeFull) as the install directory"
+        }
+        $homePrefix = $trimmed + [System.IO.Path]::DirectorySeparatorChar
+        if ($homeFull.StartsWith($homePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "refusing to use $full because it contains your home directory; choose a dedicated subdirectory"
+        }
+    }
+
+    $protected = @()
+    foreach ($name in @("SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData", "PUBLIC")) {
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            $protected += $value
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($HOME)) {
+        $protected += @(
+            (Join-Path $HOME ".ssh"),
+            (Join-Path $HOME ".config"),
+            (Join-Path $HOME ".cache"),
+            (Join-Path $HOME ".local"),
+            (Join-Path $HOME "Documents"),
+            (Join-Path $HOME "Desktop"),
+            (Join-Path $HOME "Downloads")
+        )
+    }
+    foreach ($candidate in $protected) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            continue
+        }
+        $candidateFull = [System.IO.Path]::GetFullPath($candidate).TrimEnd($trimChars)
+        if ([string]::Equals($trimmed, $candidateFull, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "refusing to use $full as the install directory; it is a well-known system or user directory"
+        }
+    }
+
+    foreach ($name in @("SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData")) {
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            continue
+        }
+        $candidateFull = [System.IO.Path]::GetFullPath($value).TrimEnd($trimChars)
+        $candidatePrefix = $candidateFull + [System.IO.Path]::DirectorySeparatorChar
+        if ($trimmed.StartsWith($candidatePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "refusing to use $full as the install directory because it is inside a system directory"
+        }
+    }
+
+    # Skills live in the user config directory (%APPDATA%\GoWork by default).
+    # Never install over that directory: uninstall would delete the skills.
+    $configRoot = $null
+    if (-not [string]::IsNullOrWhiteSpace($env:GOWORK_CONFIG_DIR)) {
+        $configRoot = $env:GOWORK_CONFIG_DIR
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($env:APPDATA)) {
+        $configRoot = Join-Path $env:APPDATA "GoWork"
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($HOME)) {
+        $configRoot = Join-Path $HOME "AppData\Roaming\GoWork"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($configRoot)) {
+        $configFull = [System.IO.Path]::GetFullPath($configRoot).TrimEnd($trimChars)
+        $configPrefix = $configFull + [System.IO.Path]::DirectorySeparatorChar
+        if ([string]::Equals($trimmed, $configFull, [StringComparison]::OrdinalIgnoreCase) -or
+            $trimmed.StartsWith($configPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "refusing to use $full as the install directory; it is the GoWork user configuration directory"
+        }
+    }
+
+    if ((Test-Path -LiteralPath $full) -and -not (Test-Path -LiteralPath $full -PathType Container)) {
+        throw "install path exists but is not a directory: $full"
+    }
+}
+
 function Download-File([string]$Url, [string]$Destination) {
     $ProgressPreference = "SilentlyContinue"
     Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing
@@ -208,6 +330,7 @@ function Install-Bundle([string]$Source, [string]$Destination) {
     }
 
     $backup = $null
+    $preserved = $false
     if (Test-Path -LiteralPath $Destination) {
         $backup = $Destination + ".old." + $PID
         if (Test-Path -LiteralPath $backup) {
@@ -219,6 +342,22 @@ function Install-Bundle([string]$Source, [string]$Destination) {
     try {
         New-Item -ItemType Directory -Path $Destination -Force | Out-Null
         Get-ChildItem -LiteralPath $Source -Force | Copy-Item -Destination $Destination -Recurse -Force
+
+        if ($backup) {
+            $legacy = Join-Path $backup ".GoWork"
+            if (Test-Path -LiteralPath $legacy -PathType Container) {
+                $target = Join-Path $Destination ".GoWork"
+                if (-not (Test-Path -LiteralPath $target)) {
+                    New-Item -ItemType Directory -Path $target -Force | Out-Null
+                }
+                Get-ChildItem -LiteralPath $legacy -Force | Copy-Item -Destination $target -Recurse -Force
+                $preserved = $true
+            }
+            elseif (Test-Path -LiteralPath $legacy -PathType Leaf) {
+                Copy-Item -LiteralPath $legacy -Destination $Destination -Force
+                $preserved = $true
+            }
+        }
     }
     catch {
         if ($backup -and (Test-Path -LiteralPath $backup)) {
@@ -235,6 +374,25 @@ function Install-Bundle([string]$Source, [string]$Destination) {
 
     if ($backup -and (Test-Path -LiteralPath $backup)) {
         Remove-Item -LiteralPath $backup -Recurse -Force
+    }
+    if ($preserved) {
+        Write-Host "Preserved existing user data at $(Join-Path $Destination '.GoWork')"
+    }
+}
+
+function Remove-InstallDirectory([string]$Directory) {
+    $legacy = Join-Path $Directory ".GoWork"
+    if (Test-Path -LiteralPath $legacy) {
+        # Remove only installer-owned files. .GoWork may contain legacy skills
+        # and other user data that must survive an uninstall.
+        Get-ChildItem -LiteralPath $Directory -Force |
+            Where-Object { $_.Name -ne ".GoWork" } |
+            ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
+        Write-Host "Preserved user data at $legacy"
+    }
+    else {
+        Remove-Item -LiteralPath $Directory -Recurse -Force
+        Write-Host "Removed $Directory"
     }
 }
 
@@ -324,7 +482,8 @@ if ($Version -ne "latest") {
     }
 }
 
-if ([string]::IsNullOrWhiteSpace($Dir)) {
+$dirWasBound = $PSBoundParameters.ContainsKey("Dir")
+if (-not $dirWasBound) {
     if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
         $Dir = Join-Path $HOME "AppData\Local\Programs\GoWork"
     }
@@ -332,20 +491,36 @@ if ([string]::IsNullOrWhiteSpace($Dir)) {
         $Dir = Join-Path $env:LOCALAPPDATA "Programs\GoWork"
     }
 }
+elseif ([string]::IsNullOrWhiteSpace($Dir)) {
+    throw "the install directory is empty"
+}
+else {
+    $rawDir = $Dir.Trim()
+    if ($rawDir -match '^[A-Za-z]:$') {
+        throw "refusing to use a drive root ($rawDir) as the install directory"
+    }
+    if ($rawDir -eq "." -or $rawDir -eq ".." -or $rawDir -eq ".\" -or $rawDir -eq "..\") {
+        throw "refusing to use $rawDir as the install directory; choose a dedicated subdirectory"
+    }
+}
+
 $InstallDir = Resolve-Directory $Dir
 if (-not $InstallDir) {
     throw "the install directory is empty"
 }
-if ($InstallDir -eq [System.IO.Path]::GetPathRoot($InstallDir)) {
-    throw "refusing to use a drive root as the install directory"
-}
+Assert-SafeInstallDirectory $InstallDir
 
 if ($Uninstall) {
     $removed = $false
-    if (Test-Path -LiteralPath $InstallDir) {
-        Remove-Item -LiteralPath $InstallDir -Recurse -Force
-        Write-Host "Removed $InstallDir"
-        $removed = $true
+    if (Test-Path -LiteralPath $InstallDir -PathType Container) {
+        $binary = Join-Path $InstallDir "gowork.exe"
+        if (Test-Path -LiteralPath $binary) {
+            Remove-InstallDirectory $InstallDir
+            $removed = $true
+        }
+        else {
+            Write-Host "No GoWork installation found at $InstallDir; refusing to remove it."
+        }
     }
     else {
         Write-Host "No installation found at $InstallDir."
