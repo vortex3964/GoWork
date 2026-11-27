@@ -1,18 +1,22 @@
-package main
+package test
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	gowork "GoWork/internal/gowork"
 )
 
 // TestSystemPromptIsConciseBrief locks in the intended shape of the system
 // prompt: a short, professional brief with accurate tool names, the required
 // injection placeholders, and an explicitly labelled project snapshot.
 func TestSystemPromptIsConciseBrief(t *testing.T) {
-	data, err := os.ReadFile(sys_prompt_path)
+	path := filepath.Join("..", gowork.SystemPromptPath)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read %s: %v", sys_prompt_path, err)
+		t.Fatalf("read %s: %v", path, err)
 	}
 	prompt := string(data)
 
