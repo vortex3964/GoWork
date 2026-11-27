@@ -26,52 +26,61 @@ func checkbox(marked bool) string {
 	return "[ ]"
 }
 
-func RenderTodoList(items []Todoitem, width, height int) string {
-	if width < 3 {
-		width = 3
+// fitLine clips text to width cells and pads it back to exactly width cells
+// before styling. Keeping every row pre-sized means lipgloss never wraps a
+// long task into extra rows when the panel is rendered.
+func fitLine(text string, width int, st lipgloss.Style) string {
+	text = strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(text)
+	text = lipgloss.NewStyle().MaxWidth(width).Render(text)
+	if pad := width - lipgloss.Width(text); pad > 0 {
+		text += strings.Repeat(" ", pad)
 	}
-	if height < 3 {
-		height = 3
+	return st.Render(text)
+}
+
+// RenderTodoList renders the todo panel at exactly width x height cells.
+// Long descriptions are clipped to one row each instead of wrapping, and any
+// rows the items do not fill are padded with the panel background.
+func RenderTodoList(items []Todoitem, width, height int) string {
+	if width < 1 {
+		width = 1
+	}
+	if height < 1 {
+		height = 1
 	}
 
-	title := lipgloss.NewStyle().
+	titleStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(style.Text).
-		Background(style.Panel).
-		Render("TODO")
+		Background(style.Panel)
+	openStyle := lipgloss.NewStyle().
+		Foreground(style.Text).
+		Background(style.Panel)
+	doneStyle := lipgloss.NewStyle().
+		Foreground(style.Success).
+		Background(style.Panel)
+	blankStyle := lipgloss.NewStyle().
+		Background(style.Panel)
 
-	var body strings.Builder
-	maxRows := MaxTodos
-	if height-1 < maxRows {
-		maxRows = height - 1
+	lines := make([]string, 0, height)
+	lines = append(lines, fitLine("TODO", width, titleStyle))
+
+	maxRows := height - 1
+	if maxRows > MaxTodos {
+		maxRows = MaxTodos
 	}
-	for i := 0; i < maxRows; i++ {
-		line := ""
-		if i < len(items) {
-			txt := fmt.Sprintf("%s %s", checkbox(items[i].marked), items[i].Description)
-			if items[i].marked {
-				line = lipgloss.NewStyle().
-					Foreground(style.Success).
-					Background(style.Panel).
-					Render(txt)
-			} else {
-				line = lipgloss.NewStyle().
-					Foreground(style.Text).
-					Background(style.Panel).
-					Render(txt)
-			}
+	for i := 0; i < height-1; i++ {
+		if i >= maxRows || i >= len(items) {
+			lines = append(lines, fitLine("", width, blankStyle))
+			continue
 		}
-		if body.Len() > 0 {
-			body.WriteString("\n")
+		txt := fmt.Sprintf("%s %s", checkbox(items[i].marked), items[i].Description)
+		if items[i].marked {
+			lines = append(lines, fitLine(txt, width, doneStyle))
+		} else {
+			lines = append(lines, fitLine(txt, width, openStyle))
 		}
-		body.WriteString(line)
 	}
 
-	content := title + "\n" + body.String()
-
-	return lipgloss.NewStyle().
-		Background(style.Panel).
-		Width(width).
-		Height(height).
-		Render(content)
+	return strings.Join(lines, "\n")
 }
