@@ -49,7 +49,9 @@ func TestStartAndRecord(t *testing.T) {
 		{Role: "assistant", Content: "hello", ToolCalls: []providers.ToolCall{{Tool_call_id: "c1", Tool_name: "read_file"}}},
 		{Role: "tool", Content: "ok", ToolCallID: "c1"},
 	}
-	s.SetSessionSkills([]string{"hello", "refactor"})
+	// Duplicates and empties must be dropped without disturbing first-seen
+	// load order.
+	s.SetSessionSkills([]string{"hello", "refactor", "hello", ""})
 	if err := s.FinalizeSession(msgs, 180); err != nil {
 		t.Fatalf("finalize: %v", err)
 	}

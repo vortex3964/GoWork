@@ -86,10 +86,11 @@ type Store struct {
 	// every token count.
 	pendingUsage []UsageRecord
 
-	// sessionSkills is the session's loaded-skill set, buffered the same way
-	// and written as session_skills rows on finalize so a restored session
-	// comes back with its skills already loaded.
-	sessionSkills map[string]struct{}
+	// sessionSkills is the session's loaded-skill names in load order
+	// (deduplicated), buffered the same way and written as session_skills
+	// rows on finalize so a restored session comes back with its skills
+	// already loaded in the same order.
+	sessionSkills []string
 }
 
 // Open opens (creating if needed) the database at path and guarantees the
@@ -121,7 +122,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("db: schema: %w", err)
 	}
 
-	return &Store{hnd: h, path: path, sessionSkills: make(map[string]struct{})}, nil
+	return &Store{hnd: h, path: path}, nil
 }
 
 // Close frees the handle. Call it after FinalizeSession.
