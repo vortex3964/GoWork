@@ -8,10 +8,19 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 )
+
+// DefaultConfigPath is the conventional project-level MCP configuration file.
+// Callers that manage their own location pass an explicit path to LoadConfig
+// and Config.Save instead.
+const DefaultConfigPath = ".mcp.json"
+
+// ErrServerNotFound reports a lookup or mutation of an unknown server name.
+var ErrServerNotFound = errors.New("mcp: server not found")
 
 // Default timeouts for a server that does not configure its own.
 const (
@@ -44,13 +53,14 @@ type Config struct {
 // server; URL/Headers configure a remote server. Type may be empty, in which
 // case it is inferred from which of Command and URL is set.
 type ServerConfig struct {
-	Name    string            `json:"-"`
-	Type    string            `json:"type,omitempty"`
-	Command string            `json:"command,omitempty"`
-	Args    []string          `json:"args,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
-	URL     string            `json:"url,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
+	Name     string            `json:"-"`
+	Type     string            `json:"type,omitempty"`
+	Command  string            `json:"command,omitempty"`
+	Args     []string          `json:"args,omitempty"`
+	Env      map[string]string `json:"env,omitempty"`
+	URL      string            `json:"url,omitempty"`
+	Headers  map[string]string `json:"headers,omitempty"`
+	Disabled bool              `json:"disabled,omitempty"`
 
 	// Timeout is an alias for RequestTimeout. It exists because several MCP
 	// clients use "timeout" for per-request deadlines.
@@ -159,6 +169,11 @@ func LoadConfig(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// SaveConfig atomically writes cfg to path. It is equivalent to cfg.Save.
+func SaveConfig(path string, cfg *Config) error {
+	return cfg.Save(path)
+}
+
 // Server returns the named server configuration.
 func (c *Config) Server(name string) (ServerConfig, bool) {
 	if c == nil {
@@ -180,6 +195,167 @@ func (c *Config) Names() []string {
 	sort.Strings(names)
 	return names
 }
+
+// ListServers returns every configured server in name order. The returned
+// values are copies; their maps still refer to the underlying configuration.
+func (c *Config) ListServers() []ServerConfig {
+	names := c.Names()
+	servers := make([]ServerConfig, 0, len(names))
+	for _, name := range names {
+		server := c.Servers[name]
+		if server.Name == "" {
+			server.Name = name
+		}
+		servers = append(servers, server)
+	}
+	return servers
+}
+
+// EnabledServers returns the enabled servers in name order.
+func (c *Config) EnabledServers() []ServerConfig {
+	all := c.ListServers()
+	enabled := make([]ServerConfig, 0, len(all))
+	for _, server := range all {
+		if server.IsEnabled() {
+			enabled = append(enabled, server)
+		}
+	}
+	return enabled
+}
+
+// AddServer validates and inserts a server. It fails if the name is empty or
+// already exists.
+func (c *Config) AddServer(server ServerConfig) error {
+	if c == nil {
+		return errors.New("mcp: config is nil")
+	}
+	if strings.TrimSpace(server.Name) == "" {
+		return errors.New("mcp: server name must not be empty")
+	}
+	normalized, err := normalizeServerConfig(server)
+	if err != nil {
+		return fmt.Errorf("mcp: server %q: %w", server.Name, err)
+	}
+	if c.Servers == nil {
+		c.Servers = make(map[string]ServerConfig)
+	}
+	if _, exists := c.Servers[normalized.Name]; exists {
+		return fmt.Errorf("mcp: server %q already exists", normalized.Name)
+	}
+	c.Servers[normalized.Name] = normalized
+	return nil
+}
+
+// RemoveServer deletes a server by name.
+func (c *Config) RemoveServer(name string) error {
+	if c == nil {
+		return ErrServerNotFound
+	}
+	if _, ok := c.Servers[name]; !ok {
+		return fmt.Errorf("%w: %q", ErrServerNotFound, name)
+	}
+	delete(c.Servers, name)
+	return nil
+}
+
+// SetServerEnabled enables or disables a server without removing its config.
+func (c *Config) SetServerEnabled(name string, enabled bool) error {
+	if c == nil {
+		return fmt.Errorf("%w: %q", ErrServerNotFound, name)
+	}
+	server, ok := c.Servers[name]
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrServerNotFound, name)
+	}
+	server.Disabled = !enabled
+	c.Servers[name] = server
+	return nil
+}
+
+// EnableServer re-enables a configured server.
+func (c *Config) EnableServer(name string) error { return c.SetServerEnabled(name, true) }
+
+// DisableServer keeps a configured server but stops it from being started.
+func (c *Config) DisableServer(name string) error { return c.SetServerEnabled(name, false) }
+
+// Save atomically writes the configuration to path. The file is validated
+// before anything is written, created with mode 0600, and replaced via a
+// same-directory temporary file and rename. Error messages never include
+// environment values or header values.
+func (c *Config) Save(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("mcp: config path must not be empty")
+	}
+	prepared, err := c.preparedCopy()
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(prepared, "", "  ")
+	if err != nil {
+		return fmt.Errorf("mcp: encode config: %w", err)
+	}
+	data = append(data, '\n')
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("mcp: create config directory %s: %w", dir, err)
+	}
+
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("mcp: create temporary config: %w", err)
+	}
+	tmpName := tmp.Name()
+	keepTemp := true
+	defer func() {
+		if keepTemp {
+			_ = tmp.Close()
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if err := tmp.Chmod(0o600); err != nil {
+		return fmt.Errorf("mcp: set config permissions: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return fmt.Errorf("mcp: write config: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fmt.Errorf("mcp: sync config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("mcp: close config: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("mcp: replace config %s: %w", path, err)
+	}
+	keepTemp = false
+	return nil
+}
+
+func (c *Config) preparedCopy() (*Config, error) {
+	if c == nil {
+		return nil, errors.New("mcp: config is nil")
+	}
+	out := &Config{Servers: make(map[string]ServerConfig, len(c.Servers))}
+	for _, name := range c.Names() {
+		if strings.TrimSpace(name) == "" {
+			return nil, errors.New("mcp: server name must not be empty")
+		}
+		server := c.Servers[name]
+		server.Name = name
+		normalized, err := normalizeServerConfig(server)
+		if err != nil {
+			return nil, fmt.Errorf("mcp: server %q: %w", name, err)
+		}
+		out.Servers[name] = normalized
+	}
+	return out, nil
+}
+
+// IsEnabled reports whether the server should be started. Servers are enabled
+// unless explicitly disabled.
+func (s ServerConfig) IsEnabled() bool { return !s.Disabled }
 
 // TransportKind reports the effective transport after applying the Type
 // override and inferring from Command/URL.

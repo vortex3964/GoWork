@@ -156,6 +156,13 @@ type callToolResult struct {
 	IsError           bool            `json:"isError,omitempty"`
 }
 
+// TextFromContentBlocks flattens MCP content blocks into the readable text
+// form used by CallResult.Text. Adapters that build CallResult values directly
+// can use it to stay consistent with Client.CallTool.
+func TextFromContentBlocks(blocks []ContentBlock) string {
+	return normalizeContent(blocks)
+}
+
 // normalizeContent flattens MCP content blocks into text an LLM can read.
 // Binary payloads are represented by a short marker instead of their base64
 // body so a large image cannot flood the context window.
