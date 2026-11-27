@@ -7,14 +7,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
-	"GoWork/tools"
 	cl "GoWork/Tui/Components/ChangesList"
+	"GoWork/internal/approot"
+	"GoWork/tools"
 )
 
 const DEFAULT_MAX_BYTES int = 50 * 1024
@@ -39,7 +40,7 @@ type Input struct {
 
 type Tool struct{}
 
-//NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface
+// NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface
 func New() tools.AgentTool { return &Tool{} }
 
 func (t *Tool) Name() string { return "read_file" }
@@ -67,7 +68,7 @@ func (t *Tool) InputSchema() json.RawMessage {
 				"description": fmt.Sprintf("Number of lines to read starting from starting_line. Defaults to the rest of the file if omitted, capped at %d lines.", DEFAULT_MAX_LINES),
 			},
 		},
-		"required":               []string{"path"},
+		"required":             []string{"path"},
 		"additionalProperties": false,
 	}
 	b, _ := json.Marshal(schema)
@@ -77,8 +78,8 @@ func (t *Tool) InputSchema() json.RawMessage {
 func (t *Tool) Kind() tools.Kind { return tools.KindAllowed }
 
 // readRange reads relPath from the sandboxed root into memory, applies any
-// pending changes from the WatchList in memory and scans forward through the 
-//buffer to return the requested line range.
+// pending changes from the WatchList in memory and scans forward through the
+// buffer to return the requested line range.
 func readRange(root *os.Root, wl *cl.WatchList, relPath string, start, offset int) (content string, truncated bool, ok bool, lastLine int, err error) {
 	//Open the original source file via the sandboxed root
 	src, err := root.Open(relPath)
@@ -140,15 +141,16 @@ func readRange(root *os.Root, wl *cl.WatchList, relPath string, start, offset in
 }
 
 // findPDFPython returns the venv interpreter for the pdf parser, preferring
-// the project's own venv (unix and windows layouts) and falling back to the
-// system PATH, or "" if nothing usable exists.
-func findPDFPython(root string) string {
+// a venv next to the installed app, then the project's own venv (unix and
+// windows layouts), and finally the system PATH. It returns "" when nothing
+// usable exists.
+func findPDFPython(roots []string) string {
 	for _, c := range []string{
-		filepath.Join(root, "tools", "Scripts", "venv", "bin", "python"),
-		filepath.Join(root, "tools", "Scripts", "venv", "Scripts", "python.exe"),
+		"tools/Scripts/venv/bin/python",
+		"tools/Scripts/venv/Scripts/python.exe",
 	} {
-		if st, err := os.Stat(c); err == nil && !st.IsDir() {
-			return c
+		if p, ok := approot.FindFile(c, roots...); ok {
+			return p
 		}
 	}
 	for _, c := range []string{"python3", "python"} {
@@ -160,18 +162,26 @@ func findPDFPython(root string) string {
 }
 
 // readPDFViaScript runs the read_pdf.py parser over absPDF and returns its
-// stdout verbatim. There is no timeout: a conversion may legitimately take a
-// long time (marker's first run downloads its models), so it runs until it
+// stdout verbatim. The helper script and its optional venv are resolved next
+// to the installed executable first, then in the project, then in the working
+// directory. There is no timeout: a conversion may legitimately take a long
+// time (marker's first run downloads its models), so it runs until it
 // finishes or the caller's context is cancelled (ctrl+i). Errors (missing
 // venv, backend not installed, conversion failure) come back wrapped with
 // the script's stderr so the model can act on them.
 func readPDFViaScript(ctx context.Context, root, absPDF string) (string, error) {
-	python := findPDFPython(root)
+	roots := approot.Roots(root)
+	script, ok := approot.FindFile(pdfScriptRel, roots...)
+	if !ok {
+		return "", fmt.Errorf("pdf parser script %s not found next to the executable, in the project, or in the working directory", pdfScriptRel)
+	}
+
+	python := findPDFPython(roots)
 	if python == "" {
 		return "", fmt.Errorf("pdf parser not installed: initialize the venv in tools/Scripts (pip install pymupdf4llm, or marker-pdf for better accuracy)")
 	}
 
-	cmd := exec.CommandContext(ctx, python, filepath.Join(root, pdfScriptRel), absPDF)
+	cmd := exec.CommandContext(ctx, python, script, absPDF)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -271,7 +281,7 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	}
 	offset = min(offset, DEFAULT_MAX_LINES)
 
-	content, truncated, ok, lastLine, err := readRange(args.Root, args.WatchList ,relPath, start, offset)
+	content, truncated, ok, lastLine, err := readRange(args.Root, args.WatchList, relPath, start, offset)
 	if err != nil {
 		return tools.Errf("reading %v: %v", input.Path, err), nil
 	}

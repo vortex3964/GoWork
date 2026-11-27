@@ -213,20 +213,6 @@ func get_supported_providers_local() []string {
 	return []string{"ollama", "llamaCpp", "lmStudio"}
 }
 
-func loadLogo() []string {
-	data, err := os.ReadFile("logo/logo.txt")
-	if err != nil {
-		return nil
-	}
-	// Trim a single trailing newline so we don't count a phantom blank
-	// line when centering vertically.
-	text := strings.TrimRight(string(data), "\n")
-	if text == "" {
-		return nil
-	}
-	return strings.Split(text, "\n")
-}
-
 // call new on all of our tools
 func initTools() []tools.AgentTool {
 	return []tools.AgentTool{
@@ -246,19 +232,6 @@ func initTools() []tools.AgentTool {
 		websearchtool.New(),
 		writefiletool.New(),
 	}
-}
-
-// appDataRoot is where GoWork keeps its own data (the .GoWork skills
-// folder). This is the directory the app binary lives in, NOT the project
-// the user happens to be working on, so a user's project is never touched
-// by the app's internal data. Falls back to the working directory when the
-// executable path can't be resolved (e.g. `go run`).
-func appDataRoot(projectRoot string) string {
-	exe, err := os.Executable()
-	if err != nil {
-		return projectRoot
-	}
-	return filepath.Dir(exe)
 }
 
 func initialModel(root string, provider providers.Provider, modelID string, providerName string) model {

@@ -15,7 +15,7 @@ const compaction_prompt_path = "prompts/compaction_prompt.md"
 // ${...} environment placeholders, and returns the rendered prompt.
 // root is the already-resolved project root (only its last dir is used).
 func inject_vars_in_sys_prompt(root string) (string, error) {
-	data, err := os.ReadFile(sys_prompt_path)
+	data, err := readAsset(sys_prompt_path)
 	if err != nil {
 		return "", err
 	}

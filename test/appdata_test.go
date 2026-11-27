@@ -13,6 +13,11 @@ func TestAppDataRootIsExecutableDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The app resolves the real path so a launcher symlink still points at
+	// the install directory.
+	if real, err := filepath.EvalSymlinks(want); err == nil {
+		want = real
+	}
 	want = filepath.Dir(want)
 
 	// Whatever directory the user is working in, GoWork's own data folder

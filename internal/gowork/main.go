@@ -90,7 +90,7 @@ func Main() {
 		providers.InitSystemPrompt(sys)
 	}
 
-	comp, err := os.ReadFile(compaction_prompt_path)
+	comp, err := readAsset(compaction_prompt_path)
 	if err != nil {
 		fmt.Println("Warning: couldn't load compaction prompt:", err)
 	} else {
