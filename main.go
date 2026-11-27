@@ -81,8 +81,8 @@ func inject_vars_in_sys_prompt(root string) (string, error) {
 	}
 	prompt = strings.ReplaceAll(prompt, "${PROJECT_ROOT}", projectRoot)
 
-	prompt = strings.ReplaceAll(prompt, "${PLATFORM}", shellOut("uname", "-s"))
-	if shellOut("git", "rev-parse", "--is-inside-work-tree") == "true" {
+	prompt = strings.ReplaceAll(prompt, "${PLATFORM}", shellOut("", "uname", "-s"))
+	if shellOut(root, "git", "rev-parse", "--is-inside-work-tree") == "true" {
 		prompt = strings.ReplaceAll(prompt, "${IS_GIT_REPO}", "yes")
 	} else {
 		prompt = strings.ReplaceAll(prompt, "${IS_GIT_REPO}", "no")
@@ -153,9 +153,14 @@ func buildProjectTree(root string) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// shellOut runs a command and returns its trimmed stdout, or "" on failure.
-func shellOut(arg ...string) string {
-	out, err := exec.Command(arg[0], arg[1:]...).Output()
+// shellOut runs a command in dir (the current directory when empty) and
+// returns its trimmed stdout, or "" on failure.
+func shellOut(dir string, arg ...string) string {
+	cmd := exec.Command(arg[0], arg[1:]...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
@@ -2390,8 +2395,129 @@ func changeEventMarkdown(msg changeslist.ChangeEventMsg) string {
 	return b.String()
 }
 
+// appVersion can be overridden at build time with
+// -ldflags "-X main.appVersion=v1.2.3".
+var appVersion = "dev"
+
+const usageText = `GoWork - AI agent CLI
+
+Usage:
+  GoWork [options] [project path]
+
+Arguments:
+  project path          Project directory to open (defaults to the current directory)
+
+Options:
+  -S, --session <id>    Resume a previous session by id
+  -h, --help            Show this help and exit
+  -v, --version         Show the version and exit
+`
+
+type cliOptions struct {
+	root        string
+	sessionID   int64
+	showHelp    bool
+	showVersion bool
+}
+
+// parseArgs parses the arguments after the program name. The first positional
+// argument is the project root; unknown flags and extra positionals are
+// errors rather than being silently ignored.
+func parseArgs(args []string) (cliOptions, error) {
+	var opts cliOptions
+	positionalOnly := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if positionalOnly {
+			if err := opts.setRoot(arg); err != nil {
+				return opts, err
+			}
+			continue
+		}
+		switch {
+		case arg == "--":
+			positionalOnly = true
+		case arg == "-h" || arg == "--help":
+			opts.showHelp = true
+		case arg == "-v" || arg == "--version":
+			opts.showVersion = true
+		case arg == "-S" || arg == "--session":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("option %s requires a session id", arg)
+			}
+			i++
+			id, err := parseSessionID(args[i])
+			if err != nil {
+				return opts, err
+			}
+			opts.sessionID = id
+		case strings.HasPrefix(arg, "--session="):
+			id, err := parseSessionID(strings.TrimPrefix(arg, "--session="))
+			if err != nil {
+				return opts, err
+			}
+			opts.sessionID = id
+		case strings.HasPrefix(arg, "-") && arg != "-":
+			return opts, fmt.Errorf("unknown flag: %s", arg)
+		default:
+			if err := opts.setRoot(arg); err != nil {
+				return opts, err
+			}
+		}
+	}
+	return opts, nil
+}
+
+func (o *cliOptions) setRoot(path string) error {
+	if o.root != "" {
+		return fmt.Errorf("unexpected argument: %s", path)
+	}
+	o.root = path
+	return nil
+}
+
+func parseSessionID(raw string) (int64, error) {
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id < 1 {
+		return 0, fmt.Errorf("invalid session id %q (expected a positive integer)", raw)
+	}
+	return id, nil
+}
+
 func main() {
-	if err := godotenv.Load(); err != nil {
+	opts, err := parseArgs(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		fmt.Fprintln(os.Stderr, "Run 'GoWork --help' for usage.")
+		os.Exit(2)
+	}
+	if opts.showHelp {
+		fmt.Print(usageText)
+		return
+	}
+	if opts.showVersion {
+		fmt.Printf("GoWork %s\n", appVersion)
+		return
+	}
+
+	// Resolve the project root before loading .env so the file comes from the
+	// selected project rather than whatever directory launched the binary.
+	root := opts.root
+	if root == "" {
+		root, err = os.Getwd()
+		if err != nil {
+			fmt.Println("Warning: couldn't determine project root:", err)
+			root = ""
+		}
+	} else if abs, err := filepath.Abs(root); err == nil {
+		root = abs
+	}
+
+	envPath := defaultEnvPath
+	if opts.root != "" {
+		envPath = filepath.Join(root, defaultEnvPath)
+	}
+	if err := godotenv.Load(envPath); err != nil {
 		// A missing .env isn't fatal: every provider can still be picked
 		// interactively with ctrl+p (and local providers need no key at
 		// all). Just warn and carry on with whatever the real environment
@@ -2425,26 +2551,9 @@ func main() {
 		}
 	}
 
-	root, err := os.Getwd()
-	if err != nil {
-		fmt.Println("Warning: couldn't determine project root:", err)
-		root = ""
-	}
-
-	// GoWork -S <sessionID> restores a previous session: its message history
-	// is replayed into the conversation and its loaded skills come back too.
-	sessionID := int64(0)
-	for i := 1; i < len(os.Args)-1; i++ {
-		if os.Args[i] == "-S" || os.Args[i] == "--session" {
-			id, err := strconv.ParseInt(os.Args[i+1], 10, 64)
-			if err != nil || id < 1 {
-				fmt.Println("Warning: invalid -S session id:", os.Args[i+1])
-				break
-			}
-			sessionID = id
-			break
-		}
-	}
+	// A session id restores a previous session: its message history is
+	// replayed into the conversation and its loaded skills come back too.
+	sessionID := opts.sessionID
 
 	sys, err := inject_vars_in_sys_prompt(root)
 	if err != nil {
