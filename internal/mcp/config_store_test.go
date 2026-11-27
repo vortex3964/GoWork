@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -279,5 +280,30 @@ func TestServerIsEnabledDefault(t *testing.T) {
 	}
 	if (ServerConfig{Disabled: true}).IsEnabled() {
 		t.Error("Disabled server reported enabled")
+	}
+}
+
+func TestParseConfigDoesNotLeakURLCredentials(t *testing.T) {
+	const secret = "tokensecret"
+	const malformed = "https://user:" + secret + "@example.com:bad port/mcp"
+
+	document, err := json.Marshal(map[string]any{
+		"mcpServers": map[string]any{
+			"bad": map[string]any{"url": malformed},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = ParseConfig(document)
+	if err == nil {
+		t.Fatal("ParseConfig accepted a malformed url")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Errorf("ParseConfig error leaked the url password: %q", err)
+	}
+	if strings.Contains(err.Error(), malformed) {
+		t.Errorf("ParseConfig error leaked the raw url: %q", err)
 	}
 }

@@ -443,7 +443,10 @@ func (s ServerConfig) validate() error {
 	if s.URL != "" {
 		u, err := url.Parse(s.URL)
 		if err != nil {
-			return fmt.Errorf("invalid url: %w", err)
+			// url.Parse errors wrap the raw input, which can include userinfo.
+			// Returning it verbatim would put credentials in logs, so report a
+			// safe generic error instead.
+			return errors.New("invalid url")
 		}
 		if u.Scheme != "http" && u.Scheme != "https" {
 			return fmt.Errorf("invalid url scheme %q (want http or https)", u.Scheme)

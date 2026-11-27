@@ -79,8 +79,11 @@ func TestMCPBridgeSuccess(t *testing.T) {
 		t.Fatalf("NewMCPBridge: %v", err)
 	}
 
-	if bridge.Name() != "mcp_files_echo" {
-		t.Errorf("Name() = %q", bridge.Name())
+	if got, want := bridge.Name(), MCPToolName("files", "echo"); got != want {
+		t.Errorf("Name() = %q, want %q", got, want)
+	}
+	if !strings.HasPrefix(bridge.Name(), "mcp_files_echo_") {
+		t.Errorf("Name() = %q, want sanitized prefix", bridge.Name())
 	}
 	if bridge.MCPName() != "echo" {
 		t.Errorf("MCPName() = %q", bridge.MCPName())
@@ -255,6 +258,24 @@ func TestNewMCPBridgeValidationAndDefaults(t *testing.T) {
 	if _, err := NewMCPBridge(fake, "files", mcp.Tool{Name: "bad", InputSchema: json.RawMessage(`[]`)}); err == nil {
 		t.Fatal("NewMCPBridge accepted a non-object schema")
 	}
+	if _, err := NewMCPBridge(fake, "files", mcp.Tool{Name: "bad", InputSchema: json.RawMessage(`{"type":"array"}`)}); err == nil {
+		t.Fatal("NewMCPBridge accepted an array-type schema")
+	}
+	if _, err := NewMCPBridge(fake, "files", mcp.Tool{Name: "bad", InputSchema: json.RawMessage(`{"type":42}`)}); err == nil {
+		t.Fatal("NewMCPBridge accepted a non-string schema type")
+	}
+
+	untyped, err := NewMCPBridge(fake, "files", mcp.Tool{Name: "untyped", InputSchema: json.RawMessage(`{"properties":{}}`)})
+	if err != nil {
+		t.Fatalf("NewMCPBridge untyped schema: %v", err)
+	}
+	var untypedSchema map[string]any
+	if err := json.Unmarshal(untyped.InputSchema(), &untypedSchema); err != nil {
+		t.Fatalf("decode normalized schema: %v", err)
+	}
+	if untypedSchema["type"] != "object" {
+		t.Errorf("normalized schema type = %v, want object", untypedSchema["type"])
+	}
 
 	bridge, err := NewMCPBridge(fake, "files", mcp.Tool{Name: "  noargs  "})
 	if err != nil {
@@ -292,8 +313,15 @@ func TestMCPToolsConversion(t *testing.T) {
 	if len(agentTools) != 2 || len(providerDefs) != 2 {
 		t.Fatalf("got %d agent tools and %d provider defs", len(agentTools), len(providerDefs))
 	}
-	wantNames := []string{"mcp_my_server_echo", "mcp_my_server_read_file"}
+	wantPrefixes := []string{"mcp_my_server_echo_", "mcp_my_server_read_file_"}
+	wantNames := []string{
+		MCPToolName("my server", "echo"),
+		MCPToolName("my server", "read.file"),
+	}
 	for i, want := range wantNames {
+		if !strings.HasPrefix(want, wantPrefixes[i]) {
+			t.Fatalf("test name %q does not have the expected sanitized prefix", want)
+		}
 		if got := agentTools[i].Name(); got != want {
 			t.Errorf("agentTools[%d].Name() = %q, want %q", i, got, want)
 		}
@@ -323,33 +351,74 @@ func TestMCPToolsConversion(t *testing.T) {
 	}
 }
 
-func TestMCPToolsRejectsSanitizedCollisions(t *testing.T) {
-	_, _, err := MCPTools("server", &fakeMCPCaller{}, []mcp.Tool{
+func TestMCPToolsDistinguishesSanitizedBaseCollisions(t *testing.T) {
+	fake := &fakeMCPCaller{}
+	agentTools, providerDefs, err := MCPTools("server", fake, []mcp.Tool{
 		{Name: "a.b"},
 		{Name: "a/b"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "both map") {
-		t.Fatalf("MCPTools error = %v, want collision", err)
+	if err != nil {
+		t.Fatalf("MCPTools: %v", err)
+	}
+	if len(agentTools) != 2 || providerDefs[0].Name == providerDefs[1].Name {
+		t.Fatalf("same-server sanitized collision produced duplicate names: %q, %q", providerDefs[0].Name, providerDefs[1].Name)
+	}
+	for i, name := range []string{providerDefs[0].Name, providerDefs[1].Name} {
+		if !strings.HasPrefix(name, "mcp_server_a_b_") {
+			t.Errorf("providerDefs[%d].Name = %q, want sanitized base prefix", i, name)
+		}
+	}
+
+	// Different raw spellings that sanitize to the same base must still be
+	// globally distinct.
+	left, _, err := MCPTools("my server", fake, []mcp.Tool{{Name: "read.file"}})
+	if err != nil {
+		t.Fatalf("MCPTools left: %v", err)
+	}
+	right, _, err := MCPTools("my_server", fake, []mcp.Tool{{Name: "read_file"}})
+	if err != nil {
+		t.Fatalf("MCPTools right: %v", err)
+	}
+	if !strings.HasPrefix(left[0].Name(), "mcp_my_server_read_file_") {
+		t.Errorf("left name = %q, want sanitized base prefix", left[0].Name())
+	}
+	if !strings.HasPrefix(right[0].Name(), "mcp_my_server_read_file_") {
+		t.Errorf("right name = %q, want sanitized base prefix", right[0].Name())
+	}
+	if left[0].Name() == right[0].Name() {
+		t.Errorf("cross-server names collided: %q", left[0].Name())
 	}
 }
 
 func TestMCPToolName(t *testing.T) {
 	tests := []struct {
-		server string
-		tool   string
-		want   string
+		server     string
+		tool       string
+		wantPrefix string
 	}{
-		{"files", "read_file", "mcp_files_read_file"},
-		{"my server", "read.file", "mcp_my_server_read_file"},
-		{"", "echo", "mcp_echo"},
-		{"files", "", "mcp_files"},
-		{"", "", "mcp_tool"},
-		{"x/y", "z:q", "mcp_x_y_z_q"},
+		{"files", "read_file", "mcp_files_read_file_"},
+		{"my server", "read.file", "mcp_my_server_read_file_"},
+		{"", "echo", "mcp_echo_"},
+		{"files", "", "mcp_files_"},
+		{"", "", "mcp_tool_"},
+		{"x/y", "z:q", "mcp_x_y_z_q_"},
 	}
 	for _, tt := range tests {
-		if got := MCPToolName(tt.server, tt.tool); got != tt.want {
-			t.Errorf("MCPToolName(%q, %q) = %q, want %q", tt.server, tt.tool, got, tt.want)
+		got := MCPToolName(tt.server, tt.tool)
+		if !strings.HasPrefix(got, tt.wantPrefix) {
+			t.Errorf("MCPToolName(%q, %q) = %q, want prefix %q", tt.server, tt.tool, got, tt.wantPrefix)
 		}
+		suffix := strings.TrimPrefix(got, tt.wantPrefix)
+		if len(suffix) != 8 {
+			t.Errorf("MCPToolName(%q, %q) hash suffix = %q, want 8 hex characters", tt.server, tt.tool, suffix)
+		}
+	}
+
+	if MCPToolName("files", "a.b") == MCPToolName("files", "a/b") {
+		t.Error("names with the same sanitized base collided")
+	}
+	if MCPToolName("my server", "read.file") == MCPToolName("my_server", "read_file") {
+		t.Error("cross-server names with the same sanitized base collided")
 	}
 
 	longTool := strings.Repeat("a", 100)

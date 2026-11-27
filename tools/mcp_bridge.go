@@ -163,8 +163,10 @@ func MCPTools(server string, client MCPCaller, definitions []mcp.Tool) ([]AgentT
 }
 
 // MCPToolName builds a provider-safe, server-namespaced tool name. Characters
-// outside letters, digits, underscores, and hyphens are replaced, and names
-// longer than the common provider limit are shortened with a stable hash.
+// outside letters, digits, underscores, and hyphens are replaced. A short hash
+// of the raw server and tool names is always appended so distinct names that
+// sanitize to the same base remain unambiguous, and long names are shortened
+// to the common provider limit.
 func MCPToolName(server, tool string) string {
 	serverPart := sanitizeMCPNamePart(server)
 	toolPart := sanitizeMCPNamePart(tool)
@@ -180,17 +182,16 @@ func MCPToolName(server, tool string) string {
 	default:
 		base = "mcp_tool"
 	}
-	if len(base) <= mcpToolNameLimit {
-		return base
-	}
 
 	sum := sha256.Sum256([]byte(server + "\x00" + tool))
 	suffix := fmt.Sprintf("_%x", sum[:4])
-	prefix := strings.TrimRight(base[:mcpToolNameLimit-len(suffix)], "_-")
-	if prefix == "" {
-		prefix = "mcp"
+	if maxBase := mcpToolNameLimit - len(suffix); len(base) > maxBase {
+		base = strings.TrimRight(base[:maxBase], "_-")
+		if base == "" {
+			base = "mcp"
+		}
 	}
-	return prefix + suffix
+	return base + suffix
 }
 
 func sanitizeMCPNamePart(value string) string {
@@ -222,9 +223,25 @@ func normalizeMCPBridgeSchema(schema json.RawMessage) (json.RawMessage, error) {
 	if !json.Valid(schema) {
 		return nil, errors.New("input schema is not valid JSON")
 	}
+
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(schema, &object); err != nil || object == nil {
 		return nil, errors.New("input schema must be a JSON object")
+	}
+
+	rawType, hasType := object["type"]
+	if !hasType {
+		object["type"] = json.RawMessage(`"object"`)
+		normalized, err := json.Marshal(object)
+		if err != nil {
+			return nil, errors.New("could not normalize input schema")
+		}
+		schema = normalized
+	} else {
+		var typ string
+		if err := json.Unmarshal(rawType, &typ); err != nil || typ != "object" {
+			return nil, errors.New(`input schema type must be "object"`)
+		}
 	}
 	return append(json.RawMessage(nil), schema...), nil
 }

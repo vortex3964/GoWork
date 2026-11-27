@@ -385,12 +385,12 @@ func (t *sseHTTPTransport) Start(ctx context.Context) error {
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			if errors.Is(ctxErr, context.DeadlineExceeded) {
-				return fmt.Errorf("timed out after %s connecting to the mcp sse endpoint: %w", timeout, ctxErr)
+				return fmt.Errorf("%w: timed out after %s connecting to the mcp sse endpoint: %v", ErrTimeout, timeout, ctxErr)
 			}
 			return ctxErr
 		}
 		if getCtx.Err() != nil {
-			return fmt.Errorf("timed out after %s connecting to the mcp sse endpoint", timeout)
+			return fmt.Errorf("%w: timed out after %s connecting to the mcp sse endpoint", ErrTimeout, timeout)
 		}
 		return fmt.Errorf("connect to mcp sse endpoint: %w", err)
 	}
@@ -418,9 +418,9 @@ func (t *sseHTTPTransport) Start(ctx context.Context) error {
 
 	timedOut := func(err error) error {
 		if err == nil {
-			return fmt.Errorf("timed out after %s waiting for the mcp sse endpoint event", timeout)
+			return fmt.Errorf("%w: timed out after %s waiting for the mcp sse endpoint event", ErrTimeout, timeout)
 		}
-		return fmt.Errorf("timed out after %s waiting for the mcp sse endpoint event: %w", timeout, err)
+		return fmt.Errorf("%w: timed out after %s waiting for the mcp sse endpoint event: %v", ErrTimeout, timeout, err)
 	}
 
 	select {
