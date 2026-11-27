@@ -37,27 +37,33 @@ func (m model) handleMouseClickMsg(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 			m.panelDragWidth = m.panelWidth()
 			return m, nil
 		}
-		// Copy interactions in the message band on the code tab: left click
-		// selects a message (shift-click extends), right click copies it.
-		// Wheel events go through handleMouseWheelMsg, so viewport scrolling
-		// is unaffected.
-		if m.Tabs.Active().Name == "code" && m.Mode != modeChangeHandling &&
-			msg.Y > m.panelTop() && msg.Y < m.promptTop() && msg.X < m.msgAreaWidth() {
-			switch msg.Button {
-			case tea.MouseRight:
-				if m.MessageArea.HandleClick(msg.X, msg.Y-m.panelTop(), false) {
-					text, ok := m.MessageArea.SelectedText()
-					m.MessageArea.EndCopy()
-					return m, copyTextCmd(text, ok)
-				}
-				return m, nil
-			case tea.MouseLeft:
-				extend := msg.Mod.Contains(tea.ModShift)
-				if m.MessageArea.HandleClick(msg.X, msg.Y-m.panelTop(), extend) {
-					return m, showPopupCmd(copyModeHint)
-				}
+	}
+
+	// Copy interactions in the message band on the code tab: left click
+	// selects a message (shift-click extends), right click copies it.
+	// Both buttons must run this block, so it sits outside the left-click
+	// guard above; the arrow/resize handlers already consumed their clicks.
+	// Wheel events go through handleMouseWheelMsg, so viewport scrolling is
+	// unaffected.
+	if m.Tabs.Active().Name == "code" && m.Mode != modeChangeHandling &&
+		msg.Y > m.panelTop() && msg.Y < m.promptTop() && msg.X < m.msgAreaWidth() {
+		switch msg.Button {
+		case tea.MouseRight:
+			if m.MessageArea.HandleClick(msg.X, msg.Y-m.panelTop(), false) {
+				text, ok := m.MessageArea.SelectedText()
+				m.MessageArea.EndCopy()
+				return m, copyTextCmd(text, ok)
+			}
+			return m, nil
+		case tea.MouseLeft:
+			extend := msg.Mod.Contains(tea.ModShift)
+			if m.MessageArea.HandleClick(msg.X, msg.Y-m.panelTop(), extend) {
+				return m, showPopupCmd(copyModeHint)
 			}
 		}
+	}
+
+	if msg.Button == tea.MouseLeft {
 		// The tab strip renders taller than one line (its border adds top
 		// and bottom rows), so let clicks anywhere on it switch tabs. The
 		// prompt bar sits pinned just above the statusline at the bottom
@@ -67,7 +73,13 @@ func (m model) handleMouseClickMsg(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		// pin the prompt bar, clicking it focuses it.
 		switch {
 		case msg.Y < m.Tabs.Height():
+			prev := m.Tabs.ActiveIdx
 			m.Tabs.HandleClick(msg.X)
+			if m.Tabs.ActiveIdx != prev {
+				// Leaving the code tab shouldn't leave a silent selection
+				// waiting to reappear when the user comes back.
+				m.MessageArea.EndCopy()
+			}
 			m.syncModeToTab()
 		case (m.Tabs.Active().Name == "code" || m.Tabs.Active().Name == "skills") &&
 			msg.Y >= m.promptTop() && msg.Y < m.promptTop()+m.Prompt.Height():
