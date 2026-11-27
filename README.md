@@ -50,6 +50,8 @@ The installer downloads a release, verifies it against the published
 checksums, installs the binary with its assets, and links `gowork` into your
 bin directory.
 
+Install with the one-liner:
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/vortex3964/GoWork/main/scripts/install.sh | bash
 ```
@@ -66,13 +68,26 @@ Remove GoWork, its launcher link, and the installer's PATH block:
 curl -fsSL https://raw.githubusercontent.com/vortex3964/GoWork/main/scripts/install.sh | bash -s -- --uninstall
 ```
 
-From a checkout, run the script directly:
+From a checkout, use the standalone entry points:
 
 ```sh
 scripts/install.sh
-scripts/install.sh --update
-scripts/install.sh --uninstall
+scripts/update.sh
+scripts/uninstall.sh
 ```
+
+`update.sh` and `uninstall.sh` are thin wrappers around `install.sh --update`
+and `install.sh --uninstall`. They forward every other option, so you can pin a
+release or choose an install directory:
+
+```sh
+scripts/update.sh --version v1.2.3 --dir "$HOME/opt/gowork"
+scripts/uninstall.sh --dir "$HOME/opt/gowork"
+```
+
+The wrappers contain no install logic of their own: path safety, checksum
+verification, launcher handling and user data preservation all stay in
+`install.sh`.
 
 Options:
 
@@ -105,10 +120,33 @@ Invoke-WebRequest https://raw.githubusercontent.com/vortex3964/GoWork/main/scrip
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
+Update or uninstall with the installer mode:
+
 ```powershell
-.\scripts\install.ps1 -Update
-.\scripts\install.ps1 -Uninstall
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Update
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall
 ```
+
+From a checkout, use the standalone entry points:
+
+```powershell
+.\scripts\install.ps1
+.\scripts\update.ps1
+.\scripts\uninstall.ps1
+```
+
+`update.ps1` and `uninstall.ps1` are thin wrappers around
+`install.ps1 -Update` and `install.ps1 -Uninstall`. They forward every
+additional argument, so you can pin a release or choose an install directory:
+
+```powershell
+.\scripts\update.ps1 -Version v1.2.3 -Dir C:\Tools\GoWork
+.\scripts\uninstall.ps1 -Dir C:\Tools\GoWork
+```
+
+The wrappers contain no install logic of their own: path safety, checksum
+verification, PATH handling and user data preservation all stay in
+`install.ps1`.
 
 Options:
 
