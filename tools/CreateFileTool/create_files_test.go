@@ -109,20 +109,33 @@ func TestCreateFile(t *testing.T) {
 		}
 	})
 
-	t.Run("overwrites existing file", func(t *testing.T) {
+	t.Run("refuses to overwrite an existing file", func(t *testing.T) {
 		root := t.TempDir()
 		tool := newTool(t, root)
 
-		run(t, tool, root, "overwrite.txt", "first")
-		_, isErr := run(t, tool, root, "overwrite.txt", "second")
-		if isErr {
-			t.Fatalf("unexpected error result")
+		path := filepath.Join(root, "existing.txt")
+		const original = "IMPORTANT USER DATA\n"
+		if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+			t.Fatalf("failed to seed existing file: %v", err)
 		}
 
-		data, _ := os.ReadFile(filepath.Join(root, "overwrite.txt"))
-		want := "<<<<<<< old\n=======\nsecond\n>>>>>>> Ai change\n"
-		if string(data) != want {
-			t.Errorf("file content = %q, want %q", string(data), want)
+		content, isErr := run(t, tool, root, "existing.txt", "replacement")
+		if !isErr {
+			t.Fatalf("expected create_file to refuse an existing file, got: %q", content)
+		}
+		if !strings.Contains(content, "already exists") {
+			t.Errorf("error should say the file already exists, got: %q", content)
+		}
+		if !containsAny(content, "edit_file", "write_file") {
+			t.Errorf("error should point at edit_file/write_file, got: %q", content)
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("existing file should still be readable: %v", err)
+		}
+		if string(data) != original {
+			t.Errorf("existing file was modified: got %q, want %q", string(data), original)
 		}
 	})
 

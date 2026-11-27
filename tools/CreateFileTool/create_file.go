@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -17,6 +18,8 @@ type Input struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
 }
+
+const existsHint = " - create_file only creates new files and will not overwrite an existing one. Use edit_file or write_file to change it."
 
 type Tool struct {}
 
@@ -79,8 +82,18 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		}
 		return tools.Ok(fmt.Sprintf("successfully created directory %s", filepath.Join(*args.RootPath, dir))), nil
 	}
- 
-dir := filepath.Dir(input.Path)
+
+	// create_file is only for genuinely new files. Truncating an existing
+	// path would silently destroy its contents, so refuse before touching the
+	// filesystem. Stat goes through args.Root so the same sandbox rules
+	// (no "..", no symlink escapes) apply to the check.
+	if _, err := args.Root.Stat(input.Path); err == nil {
+		return tools.Errf("file already exists: %s%s", input.Path, existsHint), nil
+	} else if !os.IsNotExist(err) {
+		return tools.Errf("error checking file: %s", err), nil
+	}
+
+	dir := filepath.Dir(input.Path)
 	if err := tools.MkdirAllInRoot(args.Root, dir); err != nil {
 		return tools.Errf("error creating directories: %s", err), nil
 	}
@@ -95,9 +108,14 @@ dir := filepath.Dir(input.Path)
 	}
 
 	marked := wrapInMarkers(input.Content)
- 
-	file, err := args.Root.Create(input.Path)
+
+	// O_EXCL makes the existence check atomic: if the file appears between
+	// the Stat above and this open, the write fails instead of truncating it.
+	file, err := args.Root.OpenFile(input.Path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 	if err != nil {
+		if os.IsExist(err) {
+			return tools.Errf("file already exists: %s%s", input.Path, existsHint), nil
+		}
 		return tools.Errf("error writing file: %s", err), nil
 	}
 	defer file.Close()
