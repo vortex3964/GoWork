@@ -125,7 +125,9 @@ func (m *Model) textPointAt(x, y int, clamp bool) (promptPoint, bool) {
 		return promptPoint{}, false
 	}
 
-	top := m.palette.Height() + style.PromptStyle.GetBorderTopSize()
+	// Autocomplete rows (the @ menu and the slash palette) render above the
+	// bordered textarea, so they push the text rows down inside the component.
+	top := m.mentions.Height() + m.palette.Height() + style.PromptStyle.GetBorderTopSize()
 	row := y - top
 	if row < 0 || row >= m.area.Height() {
 		if !clamp {
@@ -248,7 +250,7 @@ func (m Model) overlayTextDrag(view string) string {
 	a, b := m.dragRange()
 
 	originX := marginSide + style.PromptStyle.GetBorderLeftSize() + style.PromptStyle.GetPaddingLeft()
-	originY := m.palette.Height() + style.PromptStyle.GetBorderTopSize()
+	originY := m.mentions.Height() + m.palette.Height() + style.PromptStyle.GetBorderTopSize()
 	scroll := m.area.ScrollYOffset()
 	height := m.area.Height()
 

@@ -6,13 +6,41 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"GoWork/Tui/Components/MentionMenu"
 	"GoWork/Tui/Style"
 )
 
 func promptTextOrigin(m Model) (x, y int) {
 	x = marginSide + style.PromptStyle.GetBorderLeftSize() + style.PromptStyle.GetPaddingLeft()
-	y = m.palette.Height() + style.PromptStyle.GetBorderTopSize()
+	y = m.mentions.Height() + m.palette.Height() + style.PromptStyle.GetBorderTopSize()
 	return x, y
+}
+
+func TestTextDragAccountsForMentionMenuRows(t *testing.T) {
+	m := New()
+	m.SetWidth(100)
+	m.SetMentionItems([]mentionmenu.Item{
+		{Kind: mentionmenu.KindSkill, Name: "alpha", Description: "First skill"},
+	})
+	m.SetValue("hello @alp")
+	if !m.MentionVisible() {
+		t.Fatal("mention menu did not open above the prompt")
+	}
+	x, y := promptTextOrigin(m)
+	if y == style.PromptStyle.GetBorderTopSize() {
+		t.Fatal("prompt origin ignored the mention menu height")
+	}
+
+	if !m.BeginTextDrag(x, y) {
+		t.Fatal("BeginTextDrag missed the first prompt character below the mention menu")
+	}
+	if !m.UpdateTextDrag(x+4, y) {
+		t.Fatal("UpdateTextDrag rejected the drag focus")
+	}
+	text, ok := m.EndTextDrag()
+	if !ok || text != "hello" {
+		t.Fatalf("EndTextDrag = %q (ok=%v), want %q", text, ok, "hello")
+	}
 }
 
 func TestTextDragSelectsPromptSubstring(t *testing.T) {

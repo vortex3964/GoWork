@@ -1,18 +1,35 @@
 package gowork
 
 import (
+	"fmt"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/atotto/clipboard"
 
+	"GoWork/Tui/Components/MentionMenu"
 	popup "GoWork/Tui/Components/PopUp"
 
 	"GoWork/tools/QuestionnaireTool"
+	"GoWork/tools/SkillsTool"
 )
 
 func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	msg_str := msg.String()
+
+	// The "@" menu belongs to the code tab's prompt only. Track the active
+	// tab here (the prompt bar itself is shared with the skills/tools tabs)
+	// and refresh its source snapshot whenever a new mention starts.
+	m.Prompt.SetMentionsEnabled(m.Tabs.Active().Name == "code")
+	if msg_str == "@" && m.Tabs.Active().Name == "code" {
+		switch m.Mode {
+		case modePrompt, modeIdle, modeRecall:
+			m.Prompt.SetMentionItems(m.mentionItems())
+			// A refreshed snapshot can change the number of visible rows
+			// without the prompt bar seeing a key-driven height change.
+			m.syncPromptHeight()
+		}
+	}
 
 	// The coffee animation is an interruptible overlay: it consumes every
 	// key while visible so esc/ctrl+c close it instead of quitting the app
@@ -65,8 +82,8 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// then.
 	if msg_str == "ctrl+i" || msg_str == "tab" {
 		turnRunning := *m.AiThink && m.cancel != nil
-		paletteTab := msg_str == "tab" && m.slashPaletteVisible()
-		if isTurnInterrupt(msg_str, turnRunning) && !paletteTab {
+		completionTab := msg_str == "tab" && (m.slashPaletteVisible() || m.mentionMenuVisible())
+		if isTurnInterrupt(msg_str, turnRunning) && !completionTab {
 			m.stopRequested = true
 			m.cancel()
 			if m.Mode == modeQuestionnaire {
@@ -178,6 +195,29 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// The "@" mention menu owns its navigation while visible, exactly like
+	// the slash palette. Tab and Enter complete the highlighted mention into
+	// the prompt without submitting it; only a later Enter sends the prompt.
+	if m.mentionMenuVisible() {
+		switch msg_str {
+		case "up":
+			m.Prompt.MoveMention(-1)
+			return m, nil
+		case "down":
+			m.Prompt.MoveMention(1)
+			return m, nil
+		case "tab", "enter":
+			if m.Prompt.AcceptMention() {
+				m.syncPromptHeight()
+			}
+			return m, nil
+		case "esc":
+			m.Prompt.CloseMentions()
+			m.syncPromptHeight()
+			return m, nil
+		}
+	}
+
 	if msg_str == "ctrl+l" {
 		if m.Mode == modeChangeHandling {
 			m.ChangesList.Close()
@@ -225,6 +265,8 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// code tab when it is already active.
 	if msg_str == "ctrl+t" {
 		m.toggleToolsTab()
+		m.Prompt.SetMentionsEnabled(m.Tabs.Active().Name == "code")
+		m.syncPromptHeight()
 		return m, nil
 	}
 
@@ -251,10 +293,14 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+tab", "tab":
 		m.Tabs.Next()
 		m.syncModeToTab()
+		m.Prompt.SetMentionsEnabled(m.Tabs.Active().Name == "code")
+		m.syncPromptHeight()
 		return m, nil
 	case "ctrl+shift+tab", "shift+tab":
 		m.Tabs.Prev()
 		m.syncModeToTab()
+		m.Prompt.SetMentionsEnabled(m.Tabs.Active().Name == "code")
+		m.syncPromptHeight()
 		return m, nil
 	}
 
@@ -516,6 +562,117 @@ func (m model) slashPaletteVisible() bool {
 	return m.Tabs.Active().Name == "code" &&
 		(m.Mode == modePrompt || m.Mode == modeIdle) &&
 		m.Prompt.PaletteVisible()
+}
+
+// mentionMenuVisible reports whether the "@" autocomplete can own keys right
+// now: it only renders over the code tab's prompt bar.
+func (m model) mentionMenuVisible() bool {
+	return m.Tabs.Active().Name == "code" &&
+		(m.Mode == modePrompt || m.Mode == modeIdle) &&
+		m.Prompt.MentionVisible()
+}
+
+// mentionItems snapshots every @-mention source for the current project:
+// installed skills (loaded or not), configured MCP servers, configured LSP
+// servers, and the project's folders/files. All reads are read-only; the
+// snapshot never touches the conversation context.
+func (m model) mentionItems() []mentionmenu.Item {
+	items := make([]mentionmenu.Item, 0, 64)
+
+	if mgr := skillstool.GetManager(); mgr != nil {
+		for _, skill := range mgr.Discover() {
+			if skill.Name == "" || strings.HasPrefix(skill.Name, ".") {
+				continue
+			}
+			desc := strings.TrimSpace(skill.Description)
+			if mgr.IsLoaded(skill.Name) {
+				if desc == "" {
+					desc = "loaded"
+				} else {
+					desc = "loaded · " + desc
+				}
+			}
+			items = append(items, mentionmenu.Item{
+				Kind:        mentionmenu.KindSkill,
+				Name:        skill.Name,
+				Description: desc,
+			})
+		}
+	}
+
+	if m.toolRuntime != nil {
+		for _, server := range m.toolRuntime.MCPServers() {
+			if server.Name == "" {
+				continue
+			}
+			status := "disconnected"
+			switch {
+			case !server.Enabled:
+				status = "disabled"
+			case server.Error != "":
+				status = "error"
+			case server.Connected:
+				status = "connected"
+			}
+			desc := server.Transport
+			if status != "" {
+				desc += " · " + status
+			}
+			if server.Tools > 0 {
+				desc += fmt.Sprintf(" · %d tools", server.Tools)
+			}
+			items = append(items, mentionmenu.Item{
+				Kind:        mentionmenu.KindMCP,
+				Name:        server.Name,
+				Description: desc,
+			})
+		}
+		for _, server := range m.toolRuntime.LSPServers() {
+			if server.Name == "" {
+				continue
+			}
+			desc := strings.Join(server.Languages, ", ")
+			if desc == "" {
+				desc = "language server"
+			}
+			if server.Enabled {
+				desc += " · enabled"
+			} else {
+				desc += " · disabled"
+			}
+			if server.Error != "" {
+				desc += " · error"
+			}
+			items = append(items, mentionmenu.Item{
+				Kind:        mentionmenu.KindLSP,
+				Name:        server.Name,
+				Description: desc,
+			})
+		}
+	} else if m.LSP != nil {
+		// Tests and embedded callers can inject the /lsp seam without a full
+		// tool runtime; enumerate the same read-only server list.
+		for _, server := range m.LSP.Servers() {
+			if server.Name == "" {
+				continue
+			}
+			desc := strings.TrimSpace(server.Language)
+			if desc == "" {
+				desc = "language server"
+			}
+			if status := strings.TrimSpace(server.Status); status != "" {
+				desc += " · " + status
+			}
+			items = append(items, mentionmenu.Item{
+				Kind:        mentionmenu.KindLSP,
+				Name:        server.Name,
+				Description: desc,
+			})
+		}
+	}
+
+	items = append(items, mentionmenu.ProjectItems(m.root)...)
+	return items
 }
 
 func popupCopyMessage(val string) string {
