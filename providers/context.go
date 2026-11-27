@@ -294,16 +294,10 @@ func CompactContextIfChanged(messages []Message, summary string, keepTurns int) 
 	}
 
 	groups := groupMessages(messages)
-	tailStart := 0
-	seen := 0
-	for i := len(groups) - 1; i >= 0 && seen < keepTurns; i-- {
-		if groupHasUserTurn(groups[i]) {
-			seen++
-			tailStart = i
-		}
-	}
+	tailStart := compactionTailStart(groups, keepTurns)
 	if tailStart == 0 {
-		// The whole history counts as "recent" - compaction can't help.
+		// Nothing can be safely replaced while keeping a valid tail (e.g. a
+		// lone user message).
 		return messages, false
 	}
 
@@ -316,6 +310,45 @@ func CompactContextIfChanged(messages []Message, summary string, keepTurns int) 
 		out = append(out, g...)
 	}
 	return out, true
+}
+
+// compactionTailStart picks the first group that stays verbatim after the
+// summary. It normally keeps the last keepTurns user turns. When the whole
+// history already falls inside that window - notably a conversation whose only
+// user turn is the first, long message - it keeps the most recent user turn
+// (if there is a later one) or the most recent self-contained assistant/tool
+// exchange instead. That lets compaction replace the early history rather than
+// becoming a no-op, while never starting the tail with a dangling tool result.
+func compactionTailStart(groups [][]Message, keepTurns int) int {
+	tailStart := 0
+	seen := 0
+	for i := len(groups) - 1; i >= 0 && seen < keepTurns; i-- {
+		if groupHasUserTurn(groups[i]) {
+			seen++
+			tailStart = i
+		}
+	}
+	if tailStart > 0 {
+		return tailStart
+	}
+
+	// No older user turn than the first can be removed by the keep-turns
+	// rule. Prefer keeping a later user turn if one exists.
+	for i := len(groups) - 1; i > 0; i-- {
+		if groupHasUserTurn(groups[i]) {
+			return i
+		}
+	}
+	// Single user turn (or none after the first): keep the newest
+	// assistant/tool exchange, trimming everything before it. A group that
+	// begins with a tool result is skipped because summary + dangling result
+	// would be an invalid request.
+	for i := len(groups) - 1; i > 0; i-- {
+		if groups[i][0].Role != "tool" {
+			return i
+		}
+	}
+	return 0
 }
 
 // groupHasUserTurn reports whether a message group contains a user-role

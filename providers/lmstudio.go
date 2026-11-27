@@ -76,8 +76,8 @@ func (l *lmStudioProvider) Generate(ctx context.Context, messages []Message) (Ge
 		"messages": toLMStudioMessages(ctx, messages),
 		"stream":   false,
 	}
-	if l.toolsEnabled && hasTools() {
-		reqBody["tools"] = openAICompatTools(ctx)
+	if tools := openAICompatTools(ctx); l.toolsEnabled && len(tools) > 0 {
+		reqBody["tools"] = tools
 	}
 
 	body, err := l.doRequest(ctx, http.MethodPost, l.baseURL+"/chat/completions", reqBody)

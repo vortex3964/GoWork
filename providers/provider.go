@@ -720,6 +720,10 @@ func parseOpenAICompatStream(ctx context.Context, resp *http.Response, onDelta S
 	var content strings.Builder
 	var usage Usage
 	finish := ""
+	// maxStreamToolCalls bounds the accumulator indexed by the server's
+	// tool_calls[].index. A malformed or hostile chunk must not be able to
+	// grow the slice without limit (or panic on a negative index).
+	const maxStreamToolCalls = 64
 	type tcAcc struct {
 		id   string
 		name string
@@ -775,6 +779,9 @@ func parseOpenAICompatStream(ctx context.Context, resp *http.Response, onDelta S
 			onDelta(c.Delta.Content)
 		}
 		for _, tc := range c.Delta.ToolCalls {
+			if tc.Index < 0 || tc.Index >= maxStreamToolCalls {
+				continue
+			}
 			for len(toolCalls) <= tc.Index {
 				toolCalls = append(toolCalls, &tcAcc{})
 			}

@@ -104,8 +104,8 @@ func (o *ollamaProvider) Generate(ctx context.Context, messages []Message) (Gene
 		"messages": toOllamaMessages(ctx, messages),
 		"stream":   false,
 	}
-	if o.toolsEnabled && hasTools() {
-		reqBody["tools"] = toOllamaTools(ctx)
+	if tools := toOllamaTools(ctx); o.toolsEnabled && len(tools) > 0 {
+		reqBody["tools"] = tools
 	}
 
 	url := o.baseURL + "/api/chat"
@@ -169,8 +169,8 @@ func (o *ollamaProvider) GenerateStream(ctx context.Context, messages []Message,
 		"messages": toOllamaMessages(ctx, messages),
 		"stream":   true,
 	}
-	if o.toolsEnabled && hasTools() {
-		reqBody["tools"] = toOllamaTools(ctx)
+	if tools := toOllamaTools(ctx); o.toolsEnabled && len(tools) > 0 {
+		reqBody["tools"] = tools
 	}
 
 	resp, err := streamRequest(ctx, http.MethodPost, o.baseURL+"/api/chat", nil, reqBody)

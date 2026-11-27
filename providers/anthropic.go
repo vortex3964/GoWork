@@ -208,13 +208,13 @@ func (a *anthropicProvider) GenerateStream(ctx context.Context, messages []Messa
 			return nil
 		}
 		var ev struct {
-			Type string `json:"type"`
-			Index *int  `json:"index"`
+			Type         string `json:"type"`
+			Index        *int   `json:"index"`
 			ContentBlock *struct {
-				Type string          `json:"type"`
-				ID   string          `json:"id"`
-				Name string          `json:"name"`
-				Text string          `json:"text"`
+				Type  string          `json:"type"`
+				ID    string          `json:"id"`
+				Name  string          `json:"name"`
+				Text  string          `json:"text"`
 				Input json.RawMessage `json:"input"`
 			} `json:"content_block"`
 			Delta *struct {
@@ -243,6 +243,18 @@ func (a *anthropicProvider) GenerateStream(ctx context.Context, messages []Messa
 				CompletionTokens: ev.Message.Usage.OutputTokens,
 				TotalTokens:      ev.Message.Usage.InputTokens + ev.Message.Usage.OutputTokens,
 			}
+		}
+		// message_start only reports the initial (usually 1-token) output
+		// estimate. The final cumulative output count arrives on
+		// message_delta.usage; prefer it so streamed turns aren't
+		// under-counted. That event typically omits input_tokens, so only
+		// override the prompt count when it actually carries one.
+		if ev.Usage != nil {
+			if ev.Usage.InputTokens > 0 {
+				usage.PromptTokens = ev.Usage.InputTokens
+			}
+			usage.CompletionTokens = ev.Usage.OutputTokens
+			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 		}
 		switch ev.Type {
 		case "content_block_start":

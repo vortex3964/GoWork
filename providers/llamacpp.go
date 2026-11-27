@@ -78,8 +78,8 @@ func (l *llamaCppProvider) Generate(ctx context.Context, messages []Message) (Ge
 		"messages": toLlamaCppMessages(ctx, messages),
 		"stream":   false,
 	}
-	if l.toolsEnabled && hasTools() {
-		reqBody["tools"] = openAICompatTools(ctx)
+	if tools := openAICompatTools(ctx); l.toolsEnabled && len(tools) > 0 {
+		reqBody["tools"] = tools
 	}
 
 	body, err := l.doRequest(ctx, http.MethodPost, l.baseURL+"/v1/chat/completions", reqBody)

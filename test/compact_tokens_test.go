@@ -116,8 +116,8 @@ func TestCompactionReusesProviderPromptTokens(t *testing.T) {
 }
 
 // TestCompactionNoOpKeepsPreviousAccounting covers a summary that cannot
-// replace anything (the whole history is recent): the context and the last
-// known prompt-token count stay as they were.
+// replace anything (a lone user message with no exchange to retain): the
+// context and the last known prompt-token count stay as they were.
 func TestCompactionNoOpKeepsPreviousAccounting(t *testing.T) {
 	const window = 100000
 	m := newModeTestModel()
@@ -125,7 +125,6 @@ func TestCompactionNoOpKeepsPreviousAccounting(t *testing.T) {
 	m.MessageArea.SetSize(80, 24)
 	m.Context = []providers.Message{
 		{Role: "user", Content: "only task"},
-		{Role: "assistant", Content: "only answer"},
 	}
 	before := providers.EstimateContextTokens(m.Context, "gpt-4o")
 	msg := gowork.RunCompaction(compactionProvider{
