@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	permisionbox "GoWork/Tui/Components/PermisionBox"
 )
 
 func writeImpactFixture(t *testing.T, root, rel, content string) string {
@@ -316,11 +319,88 @@ func TestExplainPreviewIsBounded(t *testing.T) {
 	}), root)
 
 	lines := strings.Split(impact.Preview, "\n")
-	if len(lines) > 9 {
-		t.Errorf("preview has %d lines, want a bounded preview: %q", len(lines), impact.Preview)
+	if len(lines) > 8 {
+		t.Errorf("preview has %d lines, want at most 8: %q", len(lines), impact.Preview)
 	}
 	if !strings.Contains(impact.Preview, "…") {
 		t.Errorf("expected truncation marker in bounded preview:\n%s", impact.Preview)
+	}
+}
+
+func TestExplainPreviewLineWidthIsBounded(t *testing.T) {
+	root := t.TempDir()
+	writeImpactFixture(t, root, "target.txt", "old target line\n")
+	longLine := strings.Repeat("X", 200_000)
+
+	check := func(name string, impact permisionbox.Impact) {
+		t.Helper()
+		if len(impact.Preview) > 1200 {
+			t.Errorf("%s: preview is %d bytes, want a bounded preview", name, len(impact.Preview))
+		}
+		for _, line := range strings.Split(impact.Preview, "\n") {
+			if width := utf8.RuneCountInString(line); width > impactPreviewLineWidth+3 {
+				t.Errorf("%s: preview line width = %d, want <= %d: %q", name, width, impactPreviewLineWidth+3, line)
+			}
+		}
+		if !strings.Contains(impact.Preview, "…") {
+			t.Errorf("%s: expected an explicit truncation marker in preview", name)
+		}
+	}
+
+	// Oversized new content.
+	check("new_content", explainToolImpact("edit_file", impactRaw(t, map[string]any{
+		"file_path":   "target.txt",
+		"start_line":  1,
+		"end_line":    1,
+		"new_content": longLine,
+	}), root))
+
+	// Oversized single line read from the target file itself.
+	writeImpactFixture(t, root, "longline.txt", longLine+"\n")
+	check("target file", explainToolImpact("delete_file", impactRaw(t, map[string]any{
+		"path": "longline.txt",
+	}), root))
+}
+
+func TestExplainOversizedTargetReadIsCapped(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "huge.txt")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create huge file: %v", err)
+	}
+	if err := f.Truncate(impactReadLimit + 4096); err != nil {
+		f.Close()
+		t.Fatalf("truncate huge file: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close huge file: %v", err)
+	}
+
+	data, _, truncated, err := impactReadFile(root, "huge.txt")
+	if err != nil {
+		t.Fatalf("impactReadFile: %v", err)
+	}
+	if !truncated {
+		t.Fatal("expected impactReadFile to report the file as truncated")
+	}
+	if len(data) > impactReadLimit {
+		t.Errorf("read %d bytes, cap is %d", len(data), impactReadLimit)
+	}
+	if len(data) != impactReadLimit {
+		t.Errorf("read %d bytes, want exactly the cap %d", len(data), impactReadLimit)
+	}
+
+	impact := explainToolImpact("delete_file", impactRaw(t, map[string]any{"path": "huge.txt"}), root)
+	if !strings.Contains(impact.Summary, "partial") || !strings.Contains(impact.Summary, "larger than") {
+		t.Errorf("large-file delete summary does not disclose the cap: %s", impact.Summary)
+	}
+
+	impact = explainToolImpact("write_file", impactRaw(t, map[string]any{
+		"file_path": "huge.txt", "old_string": "needle", "new_string": "x",
+	}), root)
+	if !strings.Contains(impact.Summary, "partial") && !strings.Contains(impact.Summary, "larger") {
+		t.Errorf("large-file write summary does not disclose the cap: %s", impact.Summary)
 	}
 }
 
@@ -328,6 +408,13 @@ func TestExplainUnknownToolImpact(t *testing.T) {
 	impact := explainToolImpact("mystery_tool", json.RawMessage(`{"x":1}`), "")
 	if !strings.Contains(impact.Summary, "mystery_tool") {
 		t.Errorf("unknown tool summary = %s", impact.Summary)
+	}
+
+	// The registered questionnaire tool name must take the read-only path,
+	// not the generic unknown-tool fallback.
+	impact = explainToolImpact("questions_tool", json.RawMessage(`{"questions":[]}`), "")
+	if !strings.Contains(impact.Summary, "questions_tool") || !strings.Contains(impact.Summary, "Read-only") {
+		t.Errorf("questions_tool summary = %s", impact.Summary)
 	}
 }
 

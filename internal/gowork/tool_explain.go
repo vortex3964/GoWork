@@ -9,8 +9,22 @@ import (
 	"path/filepath"
 	"strings"
 
+	"charm.land/lipgloss/v2"
+
 	permisionbox "GoWork/Tui/Components/PermisionBox"
 )
+
+const (
+	// impactReadLimit bounds how much of a target file the permission
+	// explainer reads. Counting occurrences or lines past this point is
+	// explicitly described as partial in the summary.
+	impactReadLimit = 2 << 20 // 2 MiB
+	// impactPreviewLineWidth bounds each displayed diff line so a single
+	// minified line cannot balloon the permission box.
+	impactPreviewLineWidth = 120
+)
+
+const impactReadLimitLabel = "2 MiB"
 
 // explainToolImpact builds the read-only explanation shown in the permission
 // box. It only inspects input JSON and reads target files for bounded previews
@@ -37,7 +51,7 @@ func explainToolImpact(toolName string, rawInput json.RawMessage, root string) p
 		return explainGrepImpact(rawInput)
 	case "file_search":
 		return explainFileSearchImpact(rawInput)
-	case "read_file", "list_directory", "skill", "todo_list", "questionnaire":
+	case "read_file", "list_directory", "skill", "todo_list", "questions_tool":
 		return explainReadOnlyImpact(toolName, rawInput)
 	default:
 		return permisionbox.Impact{
@@ -65,7 +79,7 @@ func explainWriteFileImpact(raw json.RawMessage, root string) permisionbox.Impac
 
 	oldLines := impactSnippetLines(in.Old)
 	newLines := impactSnippetLines(in.New)
-	data, info, err := impactReadFile(root, path)
+	data, info, truncated, err := impactReadFile(root, path)
 	if err != nil {
 		return permisionbox.Impact{
 			Summary: fmt.Sprintf("Edits %s, but %s; write_file will fail without changing anything.", path, impactReadReason(err, info)),
@@ -88,6 +102,12 @@ func explainWriteFileImpact(raw json.RawMessage, root string) permisionbox.Impac
 	default:
 		count := bytes.Count(data, []byte(in.Old))
 		switch {
+		case truncated:
+			if in.ReplaceAll {
+				change = fmt.Sprintf("replaces occurrences throughout the file (at least %d in the first %s; the count is partial)", count, impactReadLimitLabel)
+			} else {
+				change = fmt.Sprintf("found %d occurrence(s) in the first %s (the file is larger, so the count is partial)", count, impactReadLimitLabel)
+			}
 		case count == 0:
 			change = "the snippet does not appear in the file, so the tool will fail"
 		case in.ReplaceAll:
@@ -96,6 +116,14 @@ func explainWriteFileImpact(raw json.RawMessage, root string) permisionbox.Impac
 			change = "replaces 1 occurrence"
 		default:
 			change = fmt.Sprintf("the snippet appears %d times, so the tool will fail unless replace_all_mentions is true", count)
+		}
+	}
+
+	if truncated {
+		return permisionbox.Impact{
+			Summary: fmt.Sprintf("Edits %s: %s (%d line(s) -> %d line(s)); the first %s has %d line(s).%s",
+				path, change, len(oldLines), len(newLines), impactReadLimitLabel, len(impactFileLines(data)), impactPartialNote(true)),
+			Preview: preview,
 		}
 	}
 	return permisionbox.Impact{
@@ -120,7 +148,7 @@ func explainEditFileImpact(raw json.RawMessage, root string) permisionbox.Impact
 		return permisionbox.Impact{Summary: "edit_file has no file_path, so it will fail without changing anything."}
 	}
 
-	data, info, err := impactReadFile(root, path)
+	data, info, truncated, err := impactReadFile(root, path)
 	if err != nil {
 		return permisionbox.Impact{
 			Summary: fmt.Sprintf("Edits %s, but %s; edit_file will fail without changing anything.", path, impactReadReason(err, info)),
@@ -130,6 +158,14 @@ func explainEditFileImpact(raw json.RawMessage, root string) permisionbox.Impact
 	lines := impactFileLines(data)
 	replacement := impactReplacementLines(in.NewContent)
 	if reason := impactRangeError(in.StartLine, in.EndLine, len(lines)); reason != "" {
+		// Only past-the-end failures can be an artifact of the read cap.
+		// start < 1 or end < start-1 is invalid regardless of file size.
+		if truncated && in.StartLine >= 1 && in.EndLine >= in.StartLine-1 {
+			return permisionbox.Impact{
+				Summary: fmt.Sprintf("Edits %s at lines %d–%d, but the target is larger than %s and that range is past the inspected prefix; the edit may still be valid.%s",
+					path, in.StartLine, in.EndLine, impactReadLimitLabel, impactPartialNote(true)),
+			}
+		}
 		return permisionbox.Impact{
 			Summary: fmt.Sprintf("Edits %s, but %s; edit_file will fail without changing anything.", path, reason),
 		}
@@ -137,16 +173,16 @@ func explainEditFileImpact(raw json.RawMessage, root string) permisionbox.Impact
 
 	if in.EndLine < in.StartLine {
 		return permisionbox.Impact{
-			Summary: fmt.Sprintf("Inserts %d line(s) at line %d in %s (file has %d line(s)).",
-				len(replacement), in.StartLine, path, len(lines)),
+			Summary: fmt.Sprintf("Inserts %d line(s) at line %d in %s (%s has %d line(s)).%s",
+				len(replacement), in.StartLine, path, impactLineScope(truncated), len(lines), impactPartialNote(truncated)),
 			Preview: previewImpactDiff(nil, replacement),
 		}
 	}
 
 	oldLines := lines[in.StartLine-1 : in.EndLine]
 	return permisionbox.Impact{
-		Summary: fmt.Sprintf("Replaces lines %d–%d (%d line(s)) with %d line(s) in %s (file has %d line(s)).",
-			in.StartLine, in.EndLine, len(oldLines), len(replacement), path, len(lines)),
+		Summary: fmt.Sprintf("Replaces lines %d–%d (%d line(s)) with %d line(s) in %s (%s has %d line(s)).%s",
+			in.StartLine, in.EndLine, len(oldLines), len(replacement), path, impactLineScope(truncated), len(lines), impactPartialNote(truncated)),
 		Preview: previewImpactDiff(oldLines, replacement),
 	}
 }
@@ -170,7 +206,7 @@ func explainCreateFileImpact(raw json.RawMessage, root string) permisionbox.Impa
 	}
 
 	newLines := impactSnippetLines(in.Content)
-	data, info, err := impactReadFile(root, path)
+	data, info, truncated, err := impactReadFile(root, path)
 	switch {
 	case err == nil:
 		kind := "a file already exists"
@@ -178,7 +214,7 @@ func explainCreateFileImpact(raw json.RawMessage, root string) permisionbox.Impa
 			kind = "a directory already exists"
 		}
 		return permisionbox.Impact{
-			Summary: fmt.Sprintf("Creates %s, but %s there; create_file refuses to overwrite and will fail.", path, kind),
+			Summary: fmt.Sprintf("Creates %s, but %s there; create_file refuses to overwrite and will fail.%s", path, kind, impactPartialNote(truncated)),
 			Preview: previewImpactDiff(impactFileLines(data), newLines),
 		}
 	case !os.IsNotExist(err):
@@ -213,7 +249,7 @@ func explainMoveFileImpact(raw json.RawMessage, root string) permisionbox.Impact
 		return permisionbox.Impact{Summary: "move_file needs both source_path and destination_path, so it will fail."}
 	}
 
-	srcData, srcInfo, srcErr := impactReadFile(root, src)
+	srcData, srcInfo, srcTruncated, srcErr := impactReadFile(root, src)
 	if srcErr != nil {
 		return permisionbox.Impact{
 			Summary: fmt.Sprintf("Moves %s to %s, but %s; move_file will fail without changing anything.",
@@ -222,18 +258,18 @@ func explainMoveFileImpact(raw json.RawMessage, root string) permisionbox.Impact
 	}
 	srcLines := impactFileLines(srcData)
 
-	dstData, dstInfo, dstErr := impactReadFile(root, dst)
+	dstData, dstInfo, dstTruncated, dstErr := impactReadFile(root, dst)
 	switch {
 	case dstErr == nil:
 		return permisionbox.Impact{
-			Summary: fmt.Sprintf("Moves %s to %s. The destination already exists and will be overwritten; a now-empty source directory is removed.",
-				src, dst),
+			Summary: fmt.Sprintf("Moves %s to %s. The destination already exists and will be overwritten; a now-empty source directory is removed.%s",
+				src, dst, impactPartialNote(srcTruncated || dstTruncated)),
 			Preview: previewImpactDiff(impactFileLines(dstData), srcLines),
 		}
 	case os.IsNotExist(dstErr):
 		return permisionbox.Impact{
-			Summary: fmt.Sprintf("Moves %s (%d line(s)) to %s. Missing destination directories are created; a now-empty source directory is removed.",
-				src, len(srcLines), dst),
+			Summary: fmt.Sprintf("Moves %s (%s has %d line(s)) to %s. Missing destination directories are created; a now-empty source directory is removed.%s",
+				src, impactLineScope(srcTruncated), len(srcLines), dst, impactPartialNote(srcTruncated)),
 			Preview: previewImpactDiff(nil, srcLines),
 		}
 	default:
@@ -256,10 +292,17 @@ func explainDeleteFileImpact(raw json.RawMessage, root string) permisionbox.Impa
 		return permisionbox.Impact{Summary: "delete_file has no path, so it will fail without deleting anything."}
 	}
 
-	data, info, err := impactReadFile(root, path)
+	data, info, truncated, err := impactReadFile(root, path)
 	if err != nil {
 		return permisionbox.Impact{
 			Summary: fmt.Sprintf("Deletes %s, but %s; delete_file will fail.", path, impactReadReason(err, info)),
+		}
+	}
+	if truncated {
+		return permisionbox.Impact{
+			Summary: fmt.Sprintf("Deletes %s. The file is larger than %s, so only the first %s is previewed and its line/byte counts are partial. If its parent directory becomes empty, that directory is removed too.",
+				path, impactReadLimitLabel, impactReadLimitLabel),
+			Preview: previewImpactDiff(impactFileLines(data), nil),
 		}
 	}
 	return permisionbox.Impact{
@@ -462,41 +505,70 @@ func impactInputError(toolName string) permisionbox.Impact {
 	}
 }
 
-func impactReadFile(root, rel string) ([]byte, os.FileInfo, error) {
+// impactReadFile reads at most impactReadLimit bytes from a project file. The
+// returned flag reports that the file was larger than the cap, so callers can
+// describe the preview/counts as partial instead of implying they saw it all.
+func impactReadFile(root, rel string) ([]byte, os.FileInfo, bool, error) {
 	if root == "" {
-		return nil, nil, fmt.Errorf("the project root is unavailable")
+		return nil, nil, false, fmt.Errorf("the project root is unavailable")
 	}
 	clean := filepath.Clean(strings.TrimSpace(rel))
 	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return nil, nil, fmt.Errorf("the path is outside the project root")
+		return nil, nil, false, fmt.Errorf("the path is outside the project root")
 	}
 
 	// Use os.Root so an in-project symlink cannot make this read-only preview
 	// leak a file outside the project.
 	rootFS, err := os.OpenRoot(root)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 	defer rootFS.Close()
 
 	f, err := rootFS.Open(clean)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 	if info.IsDir() {
-		return nil, info, fmt.Errorf("the target is a directory")
+		return nil, info, false, fmt.Errorf("the target is a directory")
 	}
-	data, err := io.ReadAll(f)
+
+	// Read at most the cap into an exactly-sized buffer, so a huge target
+	// cannot make the permission box allocate proportionally to the file.
+	readSize := info.Size()
+	if readSize > impactReadLimit {
+		readSize = impactReadLimit
+	}
+	if readSize < 0 {
+		readSize = 0
+	}
+	buf := bytes.NewBuffer(make([]byte, 0, int(readSize)))
+	n, err := io.Copy(buf, io.LimitReader(f, readSize))
 	if err != nil {
-		return nil, info, err
+		return nil, info, false, err
 	}
-	return data, info, nil
+	data := buf.Bytes()
+	return data, info, info.Size() > n, nil
+}
+
+func impactPartialNote(truncated bool) string {
+	if !truncated {
+		return ""
+	}
+	return fmt.Sprintf(" The target is larger than %s, so this preview and its counts are partial.", impactReadLimitLabel)
+}
+
+func impactLineScope(truncated bool) string {
+	if truncated {
+		return "the first " + impactReadLimitLabel
+	}
+	return "the file"
 }
 
 func impactReadReason(err error, info os.FileInfo) string {
@@ -569,8 +641,9 @@ func impactReplacementLines(s string) []string {
 }
 
 // previewImpactDiff renders a small, bounded before/after preview. Each side
-// shows at most three lines; the whole preview is capped so the permission
-// dialog can never be flooded by a large edit.
+// shows at most three lines, each line is capped to impactPreviewLineWidth
+// columns with an explicit ellipsis, and the whole preview stays within eight
+// lines including any truncation markers.
 func previewImpactDiff(oldLines, newLines []string) string {
 	const (
 		sideLines    = 3
@@ -583,9 +656,7 @@ func previewImpactDiff(oldLines, newLines []string) string {
 			shown = shown[:sideLines]
 		}
 		for _, line := range shown {
-			line = strings.ReplaceAll(line, "\t", "    ")
-			line = strings.TrimRight(line, " \r")
-			out = append(out, prefix+line)
+			out = append(out, prefix+impactPreviewLine(line))
 		}
 		if len(lines) > sideLines {
 			out = append(out, fmt.Sprintf("… %d more line(s)", len(lines)-sideLines))
@@ -594,8 +665,30 @@ func previewImpactDiff(oldLines, newLines []string) string {
 	addSide("- ", oldLines)
 	addSide("+ ", newLines)
 	if len(out) > maxDiffLines {
-		out = out[:maxDiffLines]
+		out = out[:maxDiffLines-1]
 		out = append(out, "…")
 	}
 	return strings.Join(out, "\n")
+}
+
+// impactPreviewLine normalizes one preview line and caps it to the fixed
+// column budget, appending "…" when content was removed.
+func impactPreviewLine(line string) string {
+	line = strings.ReplaceAll(line, "\t", "    ")
+	line = strings.TrimRight(line, " \r")
+	if lipgloss.Width(line) <= impactPreviewLineWidth {
+		return line
+	}
+
+	var b strings.Builder
+	width := 0
+	for _, r := range line {
+		rw := lipgloss.Width(string(r))
+		if width+rw > impactPreviewLineWidth {
+			break
+		}
+		b.WriteRune(r)
+		width += rw
+	}
+	return b.String() + "…"
 }
