@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"GoWork/Tui/Components/ToDo"
 )
@@ -121,11 +122,19 @@ func renderStatusLine(m model) string {
 	})
 
 	total := lipgloss.Width(left) + lipgloss.Width(center) + lipgloss.Width(right)
-	gap := m.winWidth - total
-	if gap < 2 {
-		return left + center + right
+	var out string
+	if gap := m.winWidth - total; gap < 2 {
+		out = left + center + right
+	} else {
+		leftGap := gap / 2
+		rightGap := gap - leftGap
+		out = left + strings.Repeat(" ", leftGap) + center + strings.Repeat(" ", rightGap) + right
 	}
-	leftGap := gap / 2
-	rightGap := gap - leftGap
-	return left + strings.Repeat(" ", leftGap) + center + strings.Repeat(" ", rightGap) + right
+	// The statusline is a single pinned row: long model/provider labels
+	// must never wrap or push the terminal width, so clip the assembled
+	// chain (ANSI-aware) to the available terminal columns.
+	if m.winWidth > 0 && lipgloss.Width(out) > m.winWidth {
+		out = ansi.Truncate(out, m.winWidth, "")
+	}
+	return out
 }

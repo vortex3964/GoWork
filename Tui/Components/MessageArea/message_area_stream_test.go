@@ -98,3 +98,44 @@ func TestContentCacheTracksAllMutations(t *testing.T) {
 	m.SetSize(60, 20)
 	assertContent("resize")
 }
+
+// TestAppendAfterLiveBlockIsNeverDropped is the regression test for the
+// streaming append cache: messages appended after the live message must stay
+// in the viewport, in order, even when later deltas replace the live block and
+// the block grows or shrinks.
+func TestAppendAfterLiveBlockIsNeverDropped(t *testing.T) {
+	m := New()
+	m.SetSize(90, 28)
+
+	m.AppendMessage("before live", true)
+	liveIdx := m.LiveAssistantStart()
+	m.LiveAssistantUpdate(liveIdx, "stream one")
+
+	m.AppendMessage("after live one", true)
+	toolIdx := m.AppendTool("shell", "echo hi")
+	m.AppendMessage("after-live-two", false)
+
+	m.LiveAssistantUpdate(liveIdx, "stream two with more text")
+	m.LiveAssistantFinish(liveIdx, "final **answer**")
+	m.UpdateToolMessage(toolIdx, ToolDone, "hi")
+
+	want := strings.Split(strings.Join(m.rendered, blockSeparator), "\n")
+	got := strings.Join(m.vp.lines, "\n")
+	if got != strings.Join(want, "\n") {
+		t.Fatalf("viewport cache lost messages appended after the live block (got %d lines, want %d)", len(m.vp.lines), len(want))
+	}
+
+	content := strings.Join(m.vp.lines, "\n")
+	order := []string{"before live", "final", "after live one", "shell", "after-live-two"}
+	last := -1
+	for _, text := range order {
+		idx := strings.Index(content, text)
+		if idx < 0 {
+			t.Fatalf("appended message %q missing from the viewport:\n%s", text, content)
+		}
+		if idx < last {
+			t.Fatalf("message %q is out of order in the viewport", text)
+		}
+		last = idx
+	}
+}

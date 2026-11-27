@@ -178,6 +178,11 @@ type model struct {
 	//status line data to be displayed
 	status statusLine
 
+	// infoGen guards the asynchronous model-info lookup: every provider/model
+	// selection bumps it, and a response carrying an older generation (or a
+	// different model id) is stale and must be ignored.
+	infoGen uint64
+
 	// our logo
 	logoLines []string
 
@@ -424,7 +429,7 @@ func (m model) Init() tea.Cmd {
 	var cmds []tea.Cmd
 	if m.model != nil {
 		if p := m.model.Get(); p != nil {
-			cmds = append(cmds, fetchModelInfoCmd(p, m.status.modelID))
+			cmds = append(cmds, fetchModelInfoCmd(p, m.status.modelID, m.infoGen))
 		}
 	}
 	cmds = append(cmds, m.ChangesList.WatchCmd())

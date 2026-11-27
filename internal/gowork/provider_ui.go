@@ -145,6 +145,9 @@ func (m model) handleProviderSelected(msg providerselect.SelectedMsg) (tea.Model
 	m.status.modelID = msg.ModelID
 	m.status.contextWindow = 0
 	m.status.lastPromptTokens = 0
+	// Invalidate any model-info lookup still in flight for the previous
+	// selection so a slow response can't overwrite the new model's window.
+	m.infoGen++
 
 	keyToSave := ""
 	if msg.WroteNewKey {
@@ -162,5 +165,5 @@ func (m model) handleProviderSelected(msg providerselect.SelectedMsg) (tea.Model
 		false,
 	)
 	warnCmd := toolSupportWarningCmd(msg.ModelID, msg.Provider)
-	return m, tea.Batch(fetchModelInfoCmd(p, m.status.modelID), warnCmd)
+	return m, tea.Batch(fetchModelInfoCmd(p, m.status.modelID, m.infoGen), warnCmd)
 }

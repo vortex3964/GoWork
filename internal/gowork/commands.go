@@ -17,10 +17,14 @@ import (
 	"GoWork/providers"
 )
 
-func fetchModelInfoCmd(p providers.Provider, model string) tea.Cmd {
+func fetchModelInfoCmd(p providers.Provider, model string, gens ...uint64) tea.Cmd {
+	var gen uint64
+	if len(gens) > 0 {
+		gen = gens[0]
+	}
 	return func() tea.Msg {
 		info, err := p.Info(context.Background(), model)
-		return modelInfoMsg{info: info, err: err}
+		return modelInfoMsg{info: info, err: err, gen: gen, model: model}
 	}
 }
 
@@ -208,11 +212,14 @@ func (m *model) runSlashCommand(input string) tea.Cmd {
 			m.MessageArea.AppendMessage(">**INFO** Wait for the current turn to finish before saving.", false)
 			return nil
 		}
-		if err := m.snapshotSession(); err != nil {
+		// /save is a checkpoint, not a session boundary: persist the current
+		// history and usage without sealing the row, starting a new one, or
+		// touching the token counters. The final save on exit rewrites the
+		// same snapshot, so nothing is duplicated.
+		if err := m.saveSessionSnapshot(); err != nil {
 			m.MessageArea.AppendMessage(">**ERROR** Could not save session: "+err.Error(), false)
 			return nil
 		}
-		m.status.sessionTokens = 0
 		m.MessageArea.AppendMessage(">**INFO** Session saved to the local database.", false)
 		return nil
 	case "new":
@@ -259,8 +266,20 @@ func (m *model) runSlashCommand(input string) tea.Cmd {
 	}
 }
 
+// saveSessionSnapshot persists the current session as a checkpoint without
+// ending it. Used by /save: unlike snapshotSession it never opens a new row,
+// so the running token counters and history stay attached to the same session.
+func (m *model) saveSessionSnapshot() error {
+	if m.Db == nil {
+		return fmt.Errorf("database unavailable")
+	}
+	messages, _ := repairContext(m.Context)
+	return m.Db.FlushSession(messages, m.status.sessionTokens)
+}
+
 // snapshotSession finalizes the current session (messages, usage and skills)
 // and immediately opens a fresh row so the app keeps recording afterwards.
+// Only explicit new-session actions (/new, /fork) use it.
 func (m *model) snapshotSession() error {
 	if m.Db == nil {
 		return fmt.Errorf("database unavailable")
@@ -324,11 +343,21 @@ func (m *model) contextCommand(args []string) tea.Cmd {
 		return nil
 	}
 	arg := strings.Join(args, " ")
-	full := arg
-	if !filepath.IsAbs(full) {
-		full = filepath.Join(m.root, full)
+	rel, err := safeContextPath(arg)
+	if err != nil {
+		m.MessageArea.AppendMessage(">**ERROR** Could not read "+arg+": "+err.Error(), false)
+		return nil
 	}
-	content, truncated, err := readBoundedText(full, maxContextFileBytes)
+	// Anchor the read at the project root: os.Root refuses absolute names,
+	// ".." escapes and symlinks that point outside, so /context cannot be
+	// used to pull an arbitrary host file into the conversation.
+	root, err := os.OpenRoot(m.root)
+	if err != nil {
+		m.MessageArea.AppendMessage(">**ERROR** Could not read "+arg+": "+err.Error(), false)
+		return nil
+	}
+	defer root.Close()
+	content, truncated, err := readBoundedTextInRoot(root, rel, maxContextFileBytes)
 	if err != nil {
 		m.MessageArea.AppendMessage(">**ERROR** Could not read "+arg+": "+err.Error(), false)
 		return nil
@@ -350,13 +379,54 @@ func (m *model) contextCommand(args []string) tea.Cmd {
 	return nil
 }
 
+// safeContextPath validates a /context argument and returns the project-
+// relative name to hand to os.Root. Absolute paths and any ".." component are
+// rejected up front, even when the cleaned path would stay inside the root:
+// such arguments are almost always an attempt to reach outside the project,
+// and os.Root's own protection should not be the only line of defence.
+func safeContextPath(arg string) (string, error) {
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		return "", fmt.Errorf("empty path")
+	}
+	if filepath.IsAbs(arg) || filepath.VolumeName(arg) != "" {
+		return "", fmt.Errorf("absolute paths are not allowed")
+	}
+	for _, part := range strings.Split(filepath.ToSlash(arg), "/") {
+		if part == ".." {
+			return "", fmt.Errorf("path must stay inside the project")
+		}
+	}
+	clean := filepath.Clean(arg)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path must stay inside the project")
+	}
+	return clean, nil
+}
+
 func readBoundedText(path string, max int) (string, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", false, err
 	}
 	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, int64(max)+1))
+	return readBoundedReader(f, max)
+}
+
+// readBoundedTextInRoot reads a project-relative file through an os.Root so
+// the kernel-enforced root cannot be escaped by an absolute path, a ".."
+// component, or a symlink pointing outside the project.
+func readBoundedTextInRoot(root *os.Root, name string, max int) (string, bool, error) {
+	f, err := root.Open(name)
+	if err != nil {
+		return "", false, err
+	}
+	defer f.Close()
+	return readBoundedReader(f, max)
+}
+
+func readBoundedReader(r io.Reader, max int) (string, bool, error) {
+	data, err := io.ReadAll(io.LimitReader(r, int64(max)+1))
 	if err != nil {
 		return "", false, err
 	}

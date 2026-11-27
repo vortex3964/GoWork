@@ -87,32 +87,11 @@ func (s *Store) FinalizeSession(messages []providers.Message, totalTokens int) e
 		}
 	}
 
-	for _, msg := range messages {
-		tcJSON := ""
-		if len(msg.ToolCalls) > 0 {
-			b, err := json.Marshal(msg.ToolCalls)
-			if err != nil {
-				return fmt.Errorf("db: marshal tool calls: %w", err)
-			}
-			tcJSON = string(b)
-		}
-		if _, err := tx.Exec(`
-			INSERT INTO messages (session_id, role, content, tool_call_id, tool_calls_json, created_at)
-			VALUES (?, ?, ?, ?, ?, ?)`,
-			s.sessionID, msg.Role, msg.Content, msg.ToolCallID, tcJSON, now); err != nil {
-			return fmt.Errorf("db: insert message: %w", err)
-		}
-	}
-
-	// The loaded skill names follow their session's cascade, inserted in
-	// load order so LoadSession can restore them in that order.
-	for _, name := range s.sessionSkills {
-		if _, err := tx.Exec(`
-			INSERT INTO session_skills (session_id, skill_name, loaded_at)
-			VALUES (?, ?, ?)`,
-			s.sessionID, name, now); err != nil {
-			return fmt.Errorf("db: insert session skill: %w", err)
-		}
+	// A /save checkpoint may already have written this session's history.
+	// Replace the snapshot (rather than appending) so the final save keeps
+	// exactly one copy of every message and skill.
+	if err := replaceSessionSnapshot(tx, s.sessionID, s.sessionSkills, messages, now); err != nil {
+		return err
 	}
 
 	if err := s.pruneLocked(tx); err != nil {

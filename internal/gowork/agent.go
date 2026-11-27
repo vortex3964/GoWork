@@ -39,8 +39,10 @@ type toolResultMsg struct {
 }
 
 type modelInfoMsg struct {
-	info providers.ModelInfo
-	err  error
+	info  providers.ModelInfo
+	err   error
+	gen   uint64
+	model string
 }
 
 // compactResultMsg reports the outcome of a context-compaction call: the
@@ -182,10 +184,9 @@ func (m *model) openPermissionBox(slot int) tea.Cmd {
 func (m *model) resolvePermission(dec permisionbox.DecisionMsg) tea.Cmd {
 	slot := m.permissionSlot
 	if slot < 0 || slot >= len(m.pendingTools) {
-		m.Mode = modePrompt
 		m.permissionSlot = -1
-		m.Prompt.Focus()
-		return nil
+		m.permissionBox.Hide()
+		return m.restoreModeForActiveTab()
 	}
 
 	pt := m.pendingTools[slot]
@@ -225,13 +226,22 @@ func (m *model) resolvePermission(dec permisionbox.DecisionMsg) tea.Cmd {
 
 	m.permissionSlot = -1
 	m.permissionBox.Hide()
-	m.Mode = modePrompt
-	m.Prompt.Focus()
+	restoreCmd := m.restoreModeForActiveTab()
 	if cmd := m.dispatchPendingBatch(); cmd != nil {
+		if restoreCmd != nil {
+			return tea.Batch(restoreCmd, cmd)
+		}
 		return cmd
 	}
 	// Everything in the batch was resolved without a runnable tool, so finalize.
-	return m.loopAfterBatch()
+	nextCmd := m.loopAfterBatch()
+	if restoreCmd != nil && nextCmd != nil {
+		return tea.Batch(restoreCmd, nextCmd)
+	}
+	if restoreCmd != nil {
+		return restoreCmd
+	}
+	return nextCmd
 }
 
 // dispatchPendingBatch launches every pending tool that has no result yet.
@@ -337,7 +347,10 @@ func (m *model) endTurn() {
 		m.cancel()
 		m.cancel = nil
 	}
-	m.Prompt.Focus()
+	// Return to the active tab's layout. On stats/skills this keeps their
+	// pane and mode instead of leaving a stray PROMPT statusline; only the
+	// code tab actually focuses the prompt bar.
+	m.restoreModeForActiveTab()
 }
 
 // isTurnInterrupt reports whether a keypress should stop the in-flight turn.
@@ -361,7 +374,10 @@ func (m *model) answerQuestionnaire(content string) {
 	m.questionnaireSlot = -1
 	m.questionnaire = questionnaire.New(nil)
 	questionnaire.Clear()
+	// Leave the questionnaire mode explicitly, then let the active tab pick
+	// the layout: stats/skills must not be forced back to the prompt bar.
 	m.Mode = modePrompt
+	m.restoreModeForActiveTab()
 	m.applyPanelSize()
 }
 

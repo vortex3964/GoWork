@@ -238,6 +238,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Db.RecordUsage(m.status.modelID, m.status.providerName,
 				usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens,
 				len(msg.result.ToolCalls), time.Now())
+			m.refreshStatsIfVisible()
 		}
 
 		// The user pressed ctrl+i. Even if the provider ignored the cancel
@@ -423,6 +424,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Db.RecordUsage(m.status.modelID, m.status.providerName,
 				msg.usage.PromptTokens, msg.usage.CompletionTokens,
 				msg.usage.TotalTokens, 0, time.Now())
+			m.refreshStatsIfVisible()
 		}
 		// compactCmd already applied CompactContext and derived the new
 		// prompt size from the provider-reported summary usage. Its
@@ -454,6 +456,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if pt.call.Tool_name == questionnairetool.ToolName &&
 			activeQuestions != nil && m.questionnaireSlot == -1 && !m.stopRequested {
 			m.questionnaireSlot = msg.index
+			// The questionnaire replaces the prompt bar only on the code
+			// tab. Bring that layout to the front so a question can't be
+			// hidden behind the stats/skills pane while the batch waits.
+			m.showCodeTab()
 			m.Mode = modeQuestionnaire
 			m.questionnaire = questionnaire.New(activeQuestions)
 			m.questionnaire.SetWidth(m.winWidth)
@@ -515,6 +521,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.loopAfterBatch()
 	case modelInfoMsg:
+		// Provider/model switches bump infoGen and start a fresh lookup;
+		// a slower response for an older selection must not overwrite the
+		// current model's context window.
+		if msg.gen != m.infoGen {
+			return m, nil
+		}
+		if msg.model != "" && msg.model != m.status.modelID {
+			return m, nil
+		}
 		if msg.err == nil {
 			m.status.contextWindow = msg.info.ContextWindow
 		}

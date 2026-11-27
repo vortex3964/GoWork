@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+
 	"GoWork/Db"
 )
 
@@ -102,6 +104,55 @@ func TestViewCacheReusesFrameUntilStateChanges(t *testing.T) {
 		if m.cache.builds != before+1 {
 			t.Fatalf("%s change rebuilt %d times, want 1", step.name, m.cache.builds-before)
 		}
+	}
+}
+
+// TestFilterOwnsArrowKeysWhileActive keeps the filter input usable: arrows
+// must move the text cursor instead of navigating the list or the chart, and
+// Esc is the only key that dismisses the filter.
+func TestFilterOwnsArrowKeysWhileActive(t *testing.T) {
+	m := testModel()
+	m.filtering = true
+	m.filterInput.Focus()
+	m.filterInput.SetValue("alpha")
+	m.applyFilter()
+
+	cursor := m.cursor
+	day := m.dayCursor
+	offset := m.dayOffset
+
+	pos := m.filterInput.Position()
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
+	m = updated
+	if got := m.filterInput.Position(); got != pos-1 {
+		t.Fatalf("left while filtering moved the filter cursor to %d, want %d", got, pos-1)
+	}
+	if m.cursor != cursor || m.dayCursor != day || m.dayOffset != offset {
+		t.Fatalf("left while filtering moved list/chart state: cursor %d->%d day %d->%d offset %d->%d",
+			cursor, m.cursor, day, m.dayCursor, offset, m.dayOffset)
+	}
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m = updated
+	if m.cursor != cursor {
+		t.Fatalf("down while filtering moved the list cursor to %d, want %d", m.cursor, cursor)
+	}
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	m = updated
+	if got := m.filterInput.Position(); got != pos {
+		t.Fatalf("right while filtering moved the filter cursor to %d, want %d", got, pos)
+	}
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = updated
+	if m.filtering {
+		t.Fatal("esc did not dismiss the filter")
+	}
+	if m.filterInput.Value() != "" {
+		t.Fatalf("esc left filter text %q, want cleared", m.filterInput.Value())
+	}
+	if len(m.items) != len(m.stats) {
+		t.Fatalf("dismissing the filter left %d items, want %d", len(m.items), len(m.stats))
 	}
 }
 

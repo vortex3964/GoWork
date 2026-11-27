@@ -108,6 +108,22 @@ func (m *model) toggleTodoPanel() {
 	m.applyPanelSize()
 }
 
+// showCodeTab activates the code tab if another tab is currently visible.
+// Used when a component that only renders there (the questionnaire) needs to
+// be surfaced.
+func (m *model) showCodeTab() bool {
+	for i, tab := range m.Tabs.Tabs {
+		if tab.Name == "code" {
+			if m.Tabs.ActiveIdx == i {
+				return false
+			}
+			m.Tabs.ActiveIdx = i
+			return true
+		}
+	}
+	return false
+}
+
 // syncModeToTab keeps the active mode in step with the active tab: the stats
 // tab runs in its own stats mode (statusline pinned, prompt bar hidden), the
 // skills tab pins both bars (the pane shares the message-area band), any
@@ -171,6 +187,16 @@ func (m *model) refreshStats() {
 		daily = nil
 	}
 	m.Stats.SetData(rows, daily)
+}
+
+// refreshStatsIfVisible reloads the dashboard when the stats tab is the one
+// on screen. Generation results are recorded while the user may already be
+// looking at stats, so waiting for the next tab entry would leave stale
+// numbers behind a live dashboard.
+func (m *model) refreshStatsIfVisible() {
+	if len(m.Tabs.Tabs) > 0 && m.Tabs.Active().Name == "stats" {
+		m.refreshStats()
+	}
 }
 
 // refreshSkills rebuilds the skills tab's discovery snapshot: every skill
@@ -256,7 +282,13 @@ func (m model) promptTop() int {
 // changes list can outlive a tab switch, so forcing modePrompt unconditionally
 // would leave stats/skills showing a PROMPT statusline while their pane still
 // owns the keys.
+//
+// A live questionnaire owns the bottom bar until it is answered: never hide it
+// by switching modes from under it.
 func (m *model) restoreModeForActiveTab() tea.Cmd {
+	if m.Mode == modeQuestionnaire {
+		return nil
+	}
 	m.Mode = modePrompt
 	m.syncModeToTab()
 	if m.Mode == modePrompt {

@@ -475,18 +475,32 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		key := msg.String()
-		switch key {
-		case "/":
-			m.filtering = true
-			m.filterInput.Focus()
-			return m, nil
-		case "esc":
-			if m.filtering {
+
+		// While the filter is active the text input owns the arrow keys:
+		// ←/→ move its cursor and ↑/↓ must not move the model list
+		// underneath it. Other keys keep their existing behaviour (Esc
+		// clears, Enter magnifies, printables extend the query).
+		if m.filtering {
+			if key == "esc" {
 				m.filterInput.Blur()
 				m.filterInput.SetValue("")
 				m.filtering = false
 				m.applyFilter()
+				return m, nil
 			}
+			switch key {
+			case "up", "down", "left", "right":
+				var cmd tea.Cmd
+				m.filterInput, cmd = m.filterInput.Update(msg)
+				m.applyFilter()
+				return m, cmd
+			}
+		}
+
+		switch key {
+		case "/":
+			m.filtering = true
+			m.filterInput.Focus()
 			return m, nil
 		case "up":
 			if m.cursor > 0 {
@@ -502,24 +516,19 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			// ← moves the day highlight one day into the past. At the
 			// left edge of the window the chart pages one day further
 			// back (until the oldest recorded usage) so the selected
-			// day keeps walking. Not available while filtering (the
-			// input eats arrow keys for cursor movement instead).
-			if !m.filtering {
-				if m.dayCursor > 0 {
-					m.dayCursor--
-				} else if m.dayOffset < m.oldestDayOffset() {
-					m.dayOffset++
-					m.clampDayOffset()
-				}
+			// day keeps walking.
+			if m.dayCursor > 0 {
+				m.dayCursor--
+			} else if m.dayOffset < m.oldestDayOffset() {
+				m.dayOffset++
+				m.clampDayOffset()
 			}
 			return m, nil
 		case "right":
-			if !m.filtering {
-				if m.dayCursor < windowDays-1 {
-					m.dayCursor++
-				} else if m.dayOffset > 0 {
-					m.dayOffset--
-				}
+			if m.dayCursor < windowDays-1 {
+				m.dayCursor++
+			} else if m.dayOffset > 0 {
+				m.dayOffset--
 			}
 			return m, nil
 		case "enter":

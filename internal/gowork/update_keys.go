@@ -60,9 +60,13 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// the tool batch. A terminal delivers ctrl+i as the same byte as tab
 	// (0x09), so while a turn is running both spellings interrupt. When
 	// idle, plain tab stays free for tab switching and ctrl+i is a no-op.
+	// While the slash-command palette is open, tab belongs to it as the
+	// completion key even during a running turn; only ctrl+i interrupts
+	// then.
 	if msg_str == "ctrl+i" || msg_str == "tab" {
 		turnRunning := *m.AiThink && m.cancel != nil
-		if isTurnInterrupt(msg_str, turnRunning) {
+		paletteTab := msg_str == "tab" && m.slashPaletteVisible()
+		if isTurnInterrupt(msg_str, turnRunning) && !paletteTab {
 			m.stopRequested = true
 			m.cancel()
 			if m.Mode == modeQuestionnaire {
@@ -144,7 +148,7 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Slash-command palette keys. It sits above the prompt and owns its
 	// navigation while visible, before the prompt's own up/enter/esc
 	// handling and before global tab switching.
-	if m.Tabs.Active().Name == "code" && (m.Mode == modePrompt || m.Mode == modeIdle) && m.Prompt.PaletteVisible() {
+	if m.slashPaletteVisible() {
 		switch msg_str {
 		case "up":
 			m.Prompt.MovePalette(-1)
@@ -487,6 +491,14 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m.forwardToComponents(msg)
+}
+
+// slashPaletteVisible reports whether the command palette can own keys right
+// now: it only renders over the code tab's prompt bar.
+func (m model) slashPaletteVisible() bool {
+	return m.Tabs.Active().Name == "code" &&
+		(m.Mode == modePrompt || m.Mode == modeIdle) &&
+		m.Prompt.PaletteVisible()
 }
 
 func popupCopyMessage(val string) string {
