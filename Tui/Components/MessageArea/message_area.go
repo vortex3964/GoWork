@@ -5,7 +5,6 @@ import (
 	"sort"
 	"strings"
 
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	glamour "charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
@@ -111,21 +110,20 @@ func SummarizeToolInput(input json.RawMessage) string {
 }
 
 type Model struct {
-	vp       viewport.Model
+	vp       contentViewport
 	messages []message
 	rendered []string
 	size     int
 
-	// content caches the joined rendered blocks handed to the viewport.
-	// Appending and streaming extend it in place, so pushContent never
-	// has to rejoin the whole history on every streamed delta.
-	content string
+	// blockStart/blockLines map each rendered block to its slice of the
+	// viewport's logical lines. They let a streamed delta replace just the
+	// live block instead of re-splitting and re-measuring the whole history.
+	blockStart []int
+	blockLines []int
 
 	// liveIdx is the index of the assistant message currently being
-	// streamed, or -1 when nothing is streaming. livePrefix caches the
-	// joined blocks before it, so a delta only has to swap the tail.
-	liveIdx    int
-	livePrefix string
+	// streamed, or -1 when nothing is streaming.
+	liveIdx int
 
 	// renderCount counts markdown (glamour) renders. Tests use it to make
 	// sure streaming doesn't re-render the growing answer on every delta.
@@ -147,14 +145,11 @@ type Model struct {
 
 // New creates an empty message area.
 func New() Model {
-	vp := viewport.New()
-	vp.Style = lipgloss.NewStyle().
+	vp := newContentViewport(lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(style.Border).
 		PaddingLeft(2).
-		PaddingRight(2)
-
-	vp.SoftWrap = true
+		PaddingRight(2))
 
 	return Model{
 		vp:        vp,
@@ -185,9 +180,7 @@ func (m *Model) UpdateToolMessage(index int, status ToolStatus, result string) {
 	}
 	m.messages[index].status = status
 	m.messages[index].result = result
-	m.rendered[index] = m.renderBlock(m.messages[index], m.contentWidth())
-	m.rebuildContent()
-	m.pushContent()
+	m.replaceBlock(index, m.renderBlock(m.messages[index], m.contentWidth()))
 	m.vp.GotoBottom()
 }
 
@@ -197,7 +190,6 @@ func (m *Model) UpdateToolMessage(index int, status ToolStatus, result string) {
 // stream ends.
 func (m *Model) LiveAssistantStart() int {
 	m.liveIdx = len(m.messages)
-	m.livePrefix = m.content
 	m.appendRendered(NewMessage("", false), m.renderLiveBlock("", m.contentWidth()))
 	return m.liveIdx
 }
@@ -206,9 +198,9 @@ func (m *Model) LiveAssistantStart() int {
 // (created by LiveAssistantStart) with content. While the answer streams it
 // is kept as a plain-text block: running glamour over the whole growing
 // answer on every delta is O(n²) over the stream. Only the tail block is
-// regenerated and swapped into the cached content, so the rest of the
-// history is never re-joined. No-op for a tool or user message, an
-// out-of-range index, or a message that isn't the live one.
+// regenerated and swapped into the viewport's line buffer, so the rest of
+// the history is never re-split or re-measured. No-op for a tool or user
+// message, an out-of-range index, or a message that isn't the live one.
 func (m *Model) LiveAssistantUpdate(index int, content string) {
 	if index < 0 || index >= len(m.messages) || index != m.liveIdx {
 		return
@@ -220,14 +212,7 @@ func (m *Model) LiveAssistantUpdate(index int, content string) {
 	msg.content = content
 	m.messages[index] = msg
 
-	block := m.renderLiveBlock(content, m.contentWidth())
-	m.rendered[index] = block
-	if m.livePrefix == "" {
-		m.content = block
-	} else {
-		m.content = m.livePrefix + blockSeparator + block
-	}
-	m.pushContent()
+	m.replaceBlock(index, m.renderLiveBlock(content, m.contentWidth()))
 	m.vp.GotoBottom()
 }
 
@@ -245,10 +230,7 @@ func (m *Model) LiveAssistantFinish(index int, content string) {
 	msg.content = content
 	m.messages[index] = msg
 	m.liveIdx = -1
-	m.livePrefix = ""
-	m.rendered[index] = m.renderBlock(msg, m.contentWidth())
-	m.rebuildContent()
-	m.pushContent()
+	m.replaceBlock(index, m.renderBlock(msg, m.contentWidth()))
 	m.vp.GotoBottom()
 }
 
@@ -256,26 +238,53 @@ func (m *Model) append(msg message) {
 	m.appendRendered(msg, m.renderBlock(msg, m.contentWidth()))
 }
 
-// appendRendered adds a message and its already-rendered block, extending
-// the cached joined content instead of re-joining the whole history.
-func (m *Model) appendRendered(msg message, block string) {
-	m.messages = append(m.messages, msg)
-	m.size += 1
+// splitBlockLines splits a rendered block into viewport lines, normalising
+// Windows line endings the way the bubbles viewport's SetContent used to.
+func splitBlockLines(block string) []string {
+	if strings.Contains(block, "\r\n") {
+		block = strings.ReplaceAll(block, "\r\n", "\n")
+	}
+	return strings.Split(block, "\n")
+}
 
+// appendRendered adds a message and its already-rendered block, extending
+// the viewport's line buffer in place instead of re-joining the history.
+func (m *Model) appendRendered(msg message, block string) {
+	if len(m.messages) > 0 {
+		m.vp.AppendLines([]string{""}) // one blank line between message blocks
+	}
+
+	lines := splitBlockLines(block)
+	start := len(m.vp.lines)
+	m.vp.AppendLines(lines)
+
+	m.messages = append(m.messages, msg)
+	m.size++
 	m.rendered = append(m.rendered, block)
-	if len(m.rendered) == 1 {
-		m.content = block
-	} else {
-		m.content += blockSeparator + block
-	}
-	if m.vp.Width() > 0 {
-		// Only push to the viewport once it actually has dimensions
-		// SetContent before any SetWidth/SetHeight call used to be a
-		// sharp edge in older viewport betas. Cheap to guard against,
-		// so no reason not to.
-		m.pushContent()
-	}
+	m.blockStart = append(m.blockStart, start)
+	m.blockLines = append(m.blockLines, len(lines))
+
 	m.vp.GotoBottom()
+}
+
+// replaceBlock re-renders one block's slice of the viewport line buffer and
+// shifts the starts of the blocks after it. Streaming only ever replaces the
+// live tail, so this stays proportional to the changed block.
+func (m *Model) replaceBlock(index int, block string) {
+	if index < 0 || index >= len(m.rendered) {
+		return
+	}
+	lines := splitBlockLines(block)
+	start := m.blockStart[index]
+	end := start + m.blockLines[index]
+	m.vp.ReplaceLines(start, end, lines)
+
+	delta := len(lines) - m.blockLines[index]
+	m.blockLines[index] = len(lines)
+	for i := index + 1; i < len(m.blockStart); i++ {
+		m.blockStart[i] += delta
+	}
+	m.rendered[index] = block
 }
 
 func (m Model) Size() int {
@@ -283,18 +292,17 @@ func (m Model) Size() int {
 }
 
 func (m *Model) ScrollUp() {
-	m.vp.ScrollUp(m.vp.MouseWheelDelta)
+	m.vp.ScrollUp(m.vp.mouseWheelDelta)
 }
 
 func (m *Model) ScrollDown() {
-	m.vp.ScrollDown(m.vp.MouseWheelDelta)
+	m.vp.ScrollDown(m.vp.mouseWheelDelta)
 }
 
 // Update forwards messages to the underlying viewport
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
-	var cmd tea.Cmd
-	m.vp, cmd = m.vp.Update(msg)
-	return m, cmd
+	m.vp.Update(msg)
+	return m, nil
 }
 
 // View renders the message area, including its border and outer margin.
@@ -316,12 +324,18 @@ func (m *Model) SetSize(outerWidth int, outerHeight int) {
 	}
 
 	prevWidth := m.vp.Width()
+	// Follow the tail across a resize when the user was already at the
+	// bottom (the common streaming case); otherwise keep their scroll
+	// position as close as the new layout allows.
+	atBottom := m.vp.AtBottom()
 	m.vp.SetWidth(inner)
 	m.vp.SetHeight(h)
 
 	if prevWidth == 0 || inner != prevWidth {
 		m.rebuildRendered()
-		m.pushContent()
+	}
+	if atBottom {
+		m.vp.GotoBottom()
 	}
 }
 
@@ -359,7 +373,7 @@ func (m *Model) rebuildRendered() {
 		rendered[i] = m.renderBlock(msg, width)
 	}
 	m.rendered = rendered
-	m.rebuildContent()
+	m.rebuildViewportLines()
 }
 
 // renderLiveBlock renders the streaming assistant message as plain styled
@@ -474,22 +488,23 @@ func truncateToolResult(s string) string {
 	return s
 }
 
-// rebuildContent recomputes the cached joined content from the rendered
-// blocks and refreshes the prefix cached for the live block. Only layout or
-// history changes call this; streamed deltas patch the tail instead.
-func (m *Model) rebuildContent() {
-	m.content = strings.Join(m.rendered, blockSeparator)
-	if m.liveIdx >= 0 && m.liveIdx <= len(m.rendered) {
-		m.livePrefix = strings.Join(m.rendered[:m.liveIdx], blockSeparator)
+// rebuildViewportLines is the slow path: it re-splits every rendered block
+// into the viewport's logical lines. Layout changes call it; streamed deltas
+// patch only the live tail via replaceBlock.
+func (m *Model) rebuildViewportLines() {
+	lines := make([]string, 0, len(m.rendered)*4)
+	m.blockStart = make([]int, len(m.rendered))
+	m.blockLines = make([]int, len(m.rendered))
+	for i, block := range m.rendered {
+		if i > 0 {
+			lines = append(lines, "") // one blank line between message blocks
+		}
+		blockLines := splitBlockLines(block)
+		m.blockStart[i] = len(lines)
+		m.blockLines[i] = len(blockLines)
+		lines = append(lines, blockLines...)
 	}
-}
-
-// pushContent hands the cached joined content to the viewport. SetContent
-// always wants the whole string, but every block was already styled once
-// when its message was appended/updated, and the join itself is cached, so
-// this doesn't re-render or re-join anything.
-func (m *Model) pushContent() {
-	m.vp.SetContent(m.content)
+	m.vp.SetLines(lines)
 }
 
 func (m *Model) LastUserMessage(n int) string {

@@ -34,7 +34,7 @@ func TestLiveStreamRendersMarkdownOnce(t *testing.T) {
 	}
 
 	// The streamed view is the raw text while tokens are arriving.
-	if !strings.Contains(m.content, "token token") {
+	if !strings.Contains(strings.Join(m.vp.lines, "\n"), "token token") {
 		t.Fatalf("live content missing streamed text")
 	}
 
@@ -42,11 +42,12 @@ func TestLiveStreamRendersMarkdownOnce(t *testing.T) {
 	if m.renderCount != 1 {
 		t.Fatalf("final content rendered markdown %d times, want exactly 1", m.renderCount)
 	}
-	if !strings.Contains(m.content, "Heading") {
-		t.Fatalf("final content missing rendered heading, got:\n%s", m.content)
+	view := strings.Join(m.vp.lines, "\n")
+	if !strings.Contains(view, "Heading") {
+		t.Fatalf("final content missing rendered heading, got:\n%s", view)
 	}
-	if strings.Contains(m.content, "# Heading") {
-		t.Fatalf("final content still shows raw markdown marker:\n%s", m.content)
+	if strings.Contains(view, "# Heading") {
+		t.Fatalf("final content still shows raw markdown marker:\n%s", view)
 	}
 
 	// Late updates after finalization are ignored, so the markdown render
@@ -58,7 +59,7 @@ func TestLiveStreamRendersMarkdownOnce(t *testing.T) {
 }
 
 // TestContentCacheTracksAllMutations keeps the incrementally maintained
-// joined content in sync with the rendered blocks across appends, live
+// viewport line buffer in sync with the rendered blocks across appends, live
 // updates, tool updates, finalization and resize.
 func TestContentCacheTracksAllMutations(t *testing.T) {
 	m := New()
@@ -66,9 +67,10 @@ func TestContentCacheTracksAllMutations(t *testing.T) {
 
 	assertContent := func(stage string) {
 		t.Helper()
-		want := strings.Join(m.rendered, blockSeparator)
-		if m.content != want {
-			t.Fatalf("%s: cached content out of sync (len %d, want %d)", stage, len(m.content), len(want))
+		want := strings.Split(strings.Join(m.rendered, blockSeparator), "\n")
+		got := strings.Join(m.vp.lines, "\n")
+		if got != strings.Join(want, "\n") {
+			t.Fatalf("%s: viewport lines out of sync (got %d lines, want %d)", stage, len(m.vp.lines), len(want))
 		}
 	}
 

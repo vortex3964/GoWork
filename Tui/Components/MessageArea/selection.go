@@ -179,7 +179,7 @@ func (m *Model) contentLineAt(x, y int) int {
 	if y < 1 || y >= m.vp.Height()-1 {
 		return -1
 	}
-	return m.vp.YOffset() + (y - 1)
+	return m.vp.LineAtRow(m.vp.YOffset() + (y - 1))
 }
 
 // messageAtLine returns the message whose block contains line, or the last
@@ -206,12 +206,8 @@ func (m Model) MessageAtLine(line int) int { return m.messageAtLine(line) }
 // blockStartLines returns the content line each rendered message block
 // starts at. Blocks are joined by msgGap blank lines.
 func (m Model) blockStartLines() []int {
-	starts := make([]int, len(m.rendered))
-	line := 0
-	for i, block := range m.rendered {
-		starts[i] = line
-		line += strings.Count(block, "\n") + 1 + msgGap
-	}
+	starts := make([]int, len(m.blockStart))
+	copy(starts, m.blockStart)
 	return starts
 }
 
@@ -229,7 +225,7 @@ func (m *Model) ensureSelectionVisible() {
 	if index < 0 || index >= len(starts) {
 		return
 	}
-	m.vp.EnsureVisible(starts[index], 0, 0)
+	m.vp.EnsureVisible(m.vp.RowAtLine(starts[index]))
 }
 
 // overlaySelection draws a small gutter marker in the viewport's left
@@ -248,7 +244,7 @@ func (m Model) overlaySelection(view string) string {
 		if index < 0 || index >= len(starts) {
 			return -1
 		}
-		y := 1 + starts[index] - m.vp.YOffset()
+		y := 1 + m.vp.RowAtLine(starts[index]) - m.vp.YOffset()
 		if y < 1 || y >= m.vp.Height()-1 {
 			return -1
 		}
