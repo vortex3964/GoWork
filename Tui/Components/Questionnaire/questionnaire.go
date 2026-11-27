@@ -5,6 +5,7 @@ package questionnaire
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -19,17 +20,56 @@ type Question struct {
 	Answers  []string
 }
 
-// questionaire is the single active questionnaire shared by the tool and the tui
-var questionaire []Question
+// questionaire is the single active questionnaire shared by the tool and the
+// tui. Tools write it from parallel goroutines while the update loop reads it,
+// so all access goes through questionaireMu.
+var (
+	questionaireMu sync.RWMutex
+	questionaire   []Question
+)
 
-// Active returns the pending questionnaire or nil when none is active
-func Active() []Question { return questionaire }
+// Active returns a copy of the pending questionnaire or nil when none is
+// active.
+func Active() []Question {
+	questionaireMu.RLock()
+	defer questionaireMu.RUnlock()
 
-// SetActive stores the questionnaire the ai asked for
-func SetActive(qs []Question) { questionaire = qs }
+	return cloneQuestions(questionaire)
+}
+
+// SetActive stores a copy of the questionnaire the ai asked for
+func SetActive(qs []Question) {
+	qs = cloneQuestions(qs)
+
+	questionaireMu.Lock()
+	defer questionaireMu.Unlock()
+
+	questionaire = qs
+}
 
 // Clear drops the active questionnaire
-func Clear() { questionaire = nil }
+func Clear() {
+	questionaireMu.Lock()
+	defer questionaireMu.Unlock()
+
+	questionaire = nil
+}
+
+// cloneQuestions deep copies qs so callers can never share the global state's
+// backing arrays, preserving nil when qs is nil.
+func cloneQuestions(qs []Question) []Question {
+	if qs == nil {
+		return nil
+	}
+	out := make([]Question, len(qs))
+	for i, q := range qs {
+		out[i] = q
+		if q.Answers != nil {
+			out[i].Answers = append([]string(nil), q.Answers...)
+		}
+	}
+	return out
+}
 
 // Height is how many rows the questionnaire occupies in place of the prompt bar
 const Height = 6

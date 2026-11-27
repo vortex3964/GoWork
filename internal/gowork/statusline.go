@@ -94,7 +94,7 @@ func renderStatusLine(m model) string {
 		})
 	}
 	if m.todoPanelOpen {
-		todoCount := todo.GetTodoList().Size
+		todoCount := todo.GetTodoList().Size()
 		left += renderChain([]segment{
 			{bg: statusTodoBG, text: fmt.Sprintf("TASKS %d", todoCount)},
 		})

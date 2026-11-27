@@ -107,7 +107,7 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		return tools.Errf("unknown action %q (use baseline, push, mark, clear or list)", input.Action), nil
 	}
 
-	content := fmt.Sprintf("total %d:\n%s", list.Size, list.String())
+	content := fmt.Sprintf("total %d:\n%s", list.Size(), list.String())
 	return tools.Ok(content), nil
 }
 

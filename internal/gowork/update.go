@@ -430,11 +430,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The questions_tool parks the ai here: hold its batch slot open
 		// and render the questionnaire in place of the prompt bar until
 		// the user answers. aiThink stays true so the model can't continue.
+		activeQuestions := questionnaire.Active()
 		if pt.call.Tool_name == questionnairetool.ToolName &&
-			questionnaire.Active() != nil && m.questionnaireSlot == -1 && !m.stopRequested {
+			activeQuestions != nil && m.questionnaireSlot == -1 && !m.stopRequested {
 			m.questionnaireSlot = msg.index
 			m.Mode = modeQuestionnaire
-			m.questionnaire = questionnaire.New(questionnaire.Active())
+			m.questionnaire = questionnaire.New(activeQuestions)
 			m.questionnaire.SetWidth(m.winWidth)
 			m.applyPanelSize()
 			return m, nil
