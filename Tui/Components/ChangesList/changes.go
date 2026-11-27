@@ -746,6 +746,105 @@ func expandEdits(src []byte, units []mergeUnit, edits []Edit, accepted []byte) (
 	return expanded, true
 }
 
+// addLineTokens adds every whole line in data to set, matching the tokens
+// diffmatchpatch's line diff uses (each line includes its newline).
+func addLineTokens(set map[string]struct{}, data []byte) {
+	for start := 0; start < len(data); {
+		idx := bytes.IndexByte(data[start:], '\n')
+		end := len(data)
+		if idx >= 0 {
+			end = start + idx + 1
+		}
+		set[string(data[start:end])] = struct{}{}
+		start = end
+	}
+}
+
+// countChangedLines increments counts for every line in set that appears in
+// data and reports whether one of them has now been seen twice.
+func countChangedLines(data []byte, set map[string]struct{}, counts map[string]int) bool {
+	if len(set) == 0 {
+		return false
+	}
+	for start := 0; start < len(data); {
+		idx := bytes.IndexByte(data[start:], '\n')
+		end := len(data)
+		if idx >= 0 {
+			end = start + idx + 1
+		}
+		line := string(data[start:end])
+		if _, changed := set[line]; changed {
+			counts[line]++
+			if counts[line] > 1 {
+				return true
+			}
+		}
+		start = end
+	}
+	return false
+}
+
+// unitAbsorbedByEdits reports whether an expanded edit already covers the
+// pending unit, in which case the unit's content is part of that edit hunk.
+func unitAbsorbedByEdits(u mergeUnit, expanded []mergeExpanded) bool {
+	for _, e := range expanded {
+		if u.accStart >= e.accStart && u.accEnd <= e.accEnd {
+			return true
+		}
+	}
+	return false
+}
+
+// ambiguousLineAlignment reports whether a global line diff could align
+// repeated lines differently from the targeted per-hunk insertion.
+//
+// The fast path places each hunk at its known offset. A global diff is free
+// to match a changed line against an identical line elsewhere in the file
+// instead, shifting the hunk boundary (for example replacing every "d" with
+// "bar" in a file that already contains "bar"). Whenever a line inside a
+// changed hunk also occurs anywhere across the old and new views, defer to
+// the legacy whole-file diff so the output remains byte-identical.
+func ambiguousLineAlignment(src, accepted []byte, changes []Change, units []mergeUnit, expanded []mergeExpanded, edits []Edit) bool {
+	changedLines := make(map[string]struct{})
+
+	for _, e := range expanded {
+		if bytes.Equal(e.oldText, e.newText) {
+			continue // no marker block for this span
+		}
+		addLineTokens(changedLines, e.oldText)
+		addLineTokens(changedLines, e.newText)
+	}
+	for _, u := range units {
+		if !u.pending || unitAbsorbedByEdits(u, expanded) {
+			continue
+		}
+		old := src[u.oldStart:u.oldEnd]
+		new := src[u.newStart:u.newEnd]
+		if bytes.Equal(old, new) {
+			continue
+		}
+		addLineTokens(changedLines, old)
+		addLineTokens(changedLines, new)
+	}
+
+	if len(changedLines) == 0 {
+		return false
+	}
+
+	// A changed line is unambiguous only if it occurs exactly once across
+	// both views. If it occurs again — as a pending old/new half, in another
+	// edit's replacement, or in untouched text — Myers is free to pair the
+	// global occurrences differently than the per-hunk path does.
+	rejected := RejectAllChangesBytes(src, changes)
+	updated := applyEdits(accepted, edits)
+
+	counts := make(map[string]int)
+	if countChangedLines(rejected, changedLines, counts) {
+		return true
+	}
+	return countChangedLines(updated, changedLines, counts)
+}
+
 // MergeMarkerEdits returns src with marker blocks for every pending change
 // plus fresh marker blocks for edits. It works from the known marker offsets
 // and edit byte ranges, so the file is never diffed as a whole.
@@ -754,6 +853,11 @@ func expandEdits(src []byte, units []mergeUnit, edits []Edit, accepted []byte) (
 // offsets refer to accepted. Existing pending changes are preserved by
 // re-emitting their old/new halves; an edit that intersects a pending block
 // absorbs that whole block, mirroring the previous full-file diff.
+//
+// When a changed line also occurs elsewhere in either view, a global line
+// diff is free to pair the duplicate occurrences differently than fixed
+// per-hunk offsets would. Those cases (and malformed offsets) fall back to
+// the legacy whole-file diff so the output stays byte-identical.
 func MergeMarkerEdits(src, accepted []byte, changes []Change, edits []Edit) []byte {
 	// The line-oriented fast path assumes newline-terminated text. A file
 	// without a final newline can gain one when it is rewritten; fall back to
@@ -776,6 +880,17 @@ func MergeMarkerEdits(src, accepted []byte, changes []Change, edits []Edit) []by
 
 	expanded, ok := expandEdits(src, units, edits, accepted)
 	if !ok {
+		return mergeMarkerEditsFallback(src, accepted, changes, edits)
+	}
+	// A replacement without a trailing newline can pull the following line
+	// into its hunk. If that now reaches into another edit's span, the fixed
+	// per-hunk layout is no longer valid.
+	for i := 1; i < len(expanded); i++ {
+		if expanded[i].accStart < expanded[i-1].accEnd {
+			return mergeMarkerEditsFallback(src, accepted, changes, edits)
+		}
+	}
+	if ambiguousLineAlignment(src, accepted, changes, units, expanded, edits) {
 		return mergeMarkerEditsFallback(src, accepted, changes, edits)
 	}
 
@@ -959,8 +1074,9 @@ func MergeMarkerEdits(src, accepted []byte, changes []Change, edits []Edit) []by
 	return []byte(out.String())
 }
 
-// mergeMarkerEditsFallback is the old whole-file implementation, used only
-// for malformed offsets or text that does not end in a newline.
+// mergeMarkerEditsFallback is the old whole-file implementation, used for
+// malformed offsets, text that does not end in a newline, and changed lines
+// whose duplicates make global alignment ambiguous.
 func mergeMarkerEditsFallback(src, accepted []byte, changes []Change, edits []Edit) []byte {
 	rejected := RejectAllChangesBytes(src, changes)
 	updated := applyEdits(accepted, edits)

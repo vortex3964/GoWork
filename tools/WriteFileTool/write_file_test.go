@@ -1,6 +1,7 @@
 package writefiletool_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -8,8 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	cl "GoWork/Tui/Components/ChangesList"
 	"GoWork/tools"
-	writefiletool "GoWork/tools/WriteFileTool" )
+	writefiletool "GoWork/tools/WriteFileTool"
+)
 
 type testTool struct {
 	tools.AgentTool
@@ -219,6 +222,37 @@ func TestRun_OldEqualsNew_NoOp(t *testing.T) {
 	})
 
 	_, _ = tool.Run(context.Background(), input)
+}
+
+// TestRun_DuplicateReplacementLine_MatchesLegacyDiff is the reported
+// counterexample: two replacements of "d" with "bar" in a file that already
+// contains "bar". A global line diff aligns the repeated lines differently
+// from two independent hunks, so write_file must defer to that diff.
+func TestRun_DuplicateReplacementLine_MatchesLegacyDiff(t *testing.T) {
+	const src = "a\nbar\nd\nbar\nd\n"
+	tool, dir := setupTool(t)
+	path := writeTestFile(t, dir, "dup.go", src)
+
+	input := mustMarshal(t, writefiletool.Input{
+		FilePath:   "dup.go",
+		Old:        "d",
+		New:        "bar",
+		ReplaceAll: true,
+	})
+	result, err := tool.Run(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected code-level error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got tool error: %s", result.Content)
+	}
+
+	updated := bytes.ReplaceAll([]byte(src), []byte("d"), []byte("bar"))
+	want := cl.MergeMarkerBytes([]byte(src), updated)
+	got := readFile(t, path)
+	if got != string(want) {
+		t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want)
+	}
 }
 
 func TestInputSchema_HasRequiredFields(t *testing.T) {

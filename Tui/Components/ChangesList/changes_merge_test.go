@@ -173,6 +173,24 @@ func TestMergeMarkerEditsNoOpKeepsContent(t *testing.T) {
 	}
 }
 
+// TestMergeMarkerEditsDuplicateReplacementMatchesFullDiff is the concrete
+// regression case: replacing every "d" with "bar" in a file that already has
+// "bar" lines lets a global diff align the duplicates differently from two
+// fixed-offset hunks.
+func TestMergeMarkerEditsDuplicateReplacementMatchesFullDiff(t *testing.T) {
+	src := []byte("a\nbar\nd\nbar\nd\n")
+	edits := findByteEdits(src, []byte("d"), []byte("bar"), true)
+	if len(edits) != 2 {
+		t.Fatalf("setup: found %d edits, want 2", len(edits))
+	}
+
+	got := MergeMarkerEdits(src, src, nil, edits)
+	want := MergeMarkerBytes(src, bytes.ReplaceAll(src, []byte("d"), []byte("bar")))
+	if !bytes.Equal(got, want) {
+		t.Errorf("duplicate-line merge mismatch:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
 // TestMergeMarkerEditsNoTrailingNewlineFallsBack keeps the old behaviour for
 // files whose final line has no newline (the rewrite can add one).
 func TestMergeMarkerEditsNoTrailingNewlineFallsBack(t *testing.T) {
