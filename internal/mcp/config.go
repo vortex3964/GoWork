@@ -2,10 +2,12 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -28,6 +30,45 @@ const (
 	DefaultRequestTimeout  = 60 * time.Second
 	DefaultShutdownTimeout = 5 * time.Second
 )
+
+// Configuration and discovery limits. MCP servers are untrusted input: they
+// may come from a downloaded config or an attacker-controlled repository, so
+// every unbounded field is capped before it reaches the process or the model
+// context.
+const (
+	// MaxServers caps the number of configured servers in one document.
+	MaxServers = 64
+
+	// MaxServerNameBytes caps one server name.
+	MaxServerNameBytes = 64
+
+	// MaxCommandBytes caps the stdio executable path.
+	MaxCommandBytes = 4096
+
+	// MaxArgs caps the number of stdio arguments and MaxArgBytes caps each.
+	MaxArgs     = 128
+	MaxArgBytes = 8192
+
+	// MaxEnvVars caps environment entries and MaxEnvValueBytes caps values.
+	MaxEnvVars       = 128
+	MaxEnvValueBytes = 32 << 10
+
+	// MaxHeaders caps remote header entries and MaxHeaderValueBytes caps values.
+	MaxHeaders          = 64
+	MaxHeaderValueBytes = 8 << 10
+
+	// MaxToolsPerServer caps tools discovered from one server.
+	MaxToolsPerServer = 256
+
+	// MaxToolNameBytes, MaxToolDescriptionBytes and MaxToolSchemaBytes cap the
+	// tool definition copied to the provider registry.
+	MaxToolNameBytes        = 128
+	MaxToolDescriptionBytes = 16 << 10
+	MaxToolSchemaBytes      = 256 << 10
+)
+
+// ErrTooManyServers reports a configuration that exceeds MaxServers.
+var ErrTooManyServers = errors.New("mcp: too many servers")
 
 // TransportKind selects how a client reaches its server.
 type TransportKind string
@@ -62,6 +103,21 @@ type ServerConfig struct {
 	Headers  map[string]string `json:"headers,omitempty"`
 	Disabled bool              `json:"disabled,omitempty"`
 
+	// CWD is the working directory for a stdio server. Empty keeps the
+	// process-wide working directory. It is ignored for remote transports.
+	CWD string `json:"cwd,omitempty"`
+
+	// AllowPrivate explicitly permits a loopback, private or link-local URL.
+	// Without it a remote server pointed at internal infrastructure is
+	// rejected during validation.
+	AllowPrivate bool `json:"allowPrivate,omitempty"`
+
+	// Trusted and AutoApprove opt a user-level server into automatic tool
+	// approval. They are ignored for project-scope configuration: a checked-in
+	// .mcp.json can never grant itself permission.
+	Trusted     bool `json:"trusted,omitempty"`
+	AutoApprove bool `json:"autoApprove,omitempty"`
+
 	// Timeout is an alias for RequestTimeout. It exists because several MCP
 	// clients use "timeout" for per-request deadlines.
 	Timeout         Duration `json:"timeout,omitempty"`
@@ -69,6 +125,11 @@ type ServerConfig struct {
 	RequestTimeout  Duration `json:"requestTimeout,omitempty"`
 	ShutdownTimeout Duration `json:"shutdownTimeout,omitempty"`
 }
+
+// AutoApproved reports whether the server asked to skip per-call approval.
+// Callers must additionally require user scope; this method deliberately does
+// not know where the configuration came from.
+func (s ServerConfig) AutoApproved() bool { return s.Trusted || s.AutoApprove }
 
 // Duration is a time.Duration that marshals as a duration string ("30s") and
 // accepts either a string or a number of seconds when unmarshalling.
@@ -111,13 +172,29 @@ func (d *Duration) UnmarshalJSON(data []byte) error {
 }
 
 // ParseConfig parses an MCP configuration document. Server entries are
-// validated and have default timeouts applied before they are returned.
+// validated and have default timeouts applied before they are returned. Both
+// the conventional "mcpServers" key and the shorter "servers" alias are
+// accepted, but a document may not mix them.
 func ParseConfig(data []byte) (*Config, error) {
-	var file struct {
-		Servers map[string]ServerConfig `json:"mcpServers"`
+	return parseConfigDocument(data)
+}
+
+// UnmarshalJSON accepts the same document shapes as ParseConfig. It exists so
+// callers that decode through encoding/json also get alias support and the
+// same validation as file loading.
+func (c *Config) UnmarshalJSON(data []byte) error {
+	parsed, err := parseConfigDocument(data)
+	if err != nil {
+		return err
 	}
+	*c = *parsed
+	return nil
+}
+
+func parseConfigDocument(data []byte) (*Config, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
-	if err := dec.Decode(&file); err != nil {
+	var document map[string]json.RawMessage
+	if err := dec.Decode(&document); err != nil {
 		return nil, fmt.Errorf("parse mcp config: %w", err)
 	}
 	var extra any
@@ -128,9 +205,30 @@ func ParseConfig(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("parse mcp config: %w", err)
 	}
 
-	cfg := &Config{Servers: make(map[string]ServerConfig, len(file.Servers))}
-	names := make([]string, 0, len(file.Servers))
-	for name := range file.Servers {
+	mcpRaw, hasMCP := document["mcpServers"]
+	serversRaw, hasServers := document["servers"]
+	if hasMCP && hasServers {
+		return nil, errors.New(`mcp config: use either "mcpServers" or "servers", not both`)
+	}
+
+	var servers map[string]ServerConfig
+	switch {
+	case hasMCP:
+		if err := json.Unmarshal(mcpRaw, &servers); err != nil {
+			return nil, fmt.Errorf("parse mcp config: %w", err)
+		}
+	case hasServers:
+		if err := json.Unmarshal(serversRaw, &servers); err != nil {
+			return nil, fmt.Errorf("parse mcp config: %w", err)
+		}
+	}
+	if len(servers) > MaxServers {
+		return nil, fmt.Errorf("%w: %d configured, limit is %d", ErrTooManyServers, len(servers), MaxServers)
+	}
+
+	cfg := &Config{Servers: make(map[string]ServerConfig, len(servers))}
+	names := make([]string, 0, len(servers))
+	for name := range servers {
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -141,7 +239,7 @@ func ParseConfig(data []byte) (*Config, error) {
 			errs = append(errs, errors.New("mcp config: server name must not be empty"))
 			continue
 		}
-		server := file.Servers[name]
+		server := servers[name]
 		server.Name = name
 		normalized, err := normalizeServerConfig(server)
 		if err != nil {
@@ -242,6 +340,9 @@ func (c *Config) AddServer(server ServerConfig) error {
 	if _, exists := c.Servers[normalized.Name]; exists {
 		return fmt.Errorf("mcp: server %q already exists", normalized.Name)
 	}
+	if len(c.Servers) >= MaxServers {
+		return fmt.Errorf("%w: limit is %d", ErrTooManyServers, MaxServers)
+	}
 	c.Servers[normalized.Name] = normalized
 	return nil
 }
@@ -337,6 +438,9 @@ func (c *Config) preparedCopy() (*Config, error) {
 	if c == nil {
 		return nil, errors.New("mcp: config is nil")
 	}
+	if len(c.Servers) > MaxServers {
+		return nil, fmt.Errorf("%w: %d configured, limit is %d", ErrTooManyServers, len(c.Servers), MaxServers)
+	}
 	out := &Config{Servers: make(map[string]ServerConfig, len(c.Servers))}
 	for _, name := range c.Names() {
 		if strings.TrimSpace(name) == "" {
@@ -387,6 +491,7 @@ func normalizeServerConfig(server ServerConfig) (ServerConfig, error) {
 	server.Type = strings.ToLower(strings.TrimSpace(server.Type))
 	server.Command = strings.TrimSpace(server.Command)
 	server.URL = strings.TrimSpace(server.URL)
+	server.CWD = strings.TrimSpace(server.CWD)
 
 	if server.RequestTimeout == 0 {
 		server.RequestTimeout = server.Timeout
@@ -412,11 +517,37 @@ func (s ServerConfig) validate() error {
 	if s.Name == "" {
 		return errors.New("name must not be empty")
 	}
+	if len(s.Name) > MaxServerNameBytes {
+		return fmt.Errorf("name exceeds %d bytes", MaxServerNameBytes)
+	}
 	if strings.ContainsRune(s.Command, 0) {
 		return errors.New("command contains a null byte")
 	}
+	if strings.ContainsRune(s.CWD, 0) {
+		return errors.New("cwd contains a null byte")
+	}
+	if len(s.Command) > MaxCommandBytes {
+		return fmt.Errorf("command exceeds %d bytes", MaxCommandBytes)
+	}
 	if s.Command != "" && s.URL != "" {
 		return errors.New("set either command (stdio) or url (http), not both")
+	}
+	if len(s.Args) > MaxArgs {
+		return fmt.Errorf("too many args: %d, limit is %d", len(s.Args), MaxArgs)
+	}
+	for i, arg := range s.Args {
+		if strings.ContainsRune(arg, 0) {
+			return fmt.Errorf("argument %d contains a null byte", i)
+		}
+		if len(arg) > MaxArgBytes {
+			return fmt.Errorf("argument %d exceeds %d bytes", i, MaxArgBytes)
+		}
+	}
+	if len(s.Env) > MaxEnvVars {
+		return fmt.Errorf("too many environment variables: %d, limit is %d", len(s.Env), MaxEnvVars)
+	}
+	if len(s.Headers) > MaxHeaders {
+		return fmt.Errorf("too many headers: %d, limit is %d", len(s.Headers), MaxHeaders)
 	}
 
 	kind := s.TransportKind()
@@ -441,18 +572,8 @@ func (s ServerConfig) validate() error {
 	}
 
 	if s.URL != "" {
-		u, err := url.Parse(s.URL)
-		if err != nil {
-			// url.Parse errors wrap the raw input, which can include userinfo.
-			// Returning it verbatim would put credentials in logs, so report a
-			// safe generic error instead.
-			return errors.New("invalid url")
-		}
-		if u.Scheme != "http" && u.Scheme != "https" {
-			return fmt.Errorf("invalid url scheme %q (want http or https)", u.Scheme)
-		}
-		if u.Host == "" {
-			return errors.New("url must include a host")
+		if err := validateServerURL(s.URL, s.AllowPrivate); err != nil {
+			return err
 		}
 	}
 
@@ -460,16 +581,28 @@ func (s ServerConfig) validate() error {
 		if key == "" || strings.ContainsAny(key, "=\x00") {
 			return fmt.Errorf("invalid environment variable name %q", key)
 		}
+		if len(key) > 256 {
+			return fmt.Errorf("environment variable name %q is too long", key)
+		}
 		if strings.ContainsRune(value, 0) {
 			return fmt.Errorf("environment variable %q contains a null byte", key)
+		}
+		if len(value) > MaxEnvValueBytes {
+			return fmt.Errorf("environment variable %q exceeds %d bytes", key, MaxEnvValueBytes)
 		}
 	}
 	for key, value := range s.Headers {
 		if key == "" || strings.ContainsAny(key, "\r\n") {
 			return fmt.Errorf("invalid header name %q", key)
 		}
+		if len(key) > 256 {
+			return fmt.Errorf("header name %q is too long", key)
+		}
 		if strings.ContainsAny(value, "\r\n") {
 			return fmt.Errorf("header %q contains a newline", key)
+		}
+		if len(value) > MaxHeaderValueBytes {
+			return fmt.Errorf("header %q exceeds %d bytes", key, MaxHeaderValueBytes)
 		}
 	}
 
@@ -481,3 +614,113 @@ func (s ServerConfig) validate() error {
 	}
 	return nil
 }
+
+// validateServerURL rejects malformed URLs and, unless the server explicitly
+// opted in, destinations on loopback or private networks. Error text never
+// includes the original URL because it may carry credentials.
+func validateServerURL(raw string, allowPrivate bool) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return errors.New("invalid url")
+	}
+	if u.User != nil {
+		return errors.New("url must not include embedded credentials")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("invalid url scheme %q (want http or https)", u.Scheme)
+	}
+	if u.Host == "" || u.Hostname() == "" {
+		return errors.New("url must include a host")
+	}
+	if allowPrivate {
+		return nil
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if isPrivateMCPHost(host) {
+		return fmt.Errorf("url host %q is a private or loopback address; set allowPrivate to allow it", host)
+	}
+	return nil
+}
+
+// isPrivateMCPHost resolves literal addresses immediately and otherwise uses a
+// short DNS lookup. A resolver failure is not treated as proof of a private
+// address; the dial attempt reports its own error.
+func isPrivateMCPHost(host string) bool {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") ||
+		strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal") {
+		return true
+	}
+	if ip := parseMCPLiteralIP(host); ip != nil {
+		return isBlockedMCPIP(ip)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return false
+	}
+	for _, address := range addresses {
+		if isBlockedMCPIP(address.IP) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseMCPLiteralIP(host string) net.IP {
+	if ip := net.ParseIP(host); ip != nil {
+		return ip
+	}
+	if i := strings.LastIndexByte(host, '%'); i > 0 {
+		if ip := net.ParseIP(host[:i]); ip != nil {
+			return ip
+		}
+	}
+	return nil
+}
+
+// isBlockedMCPIP mirrors the destination policy used by internal/netfetch.
+func isBlockedMCPIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsUnspecified() ||
+		ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() ||
+		ip.IsMulticast() {
+		return true
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		if ip4[0] == 0 {
+			return true
+		}
+		for _, block := range mcpReservedIPv4 {
+			if block.Contains(ip4) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+var mcpReservedIPv4 = func() []*net.IPNet {
+	cidrs := []string{
+		"100.64.0.0/10",
+		"192.0.0.0/24",
+		"198.18.0.0/15",
+		"240.0.0.0/4",
+	}
+	blocks := make([]*net.IPNet, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		_, block, err := net.ParseCIDR(cidr)
+		if err != nil {
+			panic("mcp: invalid reserved CIDR " + cidr)
+		}
+		blocks = append(blocks, block)
+	}
+	return blocks
+}()

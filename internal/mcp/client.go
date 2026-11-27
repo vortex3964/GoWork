@@ -215,6 +215,9 @@ func (c *Client) ListTools(ctx context.Context) ([]Tool, error) {
 		}
 
 		for _, tool := range result.Tools {
+			if len(tools) >= MaxToolsPerServer {
+				return nil, fmt.Errorf("mcp %q: server listed more than %d tools", c.name, MaxToolsPerServer)
+			}
 			normalized, err := normalizeTool(tool)
 			if err != nil {
 				return nil, fmt.Errorf("mcp %q: tools/list: %w", c.name, err)
@@ -798,10 +801,20 @@ func normalizeTool(tool Tool) (Tool, error) {
 	if name == "" {
 		return Tool{}, errors.New("tool is missing a name")
 	}
+	if len(name) > MaxToolNameBytes {
+		return Tool{}, fmt.Errorf("tool name exceeds %d bytes", MaxToolNameBytes)
+	}
+	description := strings.TrimSpace(tool.Description)
+	if len(description) > MaxToolDescriptionBytes {
+		return Tool{}, fmt.Errorf("tool %q description exceeds %d bytes", name, MaxToolDescriptionBytes)
+	}
 
 	schema := bytes.TrimSpace(tool.InputSchema)
 	if len(schema) == 0 || bytes.Equal(schema, []byte("null")) {
 		schema = []byte(`{"type":"object"}`)
+	}
+	if len(schema) > MaxToolSchemaBytes {
+		return Tool{}, fmt.Errorf("tool %q inputSchema exceeds %d bytes", name, MaxToolSchemaBytes)
 	}
 	if !json.Valid(schema) {
 		return Tool{}, fmt.Errorf("tool %q has invalid inputSchema JSON", name)
@@ -814,7 +827,7 @@ func normalizeTool(tool Tool) (Tool, error) {
 	return Tool{
 		Name:        name,
 		Title:       strings.TrimSpace(tool.Title),
-		Description: strings.TrimSpace(tool.Description),
+		Description: description,
 		InputSchema: append(json.RawMessage(nil), schema...),
 	}, nil
 }

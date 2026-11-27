@@ -94,8 +94,8 @@ func TestMCPBridgeSuccess(t *testing.T) {
 	if bridge.Description() != "Echo text back" {
 		t.Errorf("Description() = %q", bridge.Description())
 	}
-	if bridge.Kind() != KindAllowed {
-		t.Errorf("Kind() = %v, want KindAllowed", bridge.Kind())
+	if bridge.Kind() != KindNotAllowed {
+		t.Errorf("Kind() = %v, want KindNotAllowed by default", bridge.Kind())
 	}
 	if got := string(bridge.InputSchema()); got != string(schema) {
 		t.Errorf("InputSchema() = %s", got)
@@ -123,6 +123,63 @@ func TestMCPBridgeSuccess(t *testing.T) {
 	rawArgs, ok := args.(json.RawMessage)
 	if !ok || string(rawArgs) != `{"text":"hi"}` {
 		t.Errorf("arguments = %#v, want raw {\"text\":\"hi\"}", args)
+	}
+}
+
+func TestMCPBridgeKindPolicy(t *testing.T) {
+	fake := &fakeMCPCaller{}
+	defaultBridge, err := NewMCPBridge(fake, "project", mcp.Tool{Name: "echo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := defaultBridge.Kind(); got != KindNotAllowed {
+		t.Fatalf("default Kind = %v, want KindNotAllowed", got)
+	}
+
+	trusted, err := NewMCPBridgeWithKind(fake, "trusted", mcp.Tool{Name: "echo"}, KindAllowed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := trusted.Kind(); got != KindAllowed {
+		t.Fatalf("trusted Kind = %v, want KindAllowed", got)
+	}
+
+	unknown, err := NewMCPBridgeWithKind(fake, "unknown", mcp.Tool{Name: "echo"}, Kind(99))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := unknown.Kind(); got != KindNotAllowed {
+		t.Fatalf("unknown Kind = %v, want clamped to KindNotAllowed", got)
+	}
+
+	agentTools, _, err := MCPTools("trusted", fake, []mcp.Tool{{Name: "echo"}}, WithMCPToolKind(KindAllowed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agentTools) != 1 || agentTools[0].Kind() != KindAllowed {
+		t.Fatalf("MCPTools kind = %v, want KindAllowed", agentTools[0].Kind())
+	}
+}
+
+func TestMCPBridgeRejectsOversizedDefinitions(t *testing.T) {
+	fake := &fakeMCPCaller{}
+	if _, err := NewMCPBridge(fake, "files", mcp.Tool{Name: strings.Repeat("n", mcp.MaxToolNameBytes+1)}); err == nil {
+		t.Fatal("NewMCPBridge accepted an oversized name")
+	}
+	if _, err := NewMCPBridge(fake, "files", mcp.Tool{
+		Name:        "x",
+		Description: strings.Repeat("d", mcp.MaxToolDescriptionBytes+1),
+	}); err == nil {
+		t.Fatal("NewMCPBridge accepted an oversized description")
+	}
+	if _, err := NewMCPBridge(fake, "files", mcp.Tool{
+		Name:        "x",
+		InputSchema: json.RawMessage(`{"type":"object","description":"` + strings.Repeat("s", mcp.MaxToolSchemaBytes) + `"}`),
+	}); err == nil {
+		t.Fatal("NewMCPBridge accepted an oversized schema")
+	}
+	if _, _, err := MCPTools("files", fake, make([]mcp.Tool, mcp.MaxToolsPerServer+1)); err == nil {
+		t.Fatal("MCPTools accepted too many definitions")
 	}
 }
 

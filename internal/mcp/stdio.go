@@ -69,6 +69,7 @@ func (t *stdioTransport) Start(ctx context.Context) error {
 
 	cmd := exec.Command(t.cfg.Command, t.cfg.Args...)
 	cmd.Env = mergeEnv(os.Environ(), t.cfg.Env)
+	cmd.Dir = t.cfg.CWD
 	cmd.Stderr = t.stderr
 
 	stdin, err := cmd.StdinPipe()

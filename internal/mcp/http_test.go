@@ -21,6 +21,7 @@ func testHTTPConfig(url string) ServerConfig {
 		Type:            string(TransportHTTP),
 		URL:             url,
 		Headers:         map[string]string{"X-Test-Token": "secret"},
+		AllowPrivate:    true,
 		StartupTimeout:  Duration(3 * time.Second),
 		RequestTimeout:  Duration(3 * time.Second),
 		ShutdownTimeout: Duration(2 * time.Second),

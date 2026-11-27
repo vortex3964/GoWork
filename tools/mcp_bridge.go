@@ -23,6 +23,22 @@ type MCPCaller interface {
 
 var _ MCPCaller = (*mcp.Client)(nil)
 
+// MCPBridgeOptions controls the approval policy attached to a bridge. The zero
+// value is deliberately KindNotAllowed: a server discovered from a downloaded
+// or project-scope config must not be able to grant itself permission.
+type MCPBridgeOptions struct {
+	Kind Kind
+}
+
+// MCPToolOption customizes MCPTools.
+type MCPToolOption func(*MCPBridgeOptions)
+
+// WithMCPToolKind sets the approval kind for every bridge produced by
+// MCPTools. Runtimes pass KindAllowed only for trusted user-scope servers.
+func WithMCPToolKind(kind Kind) MCPToolOption {
+	return func(opts *MCPBridgeOptions) { opts.Kind = kind }
+}
+
 // MCPBridge exposes one MCP tool as a regular AgentTool. The model-facing name
 // is namespaced by server so tools from different servers do not collide; the
 // original MCP name is preserved for the actual tools/call request.
@@ -33,12 +49,26 @@ type MCPBridge struct {
 	name        string
 	description string
 	schema      json.RawMessage
+	kind        Kind
 }
 
 var _ AgentTool = (*MCPBridge)(nil)
 
-// NewMCPBridge validates a discovered MCP tool and adapts it to AgentTool.
+// NewMCPBridge validates a discovered MCP tool and adapts it to AgentTool. The
+// bridge defaults to KindNotAllowed; use NewMCPBridgeWithOptions or
+// NewMCPBridgeWithKind for a trusted server.
 func NewMCPBridge(client MCPCaller, server string, tool mcp.Tool) (*MCPBridge, error) {
+	return NewMCPBridgeWithOptions(client, server, tool, MCPBridgeOptions{})
+}
+
+// NewMCPBridgeWithKind is shorthand for NewMCPBridgeWithOptions with a kind.
+func NewMCPBridgeWithKind(client MCPCaller, server string, tool mcp.Tool, kind Kind) (*MCPBridge, error) {
+	return NewMCPBridgeWithOptions(client, server, tool, MCPBridgeOptions{Kind: kind})
+}
+
+// NewMCPBridgeWithOptions validates a discovered MCP tool and applies the
+// supplied approval policy.
+func NewMCPBridgeWithOptions(client MCPCaller, server string, tool mcp.Tool, opts MCPBridgeOptions) (*MCPBridge, error) {
 	if client == nil {
 		return nil, errors.New("mcp bridge: client is nil")
 	}
@@ -47,18 +77,32 @@ func NewMCPBridge(client MCPCaller, server string, tool mcp.Tool) (*MCPBridge, e
 	if toolName == "" {
 		return nil, errors.New("mcp bridge: tool name must not be empty")
 	}
+	if len(toolName) > mcp.MaxToolNameBytes {
+		return nil, fmt.Errorf("mcp bridge: tool name exceeds %d bytes", mcp.MaxToolNameBytes)
+	}
+	description := strings.TrimSpace(tool.Description)
+	if len(description) > mcp.MaxToolDescriptionBytes {
+		return nil, fmt.Errorf("mcp bridge: tool %q description exceeds %d bytes", toolName, mcp.MaxToolDescriptionBytes)
+	}
+	if len(tool.InputSchema) > mcp.MaxToolSchemaBytes {
+		return nil, fmt.Errorf("mcp bridge: tool %q input schema exceeds %d bytes", toolName, mcp.MaxToolSchemaBytes)
+	}
 	schema, err := normalizeMCPBridgeSchema(tool.InputSchema)
 	if err != nil {
 		return nil, fmt.Errorf("mcp bridge: tool %q: %w", toolName, err)
 	}
 
-	description := strings.TrimSpace(tool.Description)
 	if description == "" {
 		if server != "" {
 			description = fmt.Sprintf("MCP tool %q from server %q.", toolName, server)
 		} else {
 			description = fmt.Sprintf("MCP tool %q.", toolName)
 		}
+	}
+
+	kind := opts.Kind
+	if kind != KindAllowed {
+		kind = KindNotAllowed
 	}
 
 	return &MCPBridge{
@@ -68,6 +112,7 @@ func NewMCPBridge(client MCPCaller, server string, tool mcp.Tool) (*MCPBridge, e
 		name:        MCPToolName(server, toolName),
 		description: description,
 		schema:      schema,
+		kind:        kind,
 	}, nil
 }
 
@@ -82,9 +127,10 @@ func (b *MCPBridge) InputSchema() json.RawMessage {
 	return append(json.RawMessage(nil), b.schema...)
 }
 
-// Kind marks MCP tools as callable by the dispatcher. Approval policy belongs
-// to the configuration/UI layer, not to the bridge.
-func (b *MCPBridge) Kind() Kind { return KindAllowed }
+// Kind reports the approval policy fixed when the bridge was created. MCP
+// tools require per-call approval unless their server explicitly opted in as a
+// trusted user-scope configuration.
+func (b *MCPBridge) Kind() Kind { return b.kind }
 
 // Server returns the configured server name.
 func (b *MCPBridge) Server() string { return b.server }
@@ -135,14 +181,25 @@ func (b *MCPBridge) Run(ctx context.Context, _ DispatchArgs, input json.RawMessa
 
 // MCPTools converts one server's discovered tools into dispatcher tools and
 // provider definitions. The provider definitions use the same names as the
-// AgentTools, so registration can use the slices together.
-func MCPTools(server string, client MCPCaller, definitions []mcp.Tool) ([]AgentTool, []providers.ToolDef, error) {
+// AgentTools, so registration can use the slices together. Bridges default to
+// KindNotAllowed; pass WithMCPToolKind(KindAllowed) only for a trusted
+// user-scope server.
+func MCPTools(server string, client MCPCaller, definitions []mcp.Tool, options ...MCPToolOption) ([]AgentTool, []providers.ToolDef, error) {
+	if len(definitions) > mcp.MaxToolsPerServer {
+		return nil, nil, fmt.Errorf("mcp server %q listed more than %d tools", server, mcp.MaxToolsPerServer)
+	}
+	opts := MCPBridgeOptions{}
+	for _, option := range options {
+		if option != nil {
+			option(&opts)
+		}
+	}
 	agentTools := make([]AgentTool, 0, len(definitions))
 	providerDefs := make([]providers.ToolDef, 0, len(definitions))
 	usedNames := make(map[string]string, len(definitions))
 
 	for _, definition := range definitions {
-		bridge, err := NewMCPBridge(client, server, definition)
+		bridge, err := NewMCPBridgeWithOptions(client, server, definition, opts)
 		if err != nil {
 			return nil, nil, fmt.Errorf("mcp server %q: %w", server, err)
 		}

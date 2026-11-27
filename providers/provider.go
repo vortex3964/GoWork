@@ -197,6 +197,63 @@ func UpdateToolDef(name string, td ToolDef) bool {
 	return false
 }
 
+// AddToolDef registers a tool definition, replacing an existing definition
+// with the same name. It reports whether the definition was accepted. The
+// registry version is bumped even for a replacement so every provider view and
+// the overhead cache are rebuilt on the next request.
+func AddToolDef(td ToolDef) bool {
+	if strings.TrimSpace(td.Name) == "" {
+		return false
+	}
+	toolsMu.Lock()
+	replaced := false
+	for i := range tools_def {
+		if tools_def[i].Name == td.Name {
+			tools_def[i] = td
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		tools_def = append(tools_def, td)
+	}
+	toolsVersion.Add(1)
+	toolsMu.Unlock()
+	invalidateOverheadCache()
+	return true
+}
+
+// RemoveToolDef unregisters a tool by name. It reports whether a definition
+// was removed and bumps the registry version when it was.
+func RemoveToolDef(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	toolsMu.Lock()
+	removed := false
+	for i := range tools_def {
+		if tools_def[i].Name == name {
+			tools_def = append(tools_def[:i], tools_def[i+1:]...)
+			removed = true
+			break
+		}
+	}
+	if removed {
+		toolsVersion.Add(1)
+	}
+	toolsMu.Unlock()
+	if removed {
+		invalidateOverheadCache()
+	}
+	return removed
+}
+
+// ToolDefs returns a copy of the currently registered provider definitions.
+// Callers should treat the registry as live: tools may be added or removed at
+// runtime by the MCP/LSP runtimes.
+func ToolDefs() []ToolDef { return toolDefs() }
+
 // toolDefs returns a snapshot of the registered tools for one request.
 func toolDefs() []ToolDef {
 	toolsMu.RLock()
