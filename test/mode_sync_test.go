@@ -1,4 +1,4 @@
-package main
+package test
 
 import (
 	"testing"
@@ -12,19 +12,20 @@ import (
 	skills "GoWork/Tui/Components/SkillsTab"
 	stats "GoWork/Tui/Components/Stats"
 	tabs "GoWork/Tui/Components/Tabs"
+	gowork "GoWork/internal/gowork"
 )
 
-func newModeTestModel() model {
+func newModeTestModel() gowork.Model {
 	think := false
-	return model{
-		tabs:         tabs.New("code", "skills", "stats"),
-		prompt:       promptbar.New(),
-		message_area: messagearea.New(),
-		mode:         modePrompt,
-		aiThink:      &think,
-		changesList:  changeslist.New(nil),
-		skills:       skills.New(),
-		stats:        stats.New(),
+	return gowork.Model{
+		Tabs:        tabs.New("code", "skills", "stats"),
+		Prompt:      promptbar.New(),
+		MessageArea: messagearea.New(),
+		Mode:        gowork.ModePrompt,
+		AiThink:     &think,
+		ChangesList: changeslist.New(nil),
+		Skills:      skills.New(),
+		Stats:       stats.New(),
 	}
 }
 
@@ -35,25 +36,25 @@ func ctrlKey(r rune) tea.KeyPressMsg {
 func TestCtrlLRespectsQuestionnaireAndActiveTab(t *testing.T) {
 	tests := []struct {
 		name   string
-		mode   uiMode
+		mode   gowork.UIMode
 		tabIdx int
-		want   uiMode
+		want   gowork.UIMode
 	}{
-		{"questionnaire ignores ctrl+l", modeQuestionnaire, 0, modeQuestionnaire},
-		{"stats tab ignores ctrl+l", modeStats, 2, modeStats},
-		{"skills tab ignores ctrl+l", modeSkills, 1, modeSkills},
-		{"code tab opens changes list", modePrompt, 0, modeChangeHandling},
-		{"closing changes on stats restores stats mode", modeChangeHandling, 2, modeStats},
-		{"closing changes on skills restores skills mode", modeChangeHandling, 1, modeSkills},
+		{"questionnaire ignores ctrl+l", gowork.ModeQuestionnaire, 0, gowork.ModeQuestionnaire},
+		{"stats tab ignores ctrl+l", gowork.ModeStats, 2, gowork.ModeStats},
+		{"skills tab ignores ctrl+l", gowork.ModeSkills, 1, gowork.ModeSkills},
+		{"code tab opens changes list", gowork.ModePrompt, 0, gowork.ModeChangeHandling},
+		{"closing changes on stats restores stats mode", gowork.ModeChangeHandling, 2, gowork.ModeStats},
+		{"closing changes on skills restores skills mode", gowork.ModeChangeHandling, 1, gowork.ModeSkills},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := newModeTestModel()
-			m.mode = tt.mode
-			m.tabs.ActiveIdx = tt.tabIdx
+			m.Mode = tt.mode
+			m.Tabs.ActiveIdx = tt.tabIdx
 
 			updated, _ := m.Update(ctrlKey('l'))
-			if got := updated.(model).mode; got != tt.want {
+			if got := updated.(gowork.Model).Mode; got != tt.want {
 				t.Fatalf("mode after ctrl+l = %v, want %v", got, tt.want)
 			}
 		})
@@ -71,24 +72,24 @@ func TestProviderPickerRestoresActiveTabMode(t *testing.T) {
 	tabsUnder := []struct {
 		name string
 		idx  int
-		want uiMode
+		want gowork.UIMode
 	}{
-		{"code", 0, modePrompt},
-		{"skills", 1, modeSkills},
-		{"stats", 2, modeStats},
+		{"code", 0, gowork.ModePrompt},
+		{"skills", 1, gowork.ModeSkills},
+		{"stats", 2, gowork.ModeStats},
 	}
 	for _, msgCase := range msgs {
 		for _, tabCase := range tabsUnder {
 			t.Run(msgCase.name+"/"+tabCase.name, func(t *testing.T) {
 				m := newModeTestModel()
-				m.mode = modeProviderSelect
-				m.tabs.ActiveIdx = tabCase.idx
+				m.Mode = gowork.ModeProviderSelect
+				m.Tabs.ActiveIdx = tabCase.idx
 				// Keep SelectedMsg from actually switching providers; the
 				// mode restore happens before that branch.
-				*m.aiThink = true
+				*m.AiThink = true
 
 				updated, _ := m.Update(msgCase.msg)
-				if got := updated.(model).mode; got != tabCase.want {
+				if got := updated.(gowork.Model).Mode; got != tabCase.want {
 					t.Fatalf("mode after %s = %v, want %v", msgCase.name, got, tabCase.want)
 				}
 			})

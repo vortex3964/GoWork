@@ -1,24 +1,25 @@
-package main
+package test
 
 import (
 	"testing"
 
 	"GoWork/Tui/Components/Promptbar"
 	"GoWork/Tui/Components/Tabs"
+	gowork "GoWork/internal/gowork"
 )
 
 func TestEndTurnResetsAutoAcceptTools(t *testing.T) {
 	think := false
-	m := model{
-		tabs:    tabs.New("code"),
-		prompt:  promptbar.New(),
-		aiThink: &think,
+	m := gowork.Model{
+		Tabs:    tabs.New("code"),
+		Prompt:  promptbar.New(),
+		AiThink: &think,
 	}
-	m.autoAcceptTools = true
+	m.AutoAcceptTools = true
 
-	m.endTurn()
+	m.EndTurn()
 
-	if m.autoAcceptTools {
+	if m.AutoAcceptTools {
 		t.Fatal("endTurn left autoAcceptTools set; Accept All leaked into the next turn")
 	}
 }

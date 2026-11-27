@@ -1,9 +1,11 @@
-package main
+package test
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	gowork "GoWork/internal/gowork"
 )
 
 func TestAppDataRootIsExecutableDir(t *testing.T) {
@@ -15,7 +17,7 @@ func TestAppDataRootIsExecutableDir(t *testing.T) {
 
 	// Whatever directory the user is working in, GoWork's own data folder
 	// must sit next to the executable, not in the project.
-	got := appDataRoot("/some/random/project")
+	got := gowork.AppDataRoot("/some/random/project")
 	if got != want {
 		t.Fatalf("appDataRoot = %q, want %q", got, want)
 	}

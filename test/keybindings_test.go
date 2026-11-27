@@ -1,6 +1,10 @@
-package main
+package test
 
-import "testing"
+import (
+	"testing"
+
+	gowork "GoWork/internal/gowork"
+)
 
 func TestIsTurnInterrupt(t *testing.T) {
 	tests := []struct {
@@ -18,7 +22,7 @@ func TestIsTurnInterrupt(t *testing.T) {
 		{"enter", true, false},
 	}
 	for _, tt := range tests {
-		if got := isTurnInterrupt(tt.key, tt.turnRunning); got != tt.want {
+		if got := gowork.IsTurnInterrupt(tt.key, tt.turnRunning); got != tt.want {
 			t.Errorf("isTurnInterrupt(%q, %v) = %v, want %v",
 				tt.key, tt.turnRunning, got, tt.want)
 		}

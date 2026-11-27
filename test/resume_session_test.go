@@ -1,4 +1,4 @@
-package main
+package test
 
 import (
 	"os"
@@ -7,9 +7,10 @@ import (
 	"testing"
 
 	db "GoWork/Db"
-	"GoWork/providers"
 	"GoWork/Tui/Components/MessageArea"
 	"GoWork/Tui/Components/SkillsTab"
+	gowork "GoWork/internal/gowork"
+	"GoWork/providers"
 	skillstool "GoWork/tools/SkillsTool"
 )
 
@@ -54,22 +55,22 @@ func TestResumeSessionRestoresSkills(t *testing.T) {
 	if err := store.StartSession("gpt-4o", "openai"); err != nil {
 		t.Fatalf("restart: %v", err)
 	}
-	m := model{
-		message_area: messagearea.New(),
-		skills:       skills.New(),
-		db:           store,
+	m := gowork.Model{
+		MessageArea: messagearea.New(),
+		Skills:      skills.New(),
+		Db:          store,
 	}
-	m.resumeSession(1)
+	m.ResumeSession(1)
 
 	mgr := skillstool.GetManager()
 	if !mgr.IsLoaded("hello") {
 		t.Fatalf("expected session skill hello loaded, got %v", mgr.LoadedNames())
 	}
-	if len(m.context) != 3 {
-		t.Fatalf("expected 3 messages in context, got %d", len(m.context))
+	if len(m.Context) != 3 {
+		t.Fatalf("expected 3 messages in context, got %d", len(m.Context))
 	}
-	if m.message_area.Size() < 3 {
-		t.Fatalf("expected messages replayed in the area, got size %d", m.message_area.Size())
+	if m.MessageArea.Size() < 3 {
+		t.Fatalf("expected messages replayed in the area, got size %d", m.MessageArea.Size())
 	}
 	// The restore should also re-register the tool def so the model sees it.
 	desc := skillstool.ToolDescription()
