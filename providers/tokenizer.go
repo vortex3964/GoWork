@@ -114,6 +114,10 @@ func loadEncoding(encoding string) {
 		return
 	}
 	tokenizers[encoding] = enc
+	// A real vocabulary may produce counts different from the chars/4
+	// fallback used while the load was in flight. Overhead estimates cached
+	// during that window must be recomputed with the loaded tokenizer.
+	invalidateOverheadCache()
 }
 
 // cachedBpeLoader mirrors tiktoken's default BPE loader (on-disk cache plus

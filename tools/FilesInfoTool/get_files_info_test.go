@@ -100,6 +100,39 @@ func TestGetFilesInfo(t *testing.T) {
 		}
 	})
 
+	t.Run("reloads ignore rules when .gitignore changes", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, "kept.log"), "log data")
+		writeFile(t, filepath.Join(root, "notes.txt"), "notes")
+		writeFile(t, filepath.Join(root, ".gitignore"), "*.log\n")
+
+		tool := newTool(t, root)
+		content, isErr := runTool(t, tool, ".")
+		if isErr {
+			t.Fatalf("unexpected error result: %q", content)
+		}
+		if strings.Contains(content, "kept.log") {
+			t.Errorf("expected *.log to be ignored, got: %q", content)
+		}
+		if !strings.Contains(content, "notes.txt") {
+			t.Errorf("expected notes.txt to be listed, got: %q", content)
+		}
+
+		// Rewrite the ignore file: the cached matcher must refresh even
+		// though the same root is reused for this second call.
+		writeFile(t, filepath.Join(root, ".gitignore"), "*.txt\n*.bak\n")
+		content, isErr = runTool(t, tool, ".")
+		if isErr {
+			t.Fatalf("unexpected error result: %q", content)
+		}
+		if !strings.Contains(content, "kept.log") {
+			t.Errorf("expected kept.log to be listed after ignore rule change, got: %q", content)
+		}
+		if strings.Contains(content, "notes.txt") {
+			t.Errorf("expected *.txt to be ignored after rule change, got: %q", content)
+		}
+	})
+
 	t.Run("rejects relative path traversal outside project root", func(t *testing.T) {
 		root := t.TempDir()
 		tool := newTool(t, root)

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"GoWork/tools/ReadFileTool"
 	"GoWork/tools"
+	"GoWork/tools/ReadFileTool"
 )
 
 // newArgs opens a sandboxed DispatchArgs rooted at dir and closes it when
@@ -336,10 +336,34 @@ func makeStubPDF(t *testing.T, dir string, fail bool) {
 	if fail {
 		stub += "echo 'backend exploded' >&2\nexit 1\n"
 	} else {
-		stub += "cat \"$2\"\n"
+		stub += "/bin/cat \"$2\"\n"
 	}
 	if err := os.WriteFile(filepath.Join(venvBin, "python"), []byte(stub), 0755); err != nil {
 		t.Fatalf("writing stub python: %v", err)
+	}
+}
+
+func TestRun_PDFProjectParserRefusedByDefault(t *testing.T) {
+	dir := t.TempDir()
+	makeStubPDF(t, dir, false)
+	t.Setenv("GOWORK_ALLOW_PROJECT_PDF_SCRIPTS", "")
+	args := newArgs(t, dir)
+	tool := readfiletool.New()
+
+	if err := os.WriteFile(filepath.Join(dir, "doc.pdf"), []byte("x"), 0644); err != nil {
+		t.Fatalf("writing pdf: %v", err)
+	}
+
+	res := run(t, tool, args, readfiletool.Input{Path: "doc.pdf"})
+
+	if !res.IsError {
+		t.Fatalf("expected the project parser to be refused by default, got %q", res.Content)
+	}
+	if !strings.Contains(res.Content, "GOWORK_ALLOW_PROJECT_PDF_SCRIPTS") {
+		t.Errorf("Content = %q, want the opt-in variable named", res.Content)
+	}
+	if !strings.Contains(res.Content, "disabled") {
+		t.Errorf("Content = %q, want it to explain project parsers are disabled", res.Content)
 	}
 }
 
@@ -368,9 +392,18 @@ func TestRun_ImageIsRefusedWithError(t *testing.T) {
 	}
 }
 
+// useProjectPDFParser opts into project-local parser code and removes system
+// Python from PATH so the stub venv is the interpreter under test.
+func useProjectPDFParser(t *testing.T) {
+	t.Helper()
+	t.Setenv("GOWORK_ALLOW_PROJECT_PDF_SCRIPTS", "1")
+	t.Setenv("PATH", t.TempDir())
+}
+
 func TestRun_PDFFullOutputViaStubParser(t *testing.T) {
 	dir := t.TempDir()
 	makeStubPDF(t, dir, false)
+	useProjectPDFParser(t)
 	args := newArgs(t, dir)
 	tool := readfiletool.New()
 
@@ -394,6 +427,7 @@ func TestRun_PDFFullOutputViaStubParser(t *testing.T) {
 func TestRun_PDFParserFailureSurfacesStderr(t *testing.T) {
 	dir := t.TempDir()
 	makeStubPDF(t, dir, true)
+	useProjectPDFParser(t)
 	args := newArgs(t, dir)
 	tool := readfiletool.New()
 
@@ -410,4 +444,3 @@ func TestRun_PDFParserFailureSurfacesStderr(t *testing.T) {
 		t.Errorf("Content = %q, want it to surface the parser's stderr", res.Content)
 	}
 }
-

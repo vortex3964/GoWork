@@ -61,4 +61,29 @@ func TestSystemPromptIsConciseBrief(t *testing.T) {
 	if strings.Contains(prompt, "`create_file`") {
 		t.Error("prompt uses `create_file`, but the registered tool name is create_file_tool")
 	}
+
+	// Approval claims must match the dispatcher: edit_file is gated like the
+	// other write tools, and bash is approved per call but not sandboxed.
+	editBullet := toolBullet(prompt, "edit_file")
+	if !strings.Contains(strings.ToLower(editBullet), "requires approval") {
+		t.Errorf("edit_file bullet must say it requires approval: %q", editBullet)
+	}
+	bashBullet := toolBullet(prompt, "bash")
+	if !strings.Contains(bashBullet, "per-call approval") {
+		t.Errorf("bash bullet must say approval is per call: %q", bashBullet)
+	}
+	if !strings.Contains(bashBullet, "not sandboxed") {
+		t.Errorf("bash bullet must say the command itself is not sandboxed: %q", bashBullet)
+	}
+}
+
+// toolBullet returns the prompt line that introduces the named tool.
+func toolBullet(prompt, name string) string {
+	prefix := "- `" + name + "`"
+	for _, line := range strings.Split(prompt, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return line
+		}
+	}
+	return ""
 }

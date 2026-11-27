@@ -2,8 +2,9 @@
 // (.GoWork/skills/<name>/SKILL.md) found in the project, with the ones the
 // current session has loaded marked. The list supports text search and
 // all/loaded/unloaded filters, plus mouse scroll/click like the stats list.
-// The prompt bar stays pinned below; typing in it and pressing Enter creates
-// a new skill from that text.
+// The prompt bar stays pinned below; typing normal text and pressing Enter
+// creates a new skill from that text, while a leading slash runs the command
+// (including /newskill). ctrl+n opens the new-skill form regardless.
 package skills
 
 import (
@@ -350,7 +351,7 @@ func (m Model) body() []string {
 	if m.filtering {
 		header = lipgloss.NewStyle().Foreground(style.Info).Render(m.searchInput.View())
 	} else {
-		hint := "/ search · a all · l loaded · u unloaded · f cycle · p load · x unload · enter prompt · esc exit"
+		hint := "/ search · a all · l loaded · u unloaded · f cycle · p load · x unload · ctrl+n new · enter prompt · esc exit"
 		header = lipgloss.NewStyle().Foreground(style.Muted).Render(hint)
 	}
 
@@ -370,7 +371,7 @@ func (m Model) body() []string {
 		if strings.TrimSpace(m.searchInput.Value()) != "" {
 			empty = "no skills match the search"
 		}
-		empty += " — type in the prompt bar and press enter to create one"
+		empty += " — type in the prompt bar and press enter, or run /newskill, to create one"
 		out = append(out, clip("· "+empty, 0, innerW))
 	} else {
 		top := m.listTop()

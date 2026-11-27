@@ -38,8 +38,11 @@ func (g *groqProvider) Generate(ctx context.Context, messages []Message) (Genera
 		"model":    g.model,
 		"messages": toGroqMessages(ctx, messages),
 	}
-	if hasTools() {
-		reqBody["tools"] = openAICompatTools(ctx)
+	// Only add the key when there is something to send: compaction requests
+	// (WithoutSystem) omit tools, and assigning the key unconditionally used
+	// to put "tools": null on the wire.
+	if tools := openAICompatTools(ctx); len(tools) > 0 {
+		reqBody["tools"] = tools
 	}
 
 	url := groqBaseURL + "/chat/completions"

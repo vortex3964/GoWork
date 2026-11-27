@@ -50,6 +50,48 @@ const (
 	lastCol = 10 // "MM-DD"
 )
 
+// Rendering runs on every frame, so the static parts of every style are
+// built once at startup instead of at each call site. Dynamic values (model
+// colors, widths, selection state) are applied by copying one of these
+// styles rather than constructing a new style from scratch per frame.
+var (
+	baseStyle = lipgloss.NewStyle()
+
+	mutedStyle   = baseStyle.Foreground(style.Muted)
+	textStyle    = baseStyle.Foreground(style.Text)
+	infoStyle    = baseStyle.Foreground(style.Info)
+	warningStyle = baseStyle.Foreground(style.Warning)
+
+	viewStyle = baseStyle.Margin(0, padSide)
+
+	panelStyle = baseStyle.
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(style.Info).
+			Foreground(style.Text).
+			Background(style.Background).
+			Padding(0, 1)
+
+	dialogStyle = baseStyle.
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(style.Info).
+			Foreground(style.Text).
+			Background(style.Background).
+			Padding(1, 2)
+
+	detailTitleStyle = infoStyle.Bold(true)
+	chartHeaderStyle = infoStyle.Bold(true)
+	pctStyle         = textStyle.Bold(true)
+
+	axisNumberStyle    = mutedStyle.AlignHorizontal(lipgloss.Right)
+	caretSelectedStyle = infoStyle.Bold(true).Background(style.Highlight).AlignHorizontal(lipgloss.Center)
+	caretToolStyle     = warningStyle.AlignHorizontal(lipgloss.Center)
+
+	listNameStyle    = baseStyle.Width(nameCol).AlignHorizontal(lipgloss.Left)
+	listHeaderStyle  = mutedStyle.Bold(true)
+	selectedRowStyle = baseStyle.Background(style.Highlight).Foreground(style.Text)
+	rightCellStyle   = textStyle.AlignHorizontal(lipgloss.Right)
+)
+
 // group is one model's slot in the stable color assignment: the top models
 // by all-time total tokens (over the loaded stats), plus an "others"
 // bucket for the rest. Every day-bar's segments and the list's row accents
@@ -120,6 +162,60 @@ type Model struct {
 	filterInput textinput.Model
 
 	modal *ModelDetail
+
+	// dataRev increments whenever SetData hands over a fresh snapshot.
+	// Together with the selection/filter/size fields it forms the render
+	// cache key, so an unchanged frame is returned without rebuilding.
+	dataRev uint64
+	cache   *viewCache
+}
+
+// viewKey captures every input that can change the rendered screen.
+type viewKey struct {
+	day       string // time.Now date; the chart window moves at midnight
+	width     int
+	height    int
+	dataRev   uint64
+	cursor    int
+	dayCursor int
+	dayOffset int
+	filtering bool
+	filter    string
+	filterPos int
+	modal     bool
+	modalIdx  int
+	modalPos  int
+}
+
+// viewCache stores the last rendered frame. It is a pointer so the cache
+// survives Model's many by-value copies (View and Update both use value
+// receivers) and is shared with the owning model.
+type viewCache struct {
+	key    viewKey
+	view   string
+	valid  bool
+	builds int
+}
+
+func (m Model) viewKey() viewKey {
+	k := viewKey{
+		day:       time.Now().Format("2006-01-02"),
+		width:     m.width,
+		height:    m.height,
+		dataRev:   m.dataRev,
+		cursor:    m.cursor,
+		dayCursor: m.dayCursor,
+		dayOffset: m.dayOffset,
+		filtering: m.filtering,
+		filter:    m.filterInput.Value(),
+		filterPos: m.filterInput.Position(),
+	}
+	if m.modal != nil {
+		k.modal = true
+		k.modalIdx = m.modal.index
+		k.modalPos = m.modal.vScroll
+	}
+	return k
 }
 
 func New() Model {
@@ -128,7 +224,7 @@ func New() Model {
 	ti.Prompt = "/ "
 	ti.CharLimit = 64
 	ti.SetWidth(30)
-	return Model{filterInput: ti}
+	return Model{filterInput: ti, cache: &viewCache{}}
 }
 
 // SetData hands the screen a fresh set of aggregates (on tab entry and
@@ -136,6 +232,7 @@ func New() Model {
 // them. rows is the per-model 30-day aggregate (for the list + legend
 // coloring); daily is the day-bucketed breakdown the chart draws from.
 func (m *Model) SetData(rows []db.ModelStat, daily []db.DailyBucket) {
+	m.dataRev++
 	m.stats = rows
 	m.daily = daily
 	m.total = 0
@@ -378,18 +475,32 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		key := msg.String()
-		switch key {
-		case "/":
-			m.filtering = true
-			m.filterInput.Focus()
-			return m, nil
-		case "esc":
-			if m.filtering {
+
+		// While the filter is active the text input owns the arrow keys:
+		// ←/→ move its cursor and ↑/↓ must not move the model list
+		// underneath it. Other keys keep their existing behaviour (Esc
+		// clears, Enter magnifies, printables extend the query).
+		if m.filtering {
+			if key == "esc" {
 				m.filterInput.Blur()
 				m.filterInput.SetValue("")
 				m.filtering = false
 				m.applyFilter()
+				return m, nil
 			}
+			switch key {
+			case "up", "down", "left", "right":
+				var cmd tea.Cmd
+				m.filterInput, cmd = m.filterInput.Update(msg)
+				m.applyFilter()
+				return m, cmd
+			}
+		}
+
+		switch key {
+		case "/":
+			m.filtering = true
+			m.filterInput.Focus()
 			return m, nil
 		case "up":
 			if m.cursor > 0 {
@@ -405,24 +516,19 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			// ← moves the day highlight one day into the past. At the
 			// left edge of the window the chart pages one day further
 			// back (until the oldest recorded usage) so the selected
-			// day keeps walking. Not available while filtering (the
-			// input eats arrow keys for cursor movement instead).
-			if !m.filtering {
-				if m.dayCursor > 0 {
-					m.dayCursor--
-				} else if m.dayOffset < m.oldestDayOffset() {
-					m.dayOffset++
-					m.clampDayOffset()
-				}
+			// day keeps walking.
+			if m.dayCursor > 0 {
+				m.dayCursor--
+			} else if m.dayOffset < m.oldestDayOffset() {
+				m.dayOffset++
+				m.clampDayOffset()
 			}
 			return m, nil
 		case "right":
-			if !m.filtering {
-				if m.dayCursor < windowDays-1 {
-					m.dayCursor++
-				} else if m.dayOffset > 0 {
-					m.dayOffset--
-				}
+			if m.dayCursor < windowDays-1 {
+				m.dayCursor++
+			} else if m.dayOffset > 0 {
+				m.dayOffset--
 			}
 			return m, nil
 		case "enter":
@@ -622,22 +728,16 @@ func max(a, b int) int {
 func (md ModelDetail) render() string {
 	w := md.dialogWidth() - 4
 
-	title := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(style.Info).
-		Render("✦ " + md.model.Model + " ✦")
+	title := detailTitleStyle.Render("✦ " + md.model.Model + " ✦")
 
-	sub := lipgloss.NewStyle().
-		Foreground(style.Muted).
-		Render(md.model.Provider)
+	sub := mutedStyle.Render(md.model.Provider)
 
 	barLen := w - 2
 	filled := int(float64(barLen) * md.pct / 100)
-	bar := lipgloss.NewStyle().Foreground(barColor(md.index)).Render(strings.Repeat("█", filled)) +
-		lipgloss.NewStyle().Foreground(style.Muted).Render(strings.Repeat("░", barLen-filled))
+	bar := baseStyle.Foreground(barColor(md.index)).Render(strings.Repeat("█", filled)) +
+		mutedStyle.Render(strings.Repeat("░", barLen-filled))
 
-	pctLine := lipgloss.NewStyle().Bold(true).Foreground(style.Text).
-		Render(fmt.Sprintf("%.1f%% of usage · %s tokens", md.pct, prettyInt(md.model.TotalTokens)))
+	pctLine := pctStyle.Render(fmt.Sprintf("%.1f%% of usage · %s tokens", md.pct, prettyInt(md.model.TotalTokens)))
 
 	rows := [][2]string{
 		{"model", md.model.Model},
@@ -670,30 +770,18 @@ func (md ModelDetail) render() string {
 		end = len(rows)
 	}
 	for _, r := range rows[start:end] {
-		b.WriteString(lipgloss.NewStyle().
-			Foreground(style.Muted).
-			Width(keyW).
-			Render(r[0]))
+		b.WriteString(mutedStyle.Width(keyW).Render(r[0]))
 		b.WriteString("  ")
-		b.WriteString(lipgloss.NewStyle().
-			Foreground(style.Text).
-			Render(r[1]))
+		b.WriteString(textStyle.Render(r[1]))
 		b.WriteString("\n")
 	}
 
-	help := lipgloss.NewStyle().
-		Foreground(style.Muted).
-		Render("← → browse · ↑ ↓ scroll · esc close")
+	help := mutedStyle.Render("← → browse · ↑ ↓ scroll · esc close")
 
 	content := title + "\n" + sub + "\n\n" + bar + "\n" + pctLine + "\n\n" +
 		strings.TrimRight(b.String(), "\n") + "\n\n" + help
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(style.Info).
-		Foreground(style.Text).
-		Background(style.Background).
-		Padding(1, 2).
+	return dialogStyle.
 		Width(md.dialogWidth()).
 		Height(md.dialogHeight()).
 		Render(content)
@@ -733,7 +821,25 @@ func (m Model) overlayModal(content string) string {
 
 // --- rendering --------------------------------------------------------------
 
+// View returns the rendered screen, reusing the previous frame when none of
+// the data, selection, filter, modal or size inputs changed. Copies of Model
+// share the cache pointer, so this works with the by-value tea.Model API.
 func (m Model) View() string {
+	key := m.viewKey()
+	if m.cache != nil && m.cache.valid && m.cache.key == key {
+		return m.cache.view
+	}
+	view := m.renderView()
+	if m.cache != nil {
+		m.cache.key = key
+		m.cache.view = view
+		m.cache.valid = true
+		m.cache.builds++
+	}
+	return view
+}
+
+func (m Model) renderView() string {
 	chartH, listH := m.chartListHeights()
 	frameW := m.width - padSide*2
 
@@ -745,10 +851,7 @@ func (m Model) View() string {
 
 	joined := chartFrame + "\n" + strings.Repeat(" ", frameW) + "\n" + listFrame
 
-	view := lipgloss.NewStyle().
-		Margin(0, padSide).
-		Width(frameW).
-		Render(joined)
+	view := viewStyle.Width(frameW).Render(joined)
 
 	return m.overlayModal(view)
 }
@@ -770,7 +873,7 @@ func drawFrame(w, h int, body []string) string {
 
 	innerW := w - 4
 	innerH := h - 2
-	rowStyle := lipgloss.NewStyle().MaxWidth(innerW).Width(innerW)
+	rowStyle := baseStyle.MaxWidth(innerW).Width(innerW)
 	var lines []string
 	for i := 0; i < innerH; i++ {
 		var line string
@@ -781,12 +884,7 @@ func drawFrame(w, h int, body []string) string {
 	}
 	content := strings.Join(lines, "\n")
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(style.Info).
-		Foreground(style.Text).
-		Background(style.Background).
-		Padding(0, 1).
+	return panelStyle.
 		Width(w - 2).
 		Height(h - 2).
 		Render(content)
@@ -900,8 +998,7 @@ func (m Model) chartBody(rowsAvail int) []string {
 	if len(m.daily) == 0 {
 		for i := 0; i < rowsAvail; i++ {
 			if i == 0 {
-				out = append(out, lipgloss.NewStyle().Foreground(style.Muted).
-					Render("No usage recorded in the last 30 days yet."))
+				out = append(out, mutedStyle.Render("No usage recorded in the last 30 days yet."))
 			} else {
 				out = append(out, "")
 			}
@@ -930,7 +1027,7 @@ func (m Model) chartBody(rowsAvail int) []string {
 	}
 
 	// header: visible date range (month names), totals, paging hint.
-	header := lipgloss.NewStyle().Bold(true).Foreground(style.Info).
+	header := chartHeaderStyle.
 		Render(fmt.Sprintf("%s – %s", days[0].label, days[len(days)-1].label))
 	windowTotal := 0
 	windowTools := 0
@@ -938,14 +1035,14 @@ func (m Model) chartBody(rowsAvail int) []string {
 		windowTotal += d.total
 		windowTools += d.toolCalls
 	}
-	header += lipgloss.NewStyle().Foreground(style.Muted).
+	header += mutedStyle.
 		Render(fmt.Sprintf("  ·  %s tokens", prettyInt(windowTotal)))
 	if windowTools > 0 {
-		header += lipgloss.NewStyle().Foreground(style.Warning).
+		header += warningStyle.
 			Render(fmt.Sprintf("  ·  %d tool call%s", windowTools, plural(windowTools)))
 	}
 	if m.dayOffset > 0 || m.oldestDayOffset() > 0 {
-		header += lipgloss.NewStyle().Foreground(style.Muted).Render("  ·  ←→ browse days")
+		header += mutedStyle.Render("  ·  ←→ browse days")
 	}
 	out = append(out, header)
 
@@ -1031,13 +1128,11 @@ func (m Model) chartBody(rowsAvail int) []string {
 	// bright with the highlight behind it.
 	axisCells := make([]string, len(days))
 	for di, d := range days {
-		axisCells[di] = lipgloss.NewStyle().
-			Foreground(style.Muted).
+		axisCells[di] = axisNumberStyle.
 			Width(cellW).
-			AlignHorizontal(lipgloss.Right).
 			Render(fmt.Sprintf("%2d", dayOfMonth(d.day)))
 	}
-	out = append(out, lipgloss.NewStyle().Render(strings.Join(axisCells, sep)))
+	out = append(out, strings.Join(axisCells, sep))
 
 	// caret row: the selected day gets the caret (plus its highlight),
 	// every day in the window that called tools gets a dot.
@@ -1045,24 +1140,18 @@ func (m Model) chartBody(rowsAvail int) []string {
 	for di, d := range days {
 		switch {
 		case di == sel:
-			caretCells[di] = lipgloss.NewStyle().
-				Foreground(style.Info).
-				Bold(true).
-				Background(style.Highlight).
+			caretCells[di] = caretSelectedStyle.
 				Width(cellW).
-				AlignHorizontal(lipgloss.Center).
 				Render("▲")
 		case d.hasData && d.toolCalls > 0:
-			caretCells[di] = lipgloss.NewStyle().
-				Foreground(style.Warning).
+			caretCells[di] = caretToolStyle.
 				Width(cellW).
-				AlignHorizontal(lipgloss.Center).
 				Render("•")
 		default:
 			caretCells[di] = strings.Repeat(" ", cellW)
 		}
 	}
-	out = append(out, lipgloss.NewStyle().Render(strings.Join(caretCells, sep)))
+	out = append(out, strings.Join(caretCells, sep))
 
 	out = append(out, m.legendLine())
 
@@ -1079,7 +1168,7 @@ func (m Model) chartBody(rowsAvail int) []string {
 // spaces) optionally carrying the model segment color, with the selected
 // day's highlight behind the whole column.
 func colCell(fill string, selected bool, c color.Color) string {
-	st := lipgloss.NewStyle()
+	st := baseStyle
 	if c != nil {
 		st = st.Foreground(c)
 	}
@@ -1113,10 +1202,7 @@ func monthBandRow(days []dayBar, cellW, gapW int) string {
 	}
 	out := make([]string, len(days))
 	for i, name := range cells {
-		out[i] = lipgloss.NewStyle().
-			Foreground(style.Muted).
-			Width(cellW).
-			Render(name)
+		out[i] = mutedStyle.Width(cellW).Render(name)
 	}
 	return strings.Join(out, strings.Repeat(" ", gapW))
 }
@@ -1146,13 +1232,12 @@ func (m Model) dayDetailLine(d dayBar) string {
 		need := lipgloss.Width(s)
 		if used+need > avail {
 			if used < avail {
-				b.WriteString(lipgloss.NewStyle().Foreground(style.Muted).
-					Render(clip(s, 0, avail-used)))
+				b.WriteString(mutedStyle.Render(clip(s, 0, avail-used)))
 			}
 			return
 		}
 		used += need
-		b.WriteString(lipgloss.NewStyle().Foreground(fg).Render(s))
+		b.WriteString(baseStyle.Foreground(fg).Render(s))
 	}
 
 	appendStyled(style.Info, d.label+" ·")
@@ -1184,13 +1269,13 @@ func (m Model) dayDetailLine(d dayBar) string {
 			if room > 2 {
 				room = max(room-2, 3)
 				b.WriteString("  ")
-				b.WriteString(lipgloss.NewStyle().Foreground(m.colorFor(p.name)).
+				b.WriteString(baseStyle.Foreground(m.colorFor(p.name)).
 					Render(clip(p.name, 0, room)))
 			}
 			break
 		}
 		used += lipgloss.Width(label)
-		b.WriteString(lipgloss.NewStyle().Foreground(m.colorFor(p.name)).Render(label))
+		b.WriteString(baseStyle.Foreground(m.colorFor(p.name)).Render(label))
 	}
 	return b.String()
 }
@@ -1243,9 +1328,9 @@ func (m Model) legendLine() string {
 			return b.String()
 		}
 		b.WriteString(sep)
-		b.WriteString(lipgloss.NewStyle().Foreground(g.color).Render("██"))
+		b.WriteString(baseStyle.Foreground(g.color).Render("██"))
 		b.WriteString(" ")
-		b.WriteString(lipgloss.NewStyle().Foreground(style.Text).Render(g.name))
+		b.WriteString(textStyle.Render(g.name))
 		used += need
 		shown++
 	}
@@ -1347,9 +1432,9 @@ func (m Model) listBody(linesAvail int) []string {
 	// filter bar (or hint)
 	if m.filtering {
 		filter := m.filterInput.View()
-		out = append(out, lipgloss.NewStyle().Foreground(style.Info).Render(filter))
+		out = append(out, infoStyle.Render(filter))
 	} else {
-		out = append(out, lipgloss.NewStyle().Foreground(style.Muted).
+		out = append(out, mutedStyle.
 			Render("/ filter · ↑↓ select · enter magnify · esc exit"))
 	}
 
@@ -1395,7 +1480,7 @@ func (m Model) listHeader(cols listCols) string {
 	if cols.lastUsed {
 		b.WriteString(" " + fmt.Sprintf("%*s", lastCol, "last used"))
 	}
-	return lipgloss.NewStyle().Foreground(style.Muted).Bold(true).Render(b.String())
+	return listHeaderStyle.Render(b.String())
 }
 
 func (m Model) listRow(r db.ModelStat, selected bool, cols listCols) string {
@@ -1403,15 +1488,9 @@ func (m Model) listRow(r db.ModelStat, selected bool, cols listCols) string {
 	if selected {
 		sel = "▸"
 	}
-	selStyled := lipgloss.NewStyle().
-		Foreground(style.Info).
-		Width(selCol).
-		Render(sel)
+	selStyled := infoStyle.Width(selCol).Render(sel)
 
-	nameStyle := lipgloss.NewStyle().
-		Width(nameCol).
-		AlignHorizontal(lipgloss.Left).
-		Foreground(m.colorFor(r.Model))
+	nameStyle := listNameStyle.Foreground(m.colorFor(r.Model))
 	if selected {
 		nameStyle = nameStyle.Bold(true)
 	}
@@ -1423,10 +1502,8 @@ func (m Model) listRow(r db.ModelStat, selected bool, cols listCols) string {
 
 	rightCol := func(w int, v string) {
 		b.WriteString(" ")
-		b.WriteString(lipgloss.NewStyle().
+		b.WriteString(rightCellStyle.
 			Width(w).
-			AlignHorizontal(lipgloss.Right).
-			Foreground(style.Text).
 			Render(v))
 	}
 	if cols.provider {
@@ -1451,10 +1528,7 @@ func (m Model) listRow(r db.ModelStat, selected bool, cols listCols) string {
 
 	row := b.String()
 	if selected {
-		row = lipgloss.NewStyle().
-			Background(style.Highlight).
-			Foreground(style.Text).
-			Render(row)
+		row = selectedRowStyle.Render(row)
 	}
 	return row
 }

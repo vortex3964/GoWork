@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
-	
+
 	"GoWork/tools"
 	movefiletool "GoWork/tools/MoveFileTool"
 )
@@ -81,6 +82,32 @@ func TestMoveFile(t *testing.T) {
 		}
 		if _, err := os.Stat(filepath.Join(root, "src", "foo.txt")); !os.IsNotExist(err) {
 			t.Error("expected original file to no longer exist")
+		}
+	})
+
+	t.Run("preserves source file mode", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows does not expose POSIX permission bits")
+		}
+		root := t.TempDir()
+		src := filepath.Join(root, "script.sh")
+		writeFile(t, src, "#!/bin/sh\necho hi\n")
+		if err := os.Chmod(src, 0o755); err != nil {
+			t.Fatalf("chmod source: %v", err)
+		}
+
+		tool := newTool(t, root)
+		_, isErr := runTool(t, tool, "script.sh", "bin/script.sh")
+		if isErr {
+			t.Fatalf("unexpected error result")
+		}
+
+		info, err := os.Stat(filepath.Join(root, "bin", "script.sh"))
+		if err != nil {
+			t.Fatalf("expected moved file to exist: %v", err)
+		}
+		if got := info.Mode().Perm(); got != 0o755 {
+			t.Errorf("moved file mode = %o, want 755", got)
 		}
 	})
 

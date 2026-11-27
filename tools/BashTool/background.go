@@ -7,6 +7,7 @@ package bashtool
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -226,6 +227,9 @@ func newJobID() string {
 func (m *jobManager) start(ctx context.Context, wd, command string) (*job, error) {
 	cmd := exec.CommandContext(ctx, shell, "-c", command)
 	cmd.Dir = wd
+	// The child must not inherit provider credentials. Both foreground and
+	// background commands start here, so this is the single choke point.
+	cmd.Env = sanitizedEnv(os.Environ())
 
 	out := &lockedBuffer{}
 	errOut := &lockedBuffer{}

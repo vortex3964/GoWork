@@ -22,6 +22,25 @@ func llamaCppBaseURL() string {
 	return "http://localhost:8080"
 }
 
+// LlamaCppLaunchSpec describes the in-app start/stop controls for
+// `llama-server`. Pass the model with LLAMACPP_ARGS (e.g.
+// `LLAMACPP_ARGS=-m /models/qwen.gguf`) or set LLAMACPP_COMMAND when the
+// binary is not on PATH.
+func LlamaCppLaunchSpec() LocalServerSpec {
+	return LocalServerSpec{
+		Provider:     "llamacpp",
+		DisplayName:  "llama.cpp",
+		CommandNames: []string{"llama-server", "llama-server.exe"},
+		CommandEnv:   "LLAMACPP_COMMAND",
+		ArgsEnv:      "LLAMACPP_ARGS",
+		BaseURL:      llamaCppBaseURL(),
+		// /health is the dedicated readiness endpoint; /v1/models is a
+		// fallback for older builds that do not expose it.
+		HealthPaths:  []string{"health", "v1/models"},
+		StartTimeout: LocalServerStartTimeout(),
+	}
+}
+
 type llamaCppProvider struct {
 	model   string
 	baseURL string
@@ -59,8 +78,8 @@ func (l *llamaCppProvider) Generate(ctx context.Context, messages []Message) (Ge
 		"messages": toLlamaCppMessages(ctx, messages),
 		"stream":   false,
 	}
-	if l.toolsEnabled && hasTools() {
-		reqBody["tools"] = openAICompatTools(ctx)
+	if tools := openAICompatTools(ctx); l.toolsEnabled && len(tools) > 0 {
+		reqBody["tools"] = tools
 	}
 
 	body, err := l.doRequest(ctx, http.MethodPost, l.baseURL+"/v1/chat/completions", reqBody)

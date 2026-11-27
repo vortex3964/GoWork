@@ -8,6 +8,7 @@ import (
 
 	"GoWork/Tui/Components/Questionnaire"
 	"GoWork/Tui/Components/SkillsTab"
+	toolstab "GoWork/Tui/Components/ToolsTab"
 
 	"GoWork/providers"
 	"GoWork/tools/SkillsTool"
@@ -88,6 +89,7 @@ func (m *model) applyPanelSize() {
 	}
 	m.MessageArea.SetSize(m.msgAreaWidth(), msgAreaHeight)
 	m.Skills.SetSize(m.msgAreaWidth(), msgAreaHeight)
+	m.Tools.SetSize(m.msgAreaWidth(), msgAreaHeight)
 }
 
 // syncPromptHeight re-layouts the band when the prompt bar's height changed
@@ -106,11 +108,32 @@ func (m *model) toggleTodoPanel() {
 	m.applyPanelSize()
 }
 
+// showCodeTab activates the code tab if another tab is currently visible.
+// Used when a component that only renders there (the questionnaire) needs to
+// be surfaced.
+func (m *model) showCodeTab() bool {
+	for i, tab := range m.Tabs.Tabs {
+		if tab.Name == "code" {
+			if m.Tabs.ActiveIdx == i {
+				return false
+			}
+			m.Tabs.ActiveIdx = i
+			return true
+		}
+	}
+	return false
+}
+
 // syncModeToTab keeps the active mode in step with the active tab: the stats
 // tab runs in its own stats mode (statusline pinned, prompt bar hidden), the
 // skills tab pins both bars (the pane shares the message-area band), any
 // other tab returns to the normal prompt layout.
 func (m *model) syncModeToTab() {
+	if m.Tabs.Active().Name != "tools" {
+		// Leaving Tools never leaves a detached add form waiting to
+		// reappear when the user comes back.
+		m.Tools.CloseForm()
+	}
 	if m.Tabs.Active().Name == "stats" {
 		m.Mode = modeStats
 		m.Prompt.Blur()
@@ -119,9 +142,30 @@ func (m *model) syncModeToTab() {
 		m.Mode = modeSkills
 		m.Prompt.Blur()
 		m.refreshSkills()
-	} else if m.Mode == modeStats || m.Mode == modeSkills {
+	} else if m.Tabs.Active().Name == "tools" {
+		m.Mode = modeTools
+		m.Prompt.Blur()
+		m.refreshTools()
+	} else if m.Mode == modeStats || m.Mode == modeSkills || m.Mode == modeTools {
 		m.Mode = modePrompt
 		m.Prompt.Focus()
+	}
+}
+
+// toggleToolsTab jumps to the Tools tab, or back to the code tab when Tools is
+// already active. Used by ctrl+t from every layout.
+func (m *model) toggleToolsTab() {
+	if m.Tabs.Active().Name == "tools" {
+		m.Tabs.ActiveIdx = 0
+		m.syncModeToTab()
+		return
+	}
+	for i, tab := range m.Tabs.Tabs {
+		if tab.Name == "tools" {
+			m.Tabs.ActiveIdx = i
+			m.syncModeToTab()
+			return
+		}
 	}
 }
 
@@ -145,6 +189,16 @@ func (m *model) refreshStats() {
 	m.Stats.SetData(rows, daily)
 }
 
+// refreshStatsIfVisible reloads the dashboard when the stats tab is the one
+// on screen. Generation results are recorded while the user may already be
+// looking at stats, so waiting for the next tab entry would leave stale
+// numbers behind a live dashboard.
+func (m *model) refreshStatsIfVisible() {
+	if len(m.Tabs.Tabs) > 0 && m.Tabs.Active().Name == "stats" {
+		m.refreshStats()
+	}
+}
+
 // refreshSkills rebuilds the skills tab's discovery snapshot: every skill
 // currently on disk (from the manager's registry), with each entry's Loaded
 // flag coming from what the session has loaded so far.
@@ -154,9 +208,9 @@ func (m *model) refreshSkills() {
 		m.Skills.SetData(nil)
 		return
 	}
-	mgr.Discover()
-	entries := make([]skills.Entry, 0, len(mgr.Entries()))
-	for _, e := range mgr.Entries() {
+	discovered := mgr.Discover()
+	entries := make([]skills.Entry, 0, len(discovered))
+	for _, e := range discovered {
 		if e.Name == "" || strings.HasPrefix(e.Name, ".") {
 			continue
 		}
@@ -168,6 +222,33 @@ func (m *model) refreshSkills() {
 		})
 	}
 	m.Skills.SetData(entries)
+}
+
+// refreshTools rebuilds the Tools tab snapshot: discovered/loaded skills plus
+// the runtime's live MCP and LSP state. Called on tab entry and after every
+// tool-tab change.
+func (m *model) refreshTools() {
+	var data toolstab.Data
+	if mgr := skillstool.GetManager(); mgr != nil {
+		for _, e := range mgr.Discover() {
+			if e.Name == "" || strings.HasPrefix(e.Name, ".") {
+				continue
+			}
+			data.Skills = append(data.Skills, toolstab.Skill{
+				Name:        e.Name,
+				Description: e.Description,
+				Path:        e.Path,
+				Loaded:      mgr.IsLoaded(e.Name),
+			})
+		}
+	}
+	if m.toolRuntime != nil {
+		data.MCP = m.toolRuntime.MCPServers()
+		data.LSP = m.toolRuntime.LSPServers()
+		data.MCPConfigPath, data.LSPConfigPath = m.toolRuntime.ConfigPaths()
+		data.MCPError, data.LSPError = m.toolRuntime.Errors()
+	}
+	m.Tools.SetData(data)
 }
 
 // syncSkillToolDef re-registers the skill tool's definition with the
@@ -182,6 +263,7 @@ func (m *model) syncSkillToolDef() {
 // the session record.
 func (m *model) syncSkillsState() {
 	m.refreshSkills()
+	m.refreshTools()
 	m.syncSkillToolDef()
 	if m.Db != nil {
 		mgr := skillstool.GetManager()
@@ -195,12 +277,38 @@ func (m model) promptTop() int {
 	return m.winHeight - statusLineHeight - m.bottomBarHeight()
 }
 
+// focusCodeTabPrompt returns the code tab to a usable prompt bar. Interactions
+// that temporarily take the keyboard away from the textarea (a mouse
+// drag-copy, an interrupted turn) call this so typed text and pasted text land
+// in the prompt immediately instead of requiring an extra Enter. Tabs with
+// their own pane, and blocking overlays, keep their keys and mode.
+func (m *model) focusCodeTabPrompt() tea.Cmd {
+	if m.Tabs.Active().Name != "code" {
+		return nil
+	}
+	switch m.Mode {
+	case modeProviderSelect, modePermission, modeQuestionnaire, modeStats, modeSkills, modeTools:
+		return nil
+	}
+	m.Mode = modePrompt
+	if m.Prompt.Focused() {
+		return nil
+	}
+	return m.Prompt.Focus()
+}
+
 // restoreModeForActiveTab leaves an overlay or auxiliary mode and returns to
 // the layout of the active tab. The provider picker overlays any tab and the
 // changes list can outlive a tab switch, so forcing modePrompt unconditionally
 // would leave stats/skills showing a PROMPT statusline while their pane still
 // owns the keys.
+//
+// A live questionnaire owns the bottom bar until it is answered: never hide it
+// by switching modes from under it.
 func (m *model) restoreModeForActiveTab() tea.Cmd {
+	if m.Mode == modeQuestionnaire {
+		return nil
+	}
 	m.Mode = modePrompt
 	m.syncModeToTab()
 	if m.Mode == modePrompt {

@@ -39,17 +39,25 @@ type toolResultMsg struct {
 }
 
 type modelInfoMsg struct {
-	info providers.ModelInfo
-	err  error
+	info  providers.ModelInfo
+	err   error
+	gen   uint64
+	model string
 }
 
 // compactResultMsg reports the outcome of a context-compaction call: the
 // model's summary of the earlier conversation, plus the tokens the summary
-// itself cost.
+// itself cost. The usage describes the compaction request itself (the
+// pre-summary history plus the compaction prompt), not the compressed history
+// that replaces it, so promptTokens carries the cheap post-compaction estimate
+// derived from that usage. context is the compacted history and is nil when
+// compaction could not shrink anything.
 type compactResultMsg struct {
-	summary string
-	usage   providers.Usage
-	err     error
+	summary      string
+	usage        providers.Usage
+	context      []providers.Message
+	promptTokens int
+	err          error
 }
 
 // pendingTool is one assistant-requested tool call waiting to run, paired
@@ -59,36 +67,34 @@ type pendingTool struct {
 	messageIdx int
 }
 
+// streamFlushInterval is how often accumulated assistant text is handed to
+// the update loop while a generation streams.
+const streamFlushInterval = 80 * time.Millisecond
+
 // startStreaming spawns a goroutine that runs a streaming generation on ctx
 // (which the caller owns so ctrl+i can cancel it) and forwards chunks into ch.
-// Deltas are throttled (at least every 80ms and at most ~64B accumulated) so
-// the update loop isn't flooded with per-token messages - a slow local model
-// at tens of tokens/sec still feels live, while a fast one doesn't drown
-// bubbletea in tiny messages. A single streamEndMsg is always sent last, then
-// ch is closed.
+// Deltas are coalesced on a real time interval (streamFlushInterval) rather
+// than a byte count, so a fast model can't flood bubbletea with one message
+// per token while a slow one still feels live. Whatever is still buffered,
+// including the final short chunk, is flushed once when the stream ends; then
+// a single streamEndMsg is sent and ch is closed.
 func startStreaming(ctx context.Context, p providers.Provider, messages []providers.Message, ch chan<- tea.Msg) {
 	go func() {
 		var buf strings.Builder
+		lastFlush := time.Now()
 		flush := func() {
 			if buf.Len() == 0 {
 				return
 			}
 			ch <- streamDeltaMsg{delta: buf.String()}
 			buf.Reset()
+			lastFlush = time.Now()
 		}
-
-		ticker := time.NewTicker(80 * time.Millisecond)
-		defer ticker.Stop()
 
 		res, err := p.GenerateStream(ctx, messages, func(delta string) {
 			buf.WriteString(delta)
-			if buf.Len() >= 64 {
+			if time.Since(lastFlush) >= streamFlushInterval {
 				flush()
-			}
-			select {
-			case <-ticker.C:
-				flush()
-			default:
 			}
 		})
 		flush() // any trailing partial chunk
@@ -141,6 +147,12 @@ func (m *model) nextPendingPermissionSlice() int {
 		if m.AutoAcceptTools {
 			continue
 		}
+		if m.planMode && !tools.PlanModeAllows(m.pendingTools[i].call.Tool_name, m.pendingTools[i].call.Input) {
+			// The dispatcher will refuse this call in plan mode. Don't ask
+			// the user to approve an action that cannot run: let it fall
+			// through to the dispatcher's model-readable refusal instead.
+			continue
+		}
 		tool, ok := m.tool_dispatcher.Lookup(m.pendingTools[i].call.Tool_name)
 		if !ok || tool.Kind() == tools.KindAllowed {
 			continue
@@ -162,7 +174,7 @@ func (m *model) openPermissionBox(slot int) tea.Cmd {
 	}
 	m.permissionSlot = slot
 	m.Mode = modePermission
-	m.permissionBox = permisionbox.New(name, desc, action)
+	m.permissionBox = permisionbox.New(name, desc, action, explainToolImpact(name, pt.call.Input, m.root))
 	m.permissionBox.SetSize(m.winWidth, m.winHeight)
 	return nil
 }
@@ -172,10 +184,9 @@ func (m *model) openPermissionBox(slot int) tea.Cmd {
 func (m *model) resolvePermission(dec permisionbox.DecisionMsg) tea.Cmd {
 	slot := m.permissionSlot
 	if slot < 0 || slot >= len(m.pendingTools) {
-		m.Mode = modePrompt
 		m.permissionSlot = -1
-		m.Prompt.Focus()
-		return nil
+		m.permissionBox.Hide()
+		return m.restoreModeForActiveTab()
 	}
 
 	pt := m.pendingTools[slot]
@@ -215,13 +226,22 @@ func (m *model) resolvePermission(dec permisionbox.DecisionMsg) tea.Cmd {
 
 	m.permissionSlot = -1
 	m.permissionBox.Hide()
-	m.Mode = modePrompt
-	m.Prompt.Focus()
+	restoreCmd := m.restoreModeForActiveTab()
 	if cmd := m.dispatchPendingBatch(); cmd != nil {
+		if restoreCmd != nil {
+			return tea.Batch(restoreCmd, cmd)
+		}
 		return cmd
 	}
 	// Everything in the batch was resolved without a runnable tool, so finalize.
-	return m.loopAfterBatch()
+	nextCmd := m.loopAfterBatch()
+	if restoreCmd != nil && nextCmd != nil {
+		return tea.Batch(restoreCmd, nextCmd)
+	}
+	if restoreCmd != nil {
+		return restoreCmd
+	}
+	return nextCmd
 }
 
 // dispatchPendingBatch launches every pending tool that has no result yet.
@@ -246,6 +266,11 @@ func (m *model) dispatchPendingBatch() tea.Cmd {
 // this bounds it to the model's context window (when known) so the original
 // user request is never the thing that gets dropped when the window fills.
 func (m *model) contextForModel() []providers.Message {
+	// Belt-and-braces: a dangling assistant tool call must never reach a
+	// provider (OpenAI/Anthropic reject it). Normal turns are already
+	// repaired at their boundaries, so this is a no-op there; it also keeps
+	// m.Context valid for the save path and any later request.
+	m.Context, _ = repairContext(m.Context)
 	return providers.TrimContext(m.Context, m.status.contextWindow, m.status.modelID)
 }
 
@@ -266,7 +291,11 @@ func isCancelError(err error) bool {
 // history (see compactResultMsg). It reads m's state once up front and never
 // touches the model from this goroutine. todoState snapshots the live todo
 // list so the summary's Work State can reflect outstanding tasks.
-func compactCmd(p providers.Provider, messages []providers.Message, window int, todoState ...string) tea.Cmd {
+//
+// The compacted history and its prompt-token estimate are computed here too,
+// off the update loop, so compactResultMsg handling never has to recount the
+// compressed transcript. model is the model ID used for that estimate.
+func compactCmd(p providers.Provider, messages []providers.Message, window int, model string, todoState ...string) tea.Cmd {
 	return func() tea.Msg {
 		// The compaction call only needs history + the compaction prompt:
 		// WithoutSystem makes providers skip the system prompt and tool
@@ -277,7 +306,12 @@ func compactCmd(p providers.Provider, messages []providers.Message, window int, 
 		if err != nil {
 			return compactResultMsg{err: err}
 		}
-		return compactResultMsg{summary: res.Content, usage: res.Usage}
+		msg := compactResultMsg{summary: res.Content, usage: res.Usage}
+		if compacted, changed := providers.CompactContextIfChanged(messages, res.Content, providers.DefaultCompactionKeepTurns); changed {
+			msg.context = compacted
+			msg.promptTokens = providers.EstimateCompactedContextTokens(compacted, res.Usage, model)
+		}
+		return msg
 	}
 }
 
@@ -285,6 +319,12 @@ func compactCmd(p providers.Provider, messages []providers.Message, window int, 
 // the prompt. Used when a turn finishes, errors, or is interrupted. It also
 // cancels any still-live context (harmless if the work already wound down).
 func (m *model) endTurn() {
+	// A batch can be abandoned mid-flight (ctrl+i while a permission prompt
+	// or questionnaire is open, a tool that never reports, an erroring
+	// provider). Close any tool call whose result never arrived so the next
+	// request and the saved session are well-formed.
+	m.Context, _ = repairContext(m.Context)
+
 	// A turn ending while the questionnaire is still up must drop it so the
 	// mode can't stay stuck answering a turn that's already gone.
 	if m.Mode == modeQuestionnaire {
@@ -295,7 +335,6 @@ func (m *model) endTurn() {
 		m.applyPanelSize()
 	}
 	*m.AiThink = false
-	m.stepCount = 0
 	m.pendingTools = m.pendingTools[:0]
 	m.pendingResults = m.pendingResults[:0]
 	m.liveActive = false
@@ -307,7 +346,10 @@ func (m *model) endTurn() {
 		m.cancel()
 		m.cancel = nil
 	}
-	m.Prompt.Focus()
+	// Return to the active tab's layout. On stats/skills this keeps their
+	// pane and mode instead of leaving a stray PROMPT statusline; only the
+	// code tab actually focuses the prompt bar.
+	m.restoreModeForActiveTab()
 }
 
 // isTurnInterrupt reports whether a keypress should stop the in-flight turn.
@@ -331,7 +373,10 @@ func (m *model) answerQuestionnaire(content string) {
 	m.questionnaireSlot = -1
 	m.questionnaire = questionnaire.New(nil)
 	questionnaire.Clear()
+	// Leave the questionnaire mode explicitly, then let the active tab pick
+	// the layout: stats/skills must not be forced back to the prompt bar.
 	m.Mode = modePrompt
+	m.restoreModeForActiveTab()
 	m.applyPanelSize()
 }
 
@@ -393,6 +438,17 @@ func (m *model) submitPrompt() []tea.Cmd {
 	if val == "" {
 		return cmds
 	}
+	// Slash commands are shell actions, never model input: route them
+	// before they can reach Context or the provider.
+	if strings.HasPrefix(strings.TrimSpace(val), "/") {
+		m.Prompt.Reset()
+		m.syncPromptHeight()
+		m.historyIdx = 0
+		if cmd := m.runSlashCommand(val); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return cmds
+	}
 	// Block submitting a second request while one is still running (the
 	// agentic loop can hold aiThink true across many tool turns, so this
 	// guards against launching concurrent generations).
@@ -414,7 +470,9 @@ func (m *model) submitPrompt() []tea.Cmd {
 		return cmds
 	}
 	*m.AiThink = true
-	m.ChangesList.PauseWatching()
+	if m.ChangesList.Open() {
+		m.ChangesList.PauseWatching()
+	}
 	// Each new task starts with a fresh todo list. The model lays down its
 	// own baseline with the todo_list tool from the system prompt.
 	todo.GetTodoList().Clear()
@@ -423,7 +481,6 @@ func (m *model) submitPrompt() []tea.Cmd {
 	m.Prompt.Reset()
 	m.syncPromptHeight()
 	m.historyIdx = 0
-	m.stepCount = 0
 	m.pendingTools = m.pendingTools[:0]
 	m.pendingResults = m.pendingResults[:0]
 

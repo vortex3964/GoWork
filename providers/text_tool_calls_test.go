@@ -13,15 +13,15 @@ func TestParseTextToolCalls(t *testing.T) {
 	})
 
 	cases := []struct {
-		name        string
-		content     string
-		wantCalls   int
-		wantName    string
-		wantClean   string
+		name      string
+		content   string
+		wantCalls int
+		wantName  string
+		wantClean string
 	}{
 		{
-			name: "plain fenced json blob (the qwen2.5-coder:3b case)",
-			content: "```json\n{\n  \"name\": \"create_file\",\n  \"arguments\": {\n    \"path\": \"src/hello.c\",\n    \"content\": {\"type\": \"string\", \"value\": \"#include <stdio.h>\"}\n  }\n}\n```",
+			name:      "plain fenced json blob (the qwen2.5-coder:3b case)",
+			content:   "```json\n{\n  \"name\": \"create_file\",\n  \"arguments\": {\n    \"path\": \"src/hello.c\",\n    \"content\": {\"type\": \"string\", \"value\": \"#include <stdio.h>\"}\n  }\n}\n```",
 			wantCalls: 1,
 			wantName:  "create_file",
 			wantClean: "",
@@ -120,10 +120,10 @@ func TestParseTextToolCallsRejectsNarration(t *testing.T) {
 	})
 
 	cases := []struct {
-		name        string
-		content     string
-		wantCalls   int
-		wantClean   string
+		name      string
+		content   string
+		wantCalls int
+		wantClean string
 	}{
 		{
 			// The model just NARRATES a tool call in prose with no arguments.
@@ -182,10 +182,10 @@ func TestParseTextToolCallsMalformed(t *testing.T) {
 	})
 
 	cases := []struct {
-		name       string
-		content    string
-		wantName   string
-		wantPath   string
+		name     string
+		content  string
+		wantName string
+		wantPath string
 	}{
 		{
 			name:     "unclosed backtick string value",
@@ -213,36 +213,36 @@ func TestParseTextToolCallsMalformed(t *testing.T) {
 		},
 	}
 
-		for _, c := range cases {
-			t.Run(c.name, func(t *testing.T) {
-				calls, _ := ParseTextToolCalls(c.content)
-				if len(calls) != 1 {
-					t.Fatalf("got %d calls, want 1", len(calls))
-				}
-				if calls[0].Tool_name != c.wantName {
-					t.Errorf("call name = %q, want %q", calls[0].Tool_name, c.wantName)
-				}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			calls, _ := ParseTextToolCalls(c.content)
+			if len(calls) != 1 {
+				t.Fatalf("got %d calls, want 1", len(calls))
+			}
+			if calls[0].Tool_name != c.wantName {
+				t.Errorf("call name = %q, want %q", calls[0].Tool_name, c.wantName)
+			}
 
-				var argObj map[string]json.RawMessage
-				if err := json.Unmarshal(calls[0].Input, &argObj); err != nil {
-					t.Fatalf("Input isn't a JSON object: %v (%s)", err, calls[0].Input)
-				}
-				raw, ok := argObj["path"]
-				if !ok {
-					raw, ok = argObj["file_path"]
-				}
-				if !ok {
-					t.Fatalf("Input missing path/file_path: %s", calls[0].Input)
-				}
-				var p string
-				if err := json.Unmarshal(raw, &p); err != nil {
-					t.Fatalf("path value isn't a string: %v (%s)", err, raw)
-				}
-				if p != c.wantPath {
-					t.Errorf("path = %q, want %q", p, c.wantPath)
-				}
-			})
-		}
+			var argObj map[string]json.RawMessage
+			if err := json.Unmarshal(calls[0].Input, &argObj); err != nil {
+				t.Fatalf("Input isn't a JSON object: %v (%s)", err, calls[0].Input)
+			}
+			raw, ok := argObj["path"]
+			if !ok {
+				raw, ok = argObj["file_path"]
+			}
+			if !ok {
+				t.Fatalf("Input missing path/file_path: %s", calls[0].Input)
+			}
+			var p string
+			if err := json.Unmarshal(raw, &p); err != nil {
+				t.Fatalf("path value isn't a string: %v (%s)", err, raw)
+			}
+			if p != c.wantPath {
+				t.Errorf("path = %q, want %q", p, c.wantPath)
+			}
+		})
+	}
 }
 
 func TestNormalizeToolArgsUnwrapsStringObject(t *testing.T) {

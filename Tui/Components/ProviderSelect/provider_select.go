@@ -42,6 +42,20 @@ type SelectedMsg struct {
 // CancelledMsg is emitted when the user backs out of the first step.
 type CancelledMsg struct{}
 
+// ServerToggleMsg asks the host app to start or stop the highlighted local
+// server. The picker never starts processes itself.
+type ServerToggleMsg struct {
+	Provider string
+}
+
+// ServerStatusMsg reports the result of a start/stop request so the picker can
+// show it next to the selected local provider.
+type ServerStatusMsg struct {
+	Provider string
+	Status   string
+	Err      error
+}
+
 type modelsLoadedMsg struct {
 	loadID int
 	models []providers.ModelInfo
@@ -65,6 +79,10 @@ type Model struct {
 	providers      []string
 	localProviders []string
 	envAPIKey      string
+
+	// localStatus is keyed by lower-cased provider name and set by the host
+	// app from the local-server manager. It only ever holds short labels.
+	localStatus map[string]string
 
 	draftProvider string
 	draftKey      string
@@ -97,10 +115,41 @@ func New(cloudProviders, localProviders []string, envAPIKey string) Model {
 		providers:      cloudProviders,
 		localProviders: localProviders,
 		envAPIKey:      envAPIKey,
+		localStatus:    make(map[string]string),
 		keyInput:       ti,
 	}
 	m.list = m.newList("Select provider", stringItems(cloudProviders))
 	return m
+}
+
+// SetLocalServerStatus updates the start/stop label shown for a local
+// provider. Providers without launch controls simply never get a label.
+func (m *Model) SetLocalServerStatus(provider, status string) {
+	key := strings.ToLower(strings.TrimSpace(provider))
+	if key == "" {
+		return
+	}
+	if m.localStatus == nil {
+		m.localStatus = make(map[string]string)
+	}
+	if status == "" {
+		delete(m.localStatus, key)
+		return
+	}
+	m.localStatus[key] = status
+}
+
+// localServerStatusLine returns the status of the highlighted local provider,
+// or "" outside the local-provider step.
+func (m Model) localServerStatusLine() string {
+	if m.step != stepLocal {
+		return ""
+	}
+	sel, ok := m.list.SelectedItem().(item)
+	if !ok {
+		return ""
+	}
+	return m.localStatus[strings.ToLower(sel.id)]
 }
 
 func stringItems(names []string) []list.Item {
@@ -310,6 +359,21 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			return m.undo()
 		}
 
+		// "s" starts/stops the highlighted local server. It is only a
+		// control key outside the list filter so typing a search term never
+		// launches anything.
+		if m.step == stepLocal && key == "s" && m.list.FilterState() != list.Filtering {
+			if sel, ok := m.list.SelectedItem().(item); ok {
+				// The host marks launchable providers by giving them a
+				// status; Ollama (which manages its own daemon) does not.
+				if _, launchable := m.localStatus[strings.ToLower(sel.id)]; launchable {
+					provider := sel.id
+					return m, func() tea.Msg { return ServerToggleMsg{Provider: provider} }
+				}
+			}
+			return m, nil
+		}
+
 		if m.step == stepAPIKeyInput {
 			if key == "enter" {
 				val := strings.TrimSpace(m.keyInput.Value())
@@ -499,9 +563,13 @@ func (m Model) renderDialog() string {
 		Foreground(style.Info).
 		Bold(true).
 		Render("Provider & model")
+	helpText := "enter · esc back · / filter · ctrl+c cancel"
+	if m.step == stepLocal {
+		helpText = "enter · s start/stop server · esc back · / filter · ctrl+c cancel"
+	}
 	help := lipgloss.NewStyle().
 		Foreground(style.Muted).
-		Render("enter · esc back · / filter · ctrl+c cancel")
+		Render(helpText)
 
 	var body string
 	switch m.step {
@@ -518,6 +586,14 @@ func (m Model) renderDialog() string {
 		body = m.list.View()
 	}
 
+	statusLine := ""
+	if status := m.localServerStatusLine(); status != "" {
+		statusLine = "\n" + lipgloss.NewStyle().
+			Foreground(style.Special).
+			Width(innerW).
+			Render("server: "+status)
+	}
+
 	errLine := ""
 	if m.errMsg != "" {
 		errLine = "\n" + lipgloss.NewStyle().
@@ -526,7 +602,7 @@ func (m Model) renderDialog() string {
 			Render(m.errMsg)
 	}
 
-	content := title + "\n" + help + "\n\n" + body + errLine
+	content := title + "\n" + help + "\n\n" + body + statusLine + errLine
 
 	// Same Background as the app terminal bg — accent is Info blue.
 	return lipgloss.NewStyle().

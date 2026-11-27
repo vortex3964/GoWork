@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"GoWork/Tui/Components/ToDo"
 )
@@ -42,6 +43,7 @@ const (
 	statusCtxBG      = "#e0af68" // context window % used
 	statusTokBG      = "#9ece6a" // session token total
 	statusTodoBG     = "#8B5A2B" // todo panel open (brown)
+	statusPlanBG     = "#bb9af7" // read-only plan mode (violet)
 
 	statusFG = "#1a1b26"
 )
@@ -87,8 +89,13 @@ func renderStatusLine(m model) string {
 		{bg: statusModelBG, text: m.status.modelID},
 		{bg: statusProviderBG, text: m.status.providerName},
 	})
+	if m.planMode {
+		left += renderChain([]segment{
+			{bg: statusPlanBG, text: "PLAN · READ-ONLY"},
+		})
+	}
 	if m.todoPanelOpen {
-		todoCount := todo.GetTodoList().Size
+		todoCount := todo.GetTodoList().Size()
 		left += renderChain([]segment{
 			{bg: statusTodoBG, text: fmt.Sprintf("TASKS %d", todoCount)},
 		})
@@ -115,11 +122,19 @@ func renderStatusLine(m model) string {
 	})
 
 	total := lipgloss.Width(left) + lipgloss.Width(center) + lipgloss.Width(right)
-	gap := m.winWidth - total
-	if gap < 2 {
-		return left + center + right
+	var out string
+	if gap := m.winWidth - total; gap < 2 {
+		out = left + center + right
+	} else {
+		leftGap := gap / 2
+		rightGap := gap - leftGap
+		out = left + strings.Repeat(" ", leftGap) + center + strings.Repeat(" ", rightGap) + right
 	}
-	leftGap := gap / 2
-	rightGap := gap - leftGap
-	return left + strings.Repeat(" ", leftGap) + center + strings.Repeat(" ", rightGap) + right
+	// The statusline is a single pinned row: long model/provider labels
+	// must never wrap or push the terminal width, so clip the assembled
+	// chain (ANSI-aware) to the available terminal columns.
+	if m.winWidth > 0 && lipgloss.Width(out) > m.winWidth {
+		out = ansi.Truncate(out, m.winWidth, "")
+	}
+	return out
 }

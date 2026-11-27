@@ -85,6 +85,15 @@ func runEdit(t *testing.T, tool testTool, dir, name, content string, startLine, 
 	return result.Content, result.IsError
 }
 
+func TestKindRequiresApproval(t *testing.T) {
+	if got := editfiletool.New().Kind(); got != tools.KindNotAllowed {
+		t.Fatalf("edit_file Kind() = %v, want KindNotAllowed so every edit is previewed in the permission box", got)
+	}
+	if tools.PlanModeAllows("edit_file", nil) {
+		t.Fatal("PlanModeAllows(edit_file) = true, want plan mode to keep blocking edits")
+	}
+}
+
 func TestRun_ReplaceSingleLine_Success(t *testing.T) {
 	tool, dir := setupTool(t)
 
@@ -127,6 +136,55 @@ func TestRun_NewContentMultipleTrailingNewlines_PreservesBlankLines(t *testing.T
 	want := "one\n<<<<<<< old\ntwo\n=======\nTWO\n\n>>>>>>> Ai change\nthree\n"
 	if got != want {
 		t.Errorf("intentional blank line was not preserved:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+// Merge-marker delimiter lines are emitted as LF by the changes-list helper;
+// the file's own content lines must keep the CRLF style they were read with.
+func TestRun_CRLF_ReplacePreservesContentLineEndings(t *testing.T) {
+	tool, dir := setupTool(t)
+
+	content, isErr := runEdit(t, tool, dir, "windows.go", "one\r\ntwo\r\nthree\r\n", 2, 2, "TWO")
+	if isErr {
+		t.Fatalf("expected success, got tool error: %s", content)
+	}
+
+	got := readFile(t, filepath.Join(dir, "windows.go"))
+	want := "one\r\n<<<<<<< old\ntwo\r\n=======\nTWO\r\n>>>>>>> Ai change\nthree\r\n"
+	if got != want {
+		t.Errorf("CRLF file content mismatch:\ngot:  %q\nwant: %q", got, want)
+	}
+	if strings.Contains(got, "\r\r\n") {
+		t.Errorf("file contains doubled carriage returns: %q", got)
+	}
+}
+
+func TestRun_CRLF_NoOpReplacementLeavesFileUnchanged(t *testing.T) {
+	tool, dir := setupTool(t)
+	const original = "one\r\ntwo\r\nthree\r\n"
+
+	content, isErr := runEdit(t, tool, dir, "windows_noop.go", original, 2, 2, "two")
+	if isErr {
+		t.Fatalf("expected success, got tool error: %s", content)
+	}
+
+	if got := readFile(t, filepath.Join(dir, "windows_noop.go")); got != original {
+		t.Errorf("no-op edit should leave the CRLF file unchanged:\ngot:  %q\nwant: %q", got, original)
+	}
+}
+
+func TestRun_LF_NormalizesCRLFNewContent(t *testing.T) {
+	tool, dir := setupTool(t)
+
+	content, isErr := runEdit(t, tool, dir, "unix.go", "one\ntwo\nthree\n", 2, 2, "TWO\r\n")
+	if isErr {
+		t.Fatalf("expected success, got tool error: %s", content)
+	}
+
+	got := readFile(t, filepath.Join(dir, "unix.go"))
+	want := "one\n<<<<<<< old\ntwo\n=======\nTWO\n>>>>>>> Ai change\nthree\n"
+	if got != want {
+		t.Errorf("LF file should not gain CRLF from new_content:\ngot:  %q\nwant: %q", got, want)
 	}
 }
 
@@ -195,6 +253,21 @@ func TestRun_ExternalChangeAfterRecordedRead_Rejected(t *testing.T) {
 	}
 	if got := readFile(t, path); got != "line1\nline2\n" {
 		t.Errorf("file should not have been modified on a rejected edit, got: %q", got)
+	}
+}
+
+func TestRun_NoOpReplacementLeavesFileUnchanged(t *testing.T) {
+	tool, dir := setupTool(t)
+
+	content, isErr := runEdit(t, tool, dir, "same.go", "one\ntwo\nthree\n", 2, 2, "two")
+	if isErr {
+		t.Fatalf("expected success, got tool error: %s", content)
+	}
+
+	got := readFile(t, filepath.Join(dir, "same.go"))
+	want := "one\ntwo\nthree\n"
+	if got != want {
+		t.Errorf("no-op edit should leave the file unchanged:\ngot:  %q\nwant: %q", got, want)
 	}
 }
 

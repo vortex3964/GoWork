@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 
 	todo "GoWork/Tui/Components/ToDo"
@@ -52,7 +53,7 @@ func TestBaselineBuildsList(t *testing.T) {
 	mustContain(t, content, "0. setup repo")
 	mustContain(t, content, "2. run tests")
 
-	if got := todo.GetTodoList().Size; got != 3 {
+	if got := todo.GetTodoList().Size(); got != 3 {
 		t.Errorf("global list Size = %d, want 3", got)
 	}
 }
@@ -110,7 +111,7 @@ func TestClear(t *testing.T) {
 		t.Fatalf("unexpected error result: %s", content)
 	}
 	mustContain(t, content, "total 0")
-	if got := todo.GetTodoList().Size; got != 0 {
+	if got := todo.GetTodoList().Size(); got != 0 {
 		t.Errorf("global list Size = %d, want 0", got)
 	}
 }
@@ -127,8 +128,8 @@ func TestListDoesNotMutate(t *testing.T) {
 	mustContain(t, content, "total 2")
 	mustContain(t, content, "0. a")
 
-	if todo.GetTodoList().Size != 2 {
-		t.Errorf("list action mutated the list, Size = %d, want 2", todo.GetTodoList().Size)
+	if todo.GetTodoList().Size() != 2 {
+		t.Errorf("list action mutated the list, Size = %d, want 2", todo.GetTodoList().Size())
 	}
 }
 
@@ -212,7 +213,7 @@ func TestSlidingWindowCapKeepsNewestTasks(t *testing.T) {
 	if strings.Contains(content, "0. t1") && strings.Contains(content, "1. t2") {
 		t.Errorf("oldest tasks should drop off, got:\n%s", content)
 	}
-	if got := todo.GetTodoList().Size; got != todo.MaxTodos {
+	if got := todo.GetTodoList().Size(); got != todo.MaxTodos {
 		t.Errorf("global list Size = %d, want %d", got, todo.MaxTodos)
 	}
 }
@@ -231,5 +232,44 @@ func TestPushBeyondCapSlidesWindow(t *testing.T) {
 	mustContain(t, content, "6. j")
 	if strings.Contains(content, "0. a") {
 		t.Errorf("oldest tasks should have slid out, got:\n%s", content)
+	}
+}
+
+func TestConcurrentToolRuns(t *testing.T) {
+	resetGlobalTodo()
+	t.Cleanup(resetGlobalTodo)
+
+	tt := newTool()
+	inputs := []string{
+		`{"action":"baseline","tasks":["a","b","c"]}`,
+		`{"action":"push","tasks":["d","e"]}`,
+		`{"action":"mark","indices":[0,1,2,99,-1]}`,
+		`{"action":"clear"}`,
+		`{"action":"list"}`,
+	}
+
+	const iterations = 100
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, input := range inputs {
+		input := input
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for i := 0; i < iterations; i++ {
+				if _, err := tt.Run(context.Background(), tt.args, json.RawMessage(input)); err != nil {
+					t.Errorf("Run(%s) failed: %v", input, err)
+					return
+				}
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+
+	if got := todo.GetTodoList().Size(); got < 0 || got > todo.MaxTodos {
+		t.Errorf("global list Size() = %d, want between 0 and %d", got, todo.MaxTodos)
 	}
 }

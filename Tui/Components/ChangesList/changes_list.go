@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
@@ -84,6 +85,45 @@ type Model struct {
 
 	lastWatcherPath string
 	lastWatcherData []byte
+
+	// fileStamps records the mtime+size of every watched file at its last
+	// successful scan, so RefreshDiffs can skip files nothing touched.
+	fileStamps map[string]fileStamp
+}
+
+// fileStamp is the cheap on-disk fingerprint used to decide whether a watched
+// file needs re-reading. Missing/unreadable files yield an error instead of a
+// zero stamp so transient failures never look like "unchanged cached" state.
+type fileStamp struct {
+	modTime time.Time
+	size    int64
+}
+
+func statFileStamp(path string) (fileStamp, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fileStamp{}, err
+	}
+	return fileStamp{modTime: info.ModTime(), size: info.Size()}, nil
+}
+
+// watchedPath resolves a canonical watch-list key (root-relative) to the path
+// used for disk I/O. The watch list's root is authoritative (the dispatcher
+// owns it); the model's copy is only a fallback for standalone models.
+func (m *Model) watchedPath(key string) string {
+	if filepath.IsAbs(key) {
+		return key
+	}
+	root := m.root
+	if m.Watch != nil {
+		if wr := m.Watch.Root(); wr != "" {
+			root = wr
+		}
+	}
+	if root == "" {
+		return key
+	}
+	return filepath.Join(root, key)
 }
 
 func New(watch *WatchList) Model {
@@ -144,34 +184,124 @@ func (m *Model) TrackFile(path string) bool {
 	if m.Watch == nil {
 		return false
 	}
-	difs, err := GetDiffs(path)
+	difs, stamp, err := scanFileDiffs(path)
 	if err != nil {
 		return false
 	}
 	m.Watch.mu.Lock()
-	m.Watch.addLocked(path)
-	m.Watch.Changeslist[path] = ChangeList{difs}
-	m.Watch.addDirToWatcherLocked(path)
+	key := m.Watch.key(path)
+	m.Watch.addLocked(key)
+	m.Watch.Changeslist[key] = ChangeList{Changes: difs, Stamp: stamp}
+	m.Watch.addDirToWatcherLocked(key)
+	if m.fileStamps == nil {
+		m.fileStamps = make(map[string]fileStamp)
+	}
+	m.fileStamps[key] = stamp
 	m.Watch.mu.Unlock()
 	m.rebuildRows()
 	return true
 }
 
+// RefreshDiffs rescans watched files that changed on disk and updates their
+// diff lists. It is a no-op while the changes pane is closed: nothing renders
+// the result, and opening the pane triggers a fresh scan.
+//
+// Disk I/O happens outside the watch mutex: a short snapshot of watched keys
+// is taken first, files are stat'ed/read without the lock, and only the final
+// map updates re-acquire it. Files whose mtime and size are unchanged since
+// the last successful scan are not read again. A missing file (confirmed by
+// a second stat) is dropped from the list; other read errors are transient
+// and leave the existing watched entry and changes in place.
 func (m *Model) RefreshDiffs() {
-	if m.Watch == nil {
+	if m.Watch == nil || !m.open {
 		return
 	}
-	m.Watch.mu.Lock()
-	defer m.Watch.mu.Unlock()
-	for file := range m.Watch.WatchedFiles {
-		difs, err := GetDiffs(file)
+
+	watched := m.Watch.Files()
+
+	type refresh struct {
+		key     string
+		changes []Change
+		stamp   fileStamp
+	}
+	var refreshed []refresh
+	var missing []string
+
+	for _, key := range watched {
+		path := m.watchedPath(key)
+
+		before, err := statFileStamp(path)
 		if err != nil {
-			m.Watch.removeLocked(file)
-			delete(m.Watch.Changeslist, file)
+			// A missing file was really deleted; anything else (permission,
+			// ENOTDIR, an I/O error) is transient and keeps the entry.
+			if isNotExist(err) {
+				missing = append(missing, key)
+			}
 			continue
 		}
-		m.Watch.Changeslist[file] = ChangeList{difs}
-		m.Watch.addDirToWatcherLocked(file)
+		if m.fileStamps != nil {
+			if prev, ok := m.fileStamps[key]; ok && prev == before {
+				continue // unchanged since the last successful scan
+			}
+		}
+
+		difs, err := GetDiffs(path)
+		if err != nil {
+			if isNotExist(err) {
+				missing = append(missing, key)
+			}
+			continue
+		}
+		after, err := statFileStamp(path)
+		if err != nil {
+			if isNotExist(err) {
+				missing = append(missing, key)
+			}
+			continue
+		}
+		if after != before {
+			// The file changed while being read. Leave its stamp stale so
+			// the next refresh retries instead of trusting a torn scan.
+			continue
+		}
+		refreshed = append(refreshed, refresh{key: key, changes: difs, stamp: after})
+	}
+
+	// Confirm deletions before dropping entries: editors save by renaming a
+	// temp file over the target, so a path can be briefly absent. Only keys
+	// that are still gone on a second look are considered deleted.
+	deleted := make([]string, 0, len(missing))
+	for _, key := range missing {
+		if _, err := os.Stat(m.watchedPath(key)); isNotExist(err) {
+			deleted = append(deleted, key)
+		}
+	}
+
+	m.Watch.mu.Lock()
+	defer m.Watch.mu.Unlock()
+	if m.fileStamps == nil {
+		m.fileStamps = make(map[string]fileStamp, len(watched))
+	}
+	for _, key := range deleted {
+		if _, ok := m.Watch.WatchedFiles[key]; !ok {
+			continue
+		}
+		m.Watch.removeLocked(key)
+		delete(m.fileStamps, key)
+	}
+	for _, r := range refreshed {
+		if _, ok := m.Watch.WatchedFiles[r.key]; !ok {
+			continue // unwatched (or deleted) while we were scanning
+		}
+		m.Watch.Changeslist[r.key] = ChangeList{Changes: r.changes, Stamp: r.stamp}
+		m.Watch.addDirToWatcherLocked(r.key)
+		m.fileStamps[r.key] = r.stamp
+	}
+	// Drop stamps for files that are no longer watched.
+	for key := range m.fileStamps {
+		if _, ok := m.Watch.WatchedFiles[key]; !ok {
+			delete(m.fileStamps, key)
+		}
 	}
 }
 
@@ -218,13 +348,36 @@ func (m *Model) HandleWatcherEvent(eventPath string) bool {
 	if !ok {
 		return false
 	}
-	data, err := os.ReadFile(path)
+	fullPath := m.watchedPath(path)
+	before, err := statFileStamp(fullPath)
 	if err != nil {
+		if isNotExist(err) {
+			m.dropWatched(path)
+		}
+		return true // transient: keep the watched entry as-is
+	}
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		if isNotExist(err) {
+			m.dropWatched(path)
+		}
+		return true
+	}
+	after, stampErr := statFileStamp(fullPath)
+	if stampErr != nil || after != before {
+		// The file changed while being read; don't publish offsets that
+		// might not match the bytes the next accept reads.
 		return true
 	}
 	difs := GetDiffsBytes(data, filepath.Base(path))
 	m.Watch.mu.Lock()
-	m.Watch.Changeslist[path] = ChangeList{Changes: difs}
+	if _, ok := m.Watch.WatchedFiles[path]; ok {
+		m.Watch.Changeslist[path] = ChangeList{Changes: difs, Stamp: after}
+		if m.fileStamps == nil {
+			m.fileStamps = make(map[string]fileStamp)
+		}
+		m.fileStamps[path] = after
+	}
 	m.Watch.mu.Unlock()
 	m.lastWatcherPath = path
 	m.lastWatcherData = data
@@ -286,17 +439,20 @@ func (m *Model) applyFilter() {
 	}
 	m.lastQuery = q
 
+	// Always build an independent slice: aliasing m.rows here would let the
+	// filter pass overwrite the backing array of the full row list.
+	filtered := make([]row, 0, len(m.rows))
 	if q == "" {
-		m.filtered = m.rows
+		filtered = append(filtered, m.rows...)
 	} else {
 		lowerQ := strings.ToLower(q)
-		m.filtered = m.filtered[:0]
 		for _, r := range m.rows {
 			if strings.Contains(r.lowerFile, lowerQ) {
-				m.filtered = append(m.filtered, r)
+				filtered = append(filtered, r)
 			}
 		}
 	}
+	m.filtered = filtered
 	if m.cursor >= len(m.filtered) {
 		m.cursor = len(m.filtered) - 1
 	}
@@ -393,10 +549,14 @@ func (m *Model) renderResults() {
 
 // strips the file path off, so we just show "Cn" under the header
 func shortChangeLabel(r row) string {
-	if idx := strings.LastIndex(r.change.Id, "/"); idx != -1 {
-		return r.change.Id[idx+1:]
+	return shortChangeID(r.change.Id)
+}
+
+func shortChangeID(id string) string {
+	if idx := strings.LastIndex(id, "/"); idx != -1 {
+		return id[idx+1:]
 	}
-	return r.change.Id
+	return id
 }
 
 func (m *Model) renderExplorer() {
@@ -409,10 +569,13 @@ func (m *Model) renderExplorer() {
 	if sel.filePath == m.lastWatcherPath {
 		cached = m.lastWatcherData
 	}
+	// sel.filePath is a watch key; the explorer does disk I/O, so resolve it
+	// against the project root instead of the launch directory.
+	path := m.watchedPath(sel.filePath)
 	if sel.change.Id != "" {
-		m.explorer.Load(sel.filePath, &sel.change, cached)
+		m.explorer.Load(path, &sel.change, cached)
 	} else {
-		m.explorer.Load(sel.filePath, nil, cached)
+		m.explorer.Load(path, nil, cached)
 	}
 }
 
@@ -448,37 +611,19 @@ func (m *Model) ExplorerScrollDown() {
 	m.explorer.ScrollDown(3)
 }
 
-func (m *Model) acceptChange(path string, c Change) {
-	Accept_change(path, c.Start, c.Mid, c.End)
-	m.Watch.mu.Lock()
-	defer m.Watch.mu.Unlock()
-	difs, err := GetDiffs(path)
-	if err != nil || len(difs) == 0 {
-		m.Watch.removeLocked(path)
-		delete(m.Watch.Changeslist, path)
-	} else {
-		m.Watch.Changeslist[path] = ChangeList{difs}
-	}
+func (m *Model) acceptChange(key string, c Change) {
+	m.applyChange(key, &c, false)
 }
 
-func (m *Model) rejectChange(path string, c Change) {
-	Reject_change(path, c.Start, c.Mid, c.End)
-	m.Watch.mu.Lock()
-	defer m.Watch.mu.Unlock()
-	difs, err := GetDiffs(path)
-	if err != nil || len(difs) == 0 {
-		m.Watch.removeLocked(path)
-		delete(m.Watch.Changeslist, path)
-	} else {
-		m.Watch.Changeslist[path] = ChangeList{difs}
-	}
+func (m *Model) rejectChange(key string, c Change) {
+	m.applyChange(key, &c, true)
 }
 
-// ChangeEventMsg is emitted after an accept/reject action. 
+// ChangeEventMsg is emitted after an accept/reject action.
 type ChangeEventMsg struct {
 	Rejected bool
 	Summary  string
-	Lines []string
+	Lines    []string
 }
 
 // changeCountLabel pluralizes "change" so summaries read naturally.
@@ -506,161 +651,19 @@ func splitContentLines(s string) []string {
 }
 
 func (m *Model) AcceptSelected() tea.Cmd {
-	if len(m.filtered) == 0 || m.Watch == nil {
-		return nil
-	}
-	sel := m.filtered[m.cursor]
-
-	m.Watch.mu.Lock()
-	cl, ok := m.Watch.Changeslist[sel.filePath]
-	if !ok {
-		m.Watch.mu.Unlock()
-		return nil
-	}
-
-	var summary string
-	var kept []string
-	if sel.isHeader {
-		data, err := os.ReadFile(sel.filePath)
-		if err == nil {
-			for _, c := range cl.Changes {
-				_, new := ChangeSections(data, c)
-				kept = append(kept, splitContentLines(new)...)
-			}
-		}
-		Accept_all_changes(sel.filePath, cl.Changes)
-		m.Watch.removeLocked(sel.filePath)
-		delete(m.Watch.Changeslist, sel.filePath)
-		summary = sel.filePath + " (" + changeCountLabel(len(cl.Changes)) + ")"
-	} else {
-		data, err := os.ReadFile(sel.filePath)
-		if err == nil {
-			_, new := ChangeSections(data, sel.change)
-			kept = splitContentLines(new)
-		}
-		Accept_change(sel.filePath, sel.change.Start, sel.change.Mid, sel.change.End)
-		difs, err := GetDiffs(sel.filePath)
-		if err != nil || len(difs) == 0 {
-			m.Watch.removeLocked(sel.filePath)
-			delete(m.Watch.Changeslist, sel.filePath)
-		} else {
-			m.Watch.Changeslist[sel.filePath] = ChangeList{difs}
-		}
-		summary = sel.filePath + "/" + shortChangeLabel(sel)
-	}
-	if len(m.Watch.Changeslist[sel.filePath].Changes) == 0 {
-		m.Watch.removeLocked(sel.filePath)
-		delete(m.Watch.Changeslist, sel.filePath)
-	}
-	m.Watch.mu.Unlock()
-
-	if m.cursor >= len(m.filtered) {
-		m.cursor = len(m.filtered) - 1
-	}
-	m.explorer.Invalidate()
-	m.rebuildRows()
-	return m.eventCmd(false, summary, kept)
+	return m.applySelected(false)
 }
 
 func (m *Model) RejectSelected() tea.Cmd {
-	if len(m.filtered) == 0 || m.Watch == nil {
-		return nil
-	}
-	sel := m.filtered[m.cursor]
-
-	m.Watch.mu.Lock()
-	cl, ok := m.Watch.Changeslist[sel.filePath]
-	if !ok {
-		m.Watch.mu.Unlock()
-		return nil
-	}
-
-	var summary string
-	var kept []string
-	if sel.isHeader {
-		data, err := os.ReadFile(sel.filePath)
-		if err == nil {
-			for _, c := range cl.Changes {
-				old, _ := ChangeSections(data, c)
-				kept = append(kept, splitContentLines(old)...)
-			}
-		}
-		Reject_all_changes(sel.filePath, cl.Changes)
-		m.Watch.removeLocked(sel.filePath)
-		delete(m.Watch.Changeslist, sel.filePath)
-		summary = sel.filePath + " (" + changeCountLabel(len(cl.Changes)) + ")"
-	} else {
-		data, err := os.ReadFile(sel.filePath)
-		if err == nil {
-			old, _ := ChangeSections(data, sel.change)
-			kept = splitContentLines(old)
-		}
-		Reject_change(sel.filePath, sel.change.Start, sel.change.Mid, sel.change.End)
-		difs, err := GetDiffs(sel.filePath)
-		if err != nil || len(difs) == 0 {
-			m.Watch.removeLocked(sel.filePath)
-			delete(m.Watch.Changeslist, sel.filePath)
-		} else {
-			m.Watch.Changeslist[sel.filePath] = ChangeList{difs}
-		}
-		summary = sel.filePath + "/" + shortChangeLabel(sel)
-	}
-	if len(m.Watch.Changeslist[sel.filePath].Changes) == 0 {
-		m.Watch.removeLocked(sel.filePath)
-		delete(m.Watch.Changeslist, sel.filePath)
-	}
-	m.Watch.mu.Unlock()
-
-	if m.cursor >= len(m.filtered) {
-		m.cursor = len(m.filtered) - 1
-	}
-	m.explorer.Invalidate()
-	m.rebuildRows()
-	return m.eventCmd(true, summary, kept)
+	return m.applySelected(true)
 }
 
 func (m *Model) AcceptAll() tea.Cmd {
-	m.Watch.mu.Lock()
-	files, total := 0, 0
-	for path, cl := range m.Watch.Changeslist {
-		if len(cl.Changes) > 0 {
-			Accept_all_changes(path, cl.Changes)
-			files++
-			total += len(cl.Changes)
-		}
-	}
-	m.Watch.Changeslist = make(map[string]ChangeList)
-	m.Watch.WatchedFiles = make(map[string]struct{})
-	m.Watch.mu.Unlock()
-
-	m.explorer.Invalidate()
-	m.rebuildRows()
-	if total == 0 {
-		return nil
-	}
-	return m.eventCmd(false, fmt.Sprintf("%s across %d files", changeCountLabel(total), files), nil)
+	return m.applyAll(false)
 }
 
 func (m *Model) RejectAll() tea.Cmd {
-	m.Watch.mu.Lock()
-	files, total := 0, 0
-	for path, cl := range m.Watch.Changeslist {
-		if len(cl.Changes) > 0 {
-			Reject_all_changes(path, cl.Changes)
-			files++
-			total += len(cl.Changes)
-		}
-	}
-	m.Watch.Changeslist = make(map[string]ChangeList)
-	m.Watch.WatchedFiles = make(map[string]struct{})
-	m.Watch.mu.Unlock()
-
-	m.explorer.Invalidate()
-	m.rebuildRows()
-	if total == 0 {
-		return nil
-	}
-	return m.eventCmd(true, fmt.Sprintf("%s across %d files", changeCountLabel(total), files), nil)
+	return m.applyAll(true)
 }
 
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {

@@ -1,6 +1,6 @@
-// DESC: bash lets the model run shell commands inside the project root.
-// DESC: it's explicitly allowed (KindAllowed) and carries its own guardrails:
-// banned commands and project-root confinement.
+// DESC: bash runs a shell command after per-call user approval, with the
+// working directory confined to the project root. A best-effort deny list and
+// environment scrub reduce accidents but are not an OS sandbox.
 package bashtool
 
 import (
@@ -53,16 +53,16 @@ func New() tools.AgentTool { return &Tool{} }
 
 func (t *Tool) Name() string { return ToolName }
 
-func (t *Tool) Kind() tools.Kind { return tools.KindAllowed }
+func (t *Tool) Kind() tools.Kind { return tools.KindNotAllowed }
 
 func (t *Tool) Description() string {
-	return `Run a shell command inside the project.
+	return `Run a shell command after the user approves this exact call.
 
-The command runs with bash in the project root unless working_dir is given (relative to the root). It can never leave the project: absolute paths, ".." escapes, and symlinks that resolve outside the root are rejected. Output (stdout + stderr) is captured, truncated to keep the context small, and non-zero exit codes are reported.
+The command runs with bash in the project root unless working_dir is given (relative to the root). Only working_dir is confined: absolute paths, ".." escapes, and symlinks that resolve outside the root are rejected there. The command itself is not sandboxed and may read or write other files and use the network with your user account's permissions, so keep it focused and non-destructive.
 
-Safety restrictions:
-- Network/download/sysadmin commands (curl, wget, ssh, scp, sudo, su, systemctl, mount, mkfs, ...) and package installs (apt install, npm install -g, etc.) are BLOCKED. Use the file tools for files and ask the user to install things system-wide.
-- working_dir must stay inside the project root.
+A best-effort deny list rejects common network/download, admin, and global-install commands (curl, wget, ssh, sudo, systemctl, apt install, npm install -g, ...), but it is not a security boundary; do not rely on it. Commands receive a scrubbed environment: variables whose names look like credentials (API keys, tokens, passwords, secrets) are removed, so ` + "`env`" + ` does not expose them.
+
+Output (stdout + stderr) is captured, truncated to keep the context small, and non-zero exit codes are reported.
 
 Long-running commands: after auto_background_after seconds (default 60) or immediately if run_in_background is true, the command is moved to a background job and the job ID is returned so the caller knows it is still running.`
 }

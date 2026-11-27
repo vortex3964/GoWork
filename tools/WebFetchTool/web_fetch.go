@@ -39,10 +39,10 @@ const (
 	fetchTimeout          = 20 * time.Second
 	maxRedirects          = 5
 	maxDownloadBytes      = 5 << 20 // 5MB hard cap on the raw response body
-	inlineThreshold        = 4000   // chars: below this we just return the text as-is
-	maxSummaryInputChars   = 20000  // cap on how much extracted text we hand to the provider
-	persistedPreviewChars  = 500
-	fetchCacheDir          = ".agent-cache/fetch"
+	inlineThreshold       = 4000    // chars: below this we just return the text as-is
+	maxSummaryInputChars  = 20000   // cap on how much extracted text we hand to the provider
+	persistedPreviewChars = 500
+	fetchCacheDir         = ".agent-cache/fetch"
 )
 
 type Input struct {
@@ -89,7 +89,7 @@ func (t *Tool) InputSchema() json.RawMessage {
 				"description": "What you're looking for on this page. Used to focus the summary when the page is too long to return in full.",
 			},
 		},
-		"required":               []string{"url"},
+		"required":             []string{"url"},
 		"additionalProperties": false,
 	}
 	b, _ := json.Marshal(schema)

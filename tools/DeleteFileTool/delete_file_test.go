@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	
+
 	"GoWork/tools"
 	deletefiletool "GoWork/tools/DeleteFileTool"
 )
@@ -32,7 +32,9 @@ func newTool(t *testing.T, root string) testTool {
 
 func runTool(t *testing.T, tool testTool, path string) (string, bool) {
 	t.Helper()
-	input, err := json.Marshal(struct{ Path string `json:"path"` }{Path: path})
+	input, err := json.Marshal(struct {
+		Path string `json:"path"`
+	}{Path: path})
 	if err != nil {
 		t.Fatalf("failed to marshal input: %v", err)
 	}
@@ -57,6 +59,41 @@ func mustMkdirAll(t *testing.T, path string) {
 }
 
 func TestDeleteFile(t *testing.T) {
+	t.Run("removes now-empty immediate parent directory", func(t *testing.T) {
+		root := t.TempDir()
+		mustMkdirAll(t, filepath.Join(root, "hello"))
+		writeFile(t, filepath.Join(root, "hello", "hi.go"), "package hello")
+
+		tool := newTool(t, root)
+		_, isErr := runTool(t, tool, "hello/hi.go")
+		if isErr {
+			t.Fatalf("unexpected error result")
+		}
+
+		if _, err := os.Stat(filepath.Join(root, "hello")); !os.IsNotExist(err) {
+			t.Error("expected empty 'hello' directory to be removed after deleting its only file")
+		}
+	})
+
+	t.Run("does not cascade parent cleanup beyond one level", func(t *testing.T) {
+		root := t.TempDir()
+		mustMkdirAll(t, filepath.Join(root, "hello", "world"))
+		writeFile(t, filepath.Join(root, "hello", "world", "hi.go"), "package world")
+
+		tool := newTool(t, root)
+		_, isErr := runTool(t, tool, "hello/world/hi.go")
+		if isErr {
+			t.Fatalf("unexpected error result")
+		}
+
+		if _, err := os.Stat(filepath.Join(root, "hello", "world")); !os.IsNotExist(err) {
+			t.Error("expected 'hello/world' to be removed since it became empty")
+		}
+		if _, err := os.Stat(filepath.Join(root, "hello")); err != nil {
+			t.Error("expected 'hello' to survive because cleanup must not cascade")
+		}
+	})
+
 	t.Run("keeps non-empty parent directory", func(t *testing.T) {
 		root := t.TempDir()
 		mustMkdirAll(t, filepath.Join(root, "hello"))

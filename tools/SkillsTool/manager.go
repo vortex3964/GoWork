@@ -1,12 +1,15 @@
 // Package skillstool is the domain logic behind the skills tab and the
-// model-facing skill tool. Skills live in the GoWork layout
-// `.GoWork/skills/<name>/SKILL.md` with YAML frontmatter (name +
-// description required). The package keeps a single Manager (set at
-// startup, like the todo list) that owns the session's loaded-set: the
-// skill tool only offers the skills the user loaded in the current session.
+// model-facing skill tools. Installed skills live in the durable user skills
+// directory (`appdir.SkillsDir()/<name>/SKILL.md`); the legacy project layout
+// `.GoWork/skills/<name>/SKILL.md` is still supported by NewManager. Every
+// SKILL.md carries YAML frontmatter (name + description required). The
+// package keeps a single Manager (set at startup, like the todo list) that
+// owns the session's loaded-set: the skill tool only offers the skills the
+// user loaded in the current session.
 package skillstool
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,28 +18,42 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"GoWork/internal/appdir"
 )
 
-// SkillsDir is the skills folder relative to the project root, in the
+// SkillsDir is the legacy skills folder relative to the project root, in the
 // layout: "<SkillsDir>/<name>/SKILL.md".
 const SkillsDir = ".GoWork/skills"
 
 // SkillFileName is the only file name discovery scans.
 const SkillFileName = "SKILL.md"
 
+// ProvenanceFileName is the sidecar written next to SKILL.md by Install. It
+// records where the skill came from without ever storing credentials.
+const ProvenanceFileName = "provenance.json"
+
+// MaxSkillBytes caps one installed SKILL.md. Skills are prompt material, not
+// data files, so 256 KiB is already far beyond a useful instruction set and
+// keeps a remote source from filling the user's disk.
+const MaxSkillBytes = 256 << 10
+
 // nameRe is the skill-name rule: lowercase alphanumeric with single hyphen
 // separators, 1-64 characters.
 var nameRe = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
-// Skill is one discovered skill: identity + frontmatter + full body.
+// Skill is one discovered skill: identity + frontmatter. Body is only
+// populated by callers that explicitly read the full file; discovery leaves
+// it empty so the tab never pays for skill bodies it does not render.
 type Skill struct {
 	Name        string // frontmatter name (must match the dir name)
 	Description string // frontmatter description
-	Body        string // everything after the frontmatter separator
+	Body        string // full markdown body, empty in discovery snapshots
 	Path        string // absolute SKILL.md path
 }
 
-// ErrExists is returned by Create when the skill file already exists.
+// ErrExists is returned by Create and Install when the skill file already
+// exists and overwrite was not requested.
 var ErrExists = fmt.Errorf("skill already exists")
 
 // Manager is the session-wide skills registry. The loaded set is what the
@@ -44,6 +61,7 @@ var ErrExists = fmt.Errorf("skill already exists")
 type Manager struct {
 	mu      sync.RWMutex
 	root    string
+	dir     string
 	loaded  map[string]string // skill name -> loaded-at timestamp
 	entries []Skill           // last Discover() snapshot
 }
@@ -61,18 +79,56 @@ func GetManager() *Manager {
 	return mgr
 }
 
-// NewManager builds a manager rooted at the project directory.
+// NewManager builds a manager rooted at the project directory. It keeps the
+// legacy "<root>/.GoWork/skills" layout used by the TUI and existing tests.
+// New installs should use NewManagerAt with appdir.SkillsDir (or
+// NewUserManager) so skills survive upgrades and never live in a project.
 func NewManager(root string) *Manager {
 	if root == "" {
 		root = "."
 	}
-	return &Manager{root: root, loaded: make(map[string]string)}
+	return &Manager{
+		root:   root,
+		dir:    filepath.Join(root, SkillsDir),
+		loaded: make(map[string]string),
+	}
+}
+
+// NewManagerAt builds a manager whose skills directory is dir itself, in the
+// layout "<dir>/<name>/SKILL.md".
+func NewManagerAt(dir string) *Manager {
+	if dir == "" {
+		dir = "."
+	}
+	return &Manager{
+		root:   filepath.Dir(dir),
+		dir:    dir,
+		loaded: make(map[string]string),
+	}
+}
+
+// NewUserManager builds a manager for the durable per-user skills directory
+// (appdir.SkillsDir). Installs made through this manager survive upgrades and
+// are shared across projects.
+func NewUserManager() (*Manager, error) {
+	dir, err := appdir.SkillsDir()
+	if err != nil {
+		return nil, err
+	}
+	return NewManagerAt(dir), nil
 }
 
 func (m *Manager) Root() string { return m.root }
 
+// Dir is the absolute skills directory this manager discovers and installs
+// into.
+func (m *Manager) Dir() string { return m.dir }
+
 // skillsDir returns the absolute path of the skills folder.
 func (m *Manager) skillsDir() string {
+	if m.dir != "" {
+		return m.dir
+	}
 	return filepath.Join(m.root, SkillsDir)
 }
 
@@ -105,7 +161,7 @@ func (m *Manager) scanLocked() []Skill {
 			continue
 		}
 		path := filepath.Join(m.skillsDir(), d.Name(), SkillFileName)
-		s, ok := parseSkill(path)
+		s, ok := parseSkillMetadata(path)
 		if !ok {
 			continue
 		}
@@ -197,12 +253,14 @@ type LoadedSummary struct {
 }
 
 // Available returns name+description of every loaded skill (from the
-// discovery snapshot), sorted by name.
+// discovery snapshot), sorted by name. A manager that has not discovered
+// yet scans once so a freshly loaded skill is immediately advertised.
 func (m *Manager) Available() []LoadedSummary {
+	entries := m.Entries()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := make([]LoadedSummary, 0, len(m.loaded))
-	for _, e := range m.entries {
+	for _, e := range entries {
 		if _, ok := m.loaded[e.Name]; ok {
 			out = append(out, LoadedSummary{Name: e.Name, Description: e.Description})
 		}
@@ -268,7 +326,7 @@ func (m *Manager) Create(name, desc, body string) (Skill, error) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return Skill{}, fmt.Errorf("writing skill file: %w", err)
 	}
-	skill, _ := parseSkill(path)
+	skill, _ := parseSkillMetadata(path)
 	return skill, nil
 }
 
@@ -289,69 +347,25 @@ func buildSkillMarkdown(name, desc, body string) string {
 
 // --- frontmatter parsing -------------------------------------------------
 
-// parseSkill reads and parses a SKILL.md. Unreadable/malformed files return
+// parseSkillMetadata reads only a SKILL.md's frontmatter, stopping at the
+// closing separator instead of loading the body. Unreadable files return
 // ok=false. The frontmatter is a minimal YAML subset (only name and
-// description matter; everything else is ignored). Indented continuation
-// lines fold into the previous value, so multi-line descriptions work.
-func parseSkill(path string) (Skill, bool) {
-	data, err := os.ReadFile(path)
+// description matter; everything else is ignored). Plain continuations,
+// folded (>) and literal (|) block scalars are supported so multi-line
+// descriptions work.
+//
+// The skill tool reads the full file on demand via Manager.Content, so the
+// body is deliberately left empty here: the tab only renders metadata.
+func parseSkillMetadata(path string) (Skill, bool) {
+	f, err := os.Open(path)
 	if err != nil {
 		return Skill{}, false
 	}
-	text := string(data)
-	lines := strings.Split(text, "\n")
-	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
-		// No frontmatter: the whole file is body; name stays empty and the
-		// caller decides whether a name-less skill is usable.
-		return Skill{Path: path, Body: strings.TrimSpace(text)}, true
-	}
+	defer f.Close()
 
-	name := ""
-	descParts := []string{}
-	foundName := false
-	foundDesc := false
-	closeIdx := -1
-	for i := 1; i < len(lines); i++ {
-		raw := lines[i]
-		line := strings.TrimSpace(raw)
-		if line == "---" {
-			closeIdx = i
-			break
-		}
-		if line == "" {
-			continue
-		}
-		key, val, ok := strings.Cut(line, ":")
-		if !ok {
-			// Continuation line (indented): fold into the active value.
-			if foundDesc {
-				descParts = append(descParts, strings.TrimSpace(line))
-			}
-			continue
-		}
-		switch strings.ToLower(strings.TrimSpace(key)) {
-		case "name":
-			if !foundName {
-				name = strings.TrimSpace(val)
-				foundName = true
-			}
-		case "description":
-			if !foundDesc {
-				foundDesc = true
-				descParts = []string{strings.TrimSpace(val)}
-			}
-		}
+	fm, ok := parseFrontmatter(bufio.NewReader(f), false)
+	if !ok {
+		return Skill{}, false
 	}
-
-	skill := Skill{Path: path, Name: name, Description: strings.Join(descParts, " ")}
-	if closeIdx < 0 {
-		// Unterminated frontmatter: treat everything as body.
-		skill.Body = strings.TrimSpace(text)
-		return skill, true
-	}
-	bodyStart := closeIdx + 1
-	if bodyStart < len(lines) {
-		skill.Body = strings.TrimSpace(strings.Join(lines[bodyStart:], "\n"))
-	}
-	return skill, true
+	return Skill{Path: path, Name: fm.name, Description: fm.description}, true
 }

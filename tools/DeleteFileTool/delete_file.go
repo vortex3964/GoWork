@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
+	"path/filepath"
 
 	"GoWork/tools"
 )
@@ -15,9 +17,9 @@ type Input struct {
 	Path string `json:"path"`
 }
 
-type Tool struct {}
+type Tool struct{}
 
-//NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface 
+// NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface
 func New() tools.AgentTool { return &Tool{} }
 
 func (t *Tool) Name() string { return "delete_file" }
@@ -35,7 +37,7 @@ func (t *Tool) InputSchema() json.RawMessage {
 				"description": "Path to the file to delete, relative to the project root (e.g. \"src/foo.go\").",
 			},
 		},
-		"required":               []string{"path"},
+		"required":             []string{"path"},
 		"additionalProperties": false,
 	}
 	b, _ := json.Marshal(schema)
@@ -44,7 +46,7 @@ func (t *Tool) InputSchema() json.RawMessage {
 
 func (t *Tool) Kind() tools.Kind { return tools.KindNotAllowed }
 
-func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs ,rawInput json.RawMessage) (tools.ToolResult, error) {
+func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.RawMessage) (tools.ToolResult, error) {
 	var input Input
 	if err := json.Unmarshal(rawInput, &input); err != nil {
 		return tools.ToolResult{}, fmt.Errorf("delete_file: invalid input: %w", err)
@@ -68,5 +70,18 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs ,rawInput json.R
 		args.WatchList.Remove(p)
 	}
 
-	return tools.Ok("successfully deleted the file"), nil
+	// If the file was the only entry in its immediate parent, remove that
+	// directory too. Never cascade past one level and never remove the
+	// project root itself.
+	extra := ""
+	parent := filepath.Dir(filepath.Clean(input.Path))
+	if parent != "." && parent != string(filepath.Separator) {
+		if entries, err := fs.ReadDir(args.Root.FS(), parent); err == nil && len(entries) == 0 {
+			if err := args.Root.Remove(parent); err == nil {
+				extra = " and its now-empty directory " + parent
+			}
+		}
+	}
+
+	return tools.Ok("successfully deleted the file" + extra), nil
 }

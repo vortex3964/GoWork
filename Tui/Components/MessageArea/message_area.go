@@ -5,7 +5,6 @@ import (
 	"sort"
 	"strings"
 
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	glamour "charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
@@ -26,6 +25,18 @@ var (
 	userLabelColor = lipgloss.Color("212")
 	aiBodyColor    = lipgloss.Color("245")
 	userBodyColor  = lipgloss.Color("252")
+)
+
+// blockSeparator is the blank-line run between rendered message blocks in
+// the joined viewport content.
+var blockSeparator = strings.Repeat("\n", msgGap+1)
+
+// liveHeaderStyle and liveBodyStyle are the fixed parts of the plain-text
+// block shown while an assistant answer is still streaming. Reusing them
+// keeps a delta from rebuilding the same styles from scratch.
+var (
+	liveHeaderStyle = lipgloss.NewStyle().Bold(true).Foreground(aiLabelColor)
+	liveBodyStyle   = lipgloss.NewStyle().Foreground(aiBodyColor)
 )
 
 type ToolStatus int
@@ -99,10 +110,36 @@ func SummarizeToolInput(input json.RawMessage) string {
 }
 
 type Model struct {
-	vp       viewport.Model
+	vp       contentViewport
 	messages []message
 	rendered []string
 	size     int
+
+	// blockStart/blockLines map each rendered block to its slice of the
+	// viewport's logical lines. They let a streamed delta replace just the
+	// live block instead of re-splitting and re-measuring the whole history.
+	blockStart []int
+	blockLines []int
+
+	// liveIdx is the index of the assistant message currently being
+	// streamed, or -1 when nothing is streaming.
+	liveIdx int
+
+	// renderCount counts markdown (glamour) renders. Tests use it to make
+	// sure streaming doesn't re-render the growing answer on every delta.
+	renderCount int
+
+	// Copy selection state: selAnchor and selFocus are inclusive message
+	// indexes. selAnchor < 0 means nothing is selected. copyMode is set
+	// while the message area owns the keyboard for range selection.
+	selAnchor int
+	selFocus  int
+	copyMode  bool
+
+	// textDrag is the character-granular selection made by dragging with
+	// the mouse. It is independent of the whole-message copy selection
+	// above until the pointer actually moves.
+	textDrag textDragState
 
 	// mdRenderer is the glamour renderer used for AI messages, cached
 	// and only rebuilt when the width it was built for (mdWidth) no
@@ -113,18 +150,17 @@ type Model struct {
 
 // New creates an empty message area.
 func New() Model {
-	vp := viewport.New()
-	vp.Style = lipgloss.NewStyle().
+	vp := newContentViewport(lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(style.Border).
 		PaddingLeft(2).
-		PaddingRight(2)
-
-	vp.SoftWrap = true
+		PaddingRight(2))
 
 	return Model{
-		vp:       vp,
-		messages: []message{},
+		vp:        vp,
+		messages:  []message{},
+		liveIdx:   -1,
+		selAnchor: -1,
 	}
 }
 
@@ -149,25 +185,29 @@ func (m *Model) UpdateToolMessage(index int, status ToolStatus, result string) {
 	}
 	m.messages[index].status = status
 	m.messages[index].result = result
-	m.rendered[index] = m.renderBlock(m.messages[index], m.contentWidth())
-	m.pushContent()
+	m.replaceBlock(index, m.renderBlock(m.messages[index], m.contentWidth()))
 	m.vp.GotoBottom()
 }
 
 // LiveAssistantStart appends a fresh, empty assistant message and returns its
 // index. The caller owns it and should feed streamed tokens to it with
-// LiveAssistantUpdate, then leave it as the final message when the stream ends.
+// LiveAssistantUpdate, then finalize it with LiveAssistantFinish when the
+// stream ends.
 func (m *Model) LiveAssistantStart() int {
-	m.append(NewMessage("", false))
-	return len(m.messages) - 1
+	m.liveIdx = len(m.messages)
+	m.appendRendered(NewMessage("", false), m.renderLiveBlock("", m.contentWidth()))
+	return m.liveIdx
 }
 
 // LiveAssistantUpdate replaces the content of the assistant message at index
-// (created by LiveAssistantStart) with content. It re-renders just that block,
-// so streaming token-by-token stays cheap even with many messages on screen.
-// No-op for a tool or user message, or an out-of-range index.
+// (created by LiveAssistantStart) with content. While the answer streams it
+// is kept as a plain-text block: running glamour over the whole growing
+// answer on every delta is O(n²) over the stream. Only the tail block is
+// regenerated and swapped into the viewport's line buffer, so the rest of
+// the history is never re-split or re-measured. No-op for a tool or user
+// message, an out-of-range index, or a message that isn't the live one.
 func (m *Model) LiveAssistantUpdate(index int, content string) {
-	if index < 0 || index >= len(m.messages) {
+	if index < 0 || index >= len(m.messages) || index != m.liveIdx {
 		return
 	}
 	msg := m.messages[index]
@@ -176,24 +216,80 @@ func (m *Model) LiveAssistantUpdate(index int, content string) {
 	}
 	msg.content = content
 	m.messages[index] = msg
-	m.rendered[index] = m.renderBlock(msg, m.contentWidth())
-	m.pushContent()
+
+	m.replaceBlock(index, m.renderLiveBlock(content, m.contentWidth()))
+	m.vp.GotoBottom()
+}
+
+// LiveAssistantFinish renders the final content of the streamed message once,
+// now that the full answer is known, and clears the live state. No-op unless
+// index still points at the message started by LiveAssistantStart.
+func (m *Model) LiveAssistantFinish(index int, content string) {
+	if index < 0 || index >= len(m.messages) || index != m.liveIdx {
+		return
+	}
+	msg := m.messages[index]
+	if msg.isUser || msg.isTool {
+		return
+	}
+	msg.content = content
+	m.messages[index] = msg
+	m.liveIdx = -1
+	m.replaceBlock(index, m.renderBlock(msg, m.contentWidth()))
 	m.vp.GotoBottom()
 }
 
 func (m *Model) append(msg message) {
-	m.messages = append(m.messages, msg)
-	m.size += 1
+	m.appendRendered(msg, m.renderBlock(msg, m.contentWidth()))
+}
 
-	m.rendered = append(m.rendered, m.renderBlock(msg, m.contentWidth()))
-	if m.vp.Width() > 0 {
-		// Only push to the viewport once it actually has dimensions
-		// SetContent before any SetWidth/SetHeight call used to be a
-		// sharp edge in older viewport betas. Cheap to guard against,
-		// so no reason not to.
-		m.pushContent()
+// splitBlockLines splits a rendered block into viewport lines, normalising
+// Windows line endings the way the bubbles viewport's SetContent used to.
+func splitBlockLines(block string) []string {
+	if strings.Contains(block, "\r\n") {
+		block = strings.ReplaceAll(block, "\r\n", "\n")
 	}
+	return strings.Split(block, "\n")
+}
+
+// appendRendered adds a message and its already-rendered block, extending
+// the viewport's line buffer in place instead of re-joining the history.
+func (m *Model) appendRendered(msg message, block string) {
+	if len(m.messages) > 0 {
+		m.vp.AppendLines([]string{""}) // one blank line between message blocks
+	}
+
+	lines := splitBlockLines(block)
+	start := len(m.vp.lines)
+	m.vp.AppendLines(lines)
+
+	m.messages = append(m.messages, msg)
+	m.size++
+	m.rendered = append(m.rendered, block)
+	m.blockStart = append(m.blockStart, start)
+	m.blockLines = append(m.blockLines, len(lines))
+
 	m.vp.GotoBottom()
+}
+
+// replaceBlock re-renders one block's slice of the viewport line buffer and
+// shifts the starts of the blocks after it. Streaming only ever replaces the
+// live tail, so this stays proportional to the changed block.
+func (m *Model) replaceBlock(index int, block string) {
+	if index < 0 || index >= len(m.rendered) {
+		return
+	}
+	lines := splitBlockLines(block)
+	start := m.blockStart[index]
+	end := start + m.blockLines[index]
+	m.vp.ReplaceLines(start, end, lines)
+
+	delta := len(lines) - m.blockLines[index]
+	m.blockLines[index] = len(lines)
+	for i := index + 1; i < len(m.blockStart); i++ {
+		m.blockStart[i] += delta
+	}
+	m.rendered[index] = block
 }
 
 func (m Model) Size() int {
@@ -201,23 +297,31 @@ func (m Model) Size() int {
 }
 
 func (m *Model) ScrollUp() {
-	m.vp.ScrollUp(m.vp.MouseWheelDelta)
+	m.vp.ScrollUp(m.vp.mouseWheelDelta)
 }
 
 func (m *Model) ScrollDown() {
-	m.vp.ScrollDown(m.vp.MouseWheelDelta)
+	m.vp.ScrollDown(m.vp.mouseWheelDelta)
 }
 
 // Update forwards messages to the underlying viewport
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
-	var cmd tea.Cmd
-	m.vp, cmd = m.vp.Update(msg)
-	return m, cmd
+	m.vp.Update(msg)
+	return m, nil
 }
 
-// View renders the message area, including its border and outer margin.
+// View renders the message area, including its border and outer margin. An
+// active text drag reuses the band cached when the drag began, so mouse motion
+// only repaints the highlight instead of rebuilding the viewport every event.
 func (m Model) View() string {
-	return lipgloss.NewStyle().Margin(0, padSide).Render(m.vp.View())
+	var view string
+	if m.textDrag.baseValid(&m.vp) {
+		view = m.textDrag.baseView
+	} else {
+		view = textDragBandStyle.Render(m.vp.View())
+	}
+	view = m.overlayTextDrag(view)
+	return m.overlaySelection(view)
 }
 
 func (m *Model) SetSize(outerWidth int, outerHeight int) {
@@ -233,12 +337,18 @@ func (m *Model) SetSize(outerWidth int, outerHeight int) {
 	}
 
 	prevWidth := m.vp.Width()
+	// Follow the tail across a resize when the user was already at the
+	// bottom (the common streaming case); otherwise keep their scroll
+	// position as close as the new layout allows.
+	atBottom := m.vp.AtBottom()
 	m.vp.SetWidth(inner)
 	m.vp.SetHeight(h)
 
 	if prevWidth == 0 || inner != prevWidth {
 		m.rebuildRendered()
-		m.pushContent()
+	}
+	if atBottom {
+		m.vp.GotoBottom()
 	}
 }
 
@@ -263,14 +373,28 @@ func (m *Model) contentWidth() int {
 
 // rebuildRendered re-renders every cached block at the current content
 // width. Only needed when that width changes - a block rendered at its
-// original width doesn't otherwise go stale.
+// original width doesn't otherwise go stale. The live block stays plain
+// text so a resize mid-stream doesn't trigger a glamour render either.
 func (m *Model) rebuildRendered() {
 	width := m.contentWidth()
 	rendered := make([]string, len(m.messages))
 	for i, msg := range m.messages {
+		if i == m.liveIdx {
+			rendered[i] = m.renderLiveBlock(msg.content, width)
+			continue
+		}
 		rendered[i] = m.renderBlock(msg, width)
 	}
 	m.rendered = rendered
+	m.rebuildViewportLines()
+}
+
+// renderLiveBlock renders the streaming assistant message as plain styled
+// text. The final answer is markdown-rendered once by LiveAssistantFinish.
+func (m *Model) renderLiveBlock(content string, width int) string {
+	header := liveHeaderStyle.Render("● Ai")
+	body := liveBodyStyle.Width(width).Render(content)
+	return header + "\n" + body
 }
 
 // markdownRenderer returns a glamour renderer sized to width, rebuilding
@@ -354,6 +478,7 @@ func (m *Model) renderBlock(msg message, width int) string {
 	body := lipgloss.NewStyle().Foreground(bodyColor).Width(width).Render(msg.content)
 	if !msg.isUser {
 		if r := m.markdownRenderer(width); r != nil {
+			m.renderCount++
 			if out, err := r.Render(msg.content); err == nil {
 				// glamour pads block elements with leading/trailing
 				// blank lines; trim those so message spacing stays
@@ -376,16 +501,23 @@ func truncateToolResult(s string) string {
 	return s
 }
 
-// pushContent joins the cached per-message blocks and hands the result to
-// the viewport. SetContent always wants the whole string, but since every
-// block was already styled once when its message was appended (or
-// rebuilt), this is just a cheap string join, not a re-render.
-func (m *Model) pushContent() {
-	if len(m.rendered) == 0 {
-		m.vp.SetContent("")
-		return
+// rebuildViewportLines is the slow path: it re-splits every rendered block
+// into the viewport's logical lines. Layout changes call it; streamed deltas
+// patch only the live tail via replaceBlock.
+func (m *Model) rebuildViewportLines() {
+	lines := make([]string, 0, len(m.rendered)*4)
+	m.blockStart = make([]int, len(m.rendered))
+	m.blockLines = make([]int, len(m.rendered))
+	for i, block := range m.rendered {
+		if i > 0 {
+			lines = append(lines, "") // one blank line between message blocks
+		}
+		blockLines := splitBlockLines(block)
+		m.blockStart[i] = len(lines)
+		m.blockLines[i] = len(blockLines)
+		lines = append(lines, blockLines...)
 	}
-	m.vp.SetContent(strings.Join(m.rendered, strings.Repeat("\n", msgGap+1)))
+	m.vp.SetLines(lines)
 }
 
 func (m *Model) LastUserMessage(n int) string {

@@ -16,15 +16,15 @@ import (
 )
 
 type Input struct {
-	FilePath string `json:"file_path"`
-	Old string `json:"old_string"`
-	New string `json:"new_string"`
-	ReplaceAll bool `json:"replace_all_mentions"`
+	FilePath   string `json:"file_path"`
+	Old        string `json:"old_string"`
+	New        string `json:"new_string"`
+	ReplaceAll bool   `json:"replace_all_mentions"`
 }
 
 type Tool struct{}
 
-//NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface
+// NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface
 func New() tools.AgentTool { return &Tool{} }
 
 func (t *Tool) Name() string { return "write_file" }
@@ -62,7 +62,7 @@ func (t *Tool) InputSchema() json.RawMessage {
 				"description": "If true, replaces every occurrence of old_string. If false (default), old_string must appear exactly once in the file.",
 			},
 		},
-		"required":               []string{"file_path", "old_string", "new_string"},
+		"required":             []string{"file_path", "old_string", "new_string"},
 		"additionalProperties": false,
 	}
 	b, _ := json.Marshal(schema)
@@ -74,6 +74,29 @@ func count_appearance(file_contents []byte, search string) (int, error) {
 		return 0, fmt.Errorf("search string cant be empty")
 	}
 	return bytes.Count(file_contents, []byte(search)), nil
+}
+
+// findEdits returns one cl.Edit per non-overlapping occurrence of old in
+// accepted, matching bytes.Replace/ReplaceAll semantics. When all is false
+// only the first occurrence is returned.
+func findEdits(accepted, old, new []byte, all bool) []cl.Edit {
+	if len(old) == 0 {
+		return nil
+	}
+	var edits []cl.Edit
+	for pos := 0; pos+len(old) <= len(accepted); {
+		idx := bytes.Index(accepted[pos:], old)
+		if idx < 0 {
+			break
+		}
+		start := pos + idx
+		edits = append(edits, cl.Edit{Start: start, End: start + len(old), New: new})
+		if !all {
+			break
+		}
+		pos = start + len(old)
+	}
+	return edits
 }
 
 //NOTE: this is a simple implementation we dont make any validation checks (for example if the llm actually read the file recently etch)
@@ -134,14 +157,11 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		}
 	}
 
-	var accepted, rejected []byte
+	var changes []cl.Change
+	accepted := src
 	if args.WatchList != nil {
-		changes := args.WatchList.GetChanges(input.FilePath)
+		changes = args.WatchList.GetChanges(input.FilePath)
 		accepted = cl.AcceptAllChangesBytes(src, changes)
-		rejected = cl.RejectAllChangesBytes(src, changes)
-	} else {
-		accepted = src
-		rejected = src
 	}
 
 	count, err := count_appearance(accepted, input.Old)
@@ -155,18 +175,12 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		return tools.Errf("found %d occurrences of old_string; set replace_all_mentions to true to replace all of them, or add more surrounding context to make it unique", count), nil
 	}
 
-	var updated []byte
-	if input.ReplaceAll {
-		updated = bytes.ReplaceAll(accepted, []byte(input.Old), []byte(input.New))
-	} else {
-		updated = bytes.Replace(accepted, []byte(input.Old), []byte(input.New), 1)
-	}
-
-	// Merge the edit against the rejected (pre-existing-pending-changes)
-	// baseline, producing fresh <<<<<<< old / >>>>>>> Ai change markers
-	// around this new edit (and preserving any changes that were still
-	// pending before this write ran).
-	merged := cl.MergeMarkerBytes(rejected, updated)
+	// The substitution matches are known byte offsets, so build one marker
+	// hunk per match instead of diffing the whole file. The helper widens
+	// hunks to whole lines and re-emits any pending changes from their
+	// stored offsets.
+	edits := findEdits(accepted, []byte(input.Old), []byte(input.New), input.ReplaceAll)
+	merged := cl.MergeMarkerEdits(src, accepted, changes, edits)
 
 	// Reopen (truncating) through the sandboxed root and write the new contents.
 	wf, err := args.Root.OpenFile(input.FilePath, os.O_WRONLY|os.O_TRUNC, 0)

@@ -121,10 +121,8 @@ func TestOldUsagePruned(t *testing.T) {
 	}
 }
 
-func TestSchemaPlusInsertSQL(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
-
+func seedInsertSQL(t *testing.T, s *Store) {
+	t.Helper()
 	data, err := os.ReadFile("insert.sql")
 	if err != nil {
 		t.Fatalf("read insert.sql: %v", err)
@@ -147,6 +145,13 @@ func TestSchemaPlusInsertSQL(t *testing.T) {
 			t.Fatalf("exec %q: %v", stmt[:min(40, len(stmt))], err)
 		}
 	}
+}
+
+func TestSchemaPlusInsertSQL(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	seedInsertSQL(t, s)
 
 	rows, err := s.Stats()
 	if err != nil {
@@ -170,6 +175,55 @@ func TestSchemaPlusInsertSQL(t *testing.T) {
 	// A session beyond the seed range must be missing.
 	if missing, _ := s.LoadSession(99999); missing != nil {
 		t.Fatal("expected no session with id 99999")
+	}
+}
+
+// TestInsertSQLRestoresToolCalls guards the fixture's JSON field names. The
+// providers.ToolCall fields have no custom tags, so the seed must use
+// "Tool_call_id"/"Tool_name"; otherwise unmarshalling silently yields empty
+// IDs and names.
+func TestInsertSQLRestoresToolCalls(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+	seedInsertSQL(t, s)
+
+	cases := []struct {
+		name        string
+		sessionID   int64
+		callIndex   int
+		resultIndex int
+		callID      string
+		toolName    string
+	}{
+		{name: "read_file", sessionID: 1, callIndex: 1, resultIndex: 2, callID: "c1", toolName: "read_file"},
+		{name: "edit_file", sessionID: 2, callIndex: 3, resultIndex: 4, callID: "c2", toolName: "edit_file"},
+		{name: "create_file", sessionID: 4, callIndex: 1, resultIndex: 2, callID: "c3", toolName: "create_file"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ls, err := s.LoadSession(tc.sessionID)
+			if err != nil || ls == nil {
+				t.Fatalf("load session %d: %v %v", tc.sessionID, ls, err)
+			}
+			if tc.callIndex >= len(ls.Messages) || tc.resultIndex >= len(ls.Messages) {
+				t.Fatalf("session %d has only %d messages", tc.sessionID, len(ls.Messages))
+			}
+
+			msg := ls.Messages[tc.callIndex]
+			if len(msg.ToolCalls) != 1 {
+				t.Fatalf("message %d tool calls = %+v, want 1", tc.callIndex, msg.ToolCalls)
+			}
+			call := msg.ToolCalls[0]
+			if call.Tool_call_id != tc.callID {
+				t.Errorf("tool call id = %q, want %q", call.Tool_call_id, tc.callID)
+			}
+			if call.Tool_name != tc.toolName {
+				t.Errorf("tool name = %q, want %q", call.Tool_name, tc.toolName)
+			}
+			if got := ls.Messages[tc.resultIndex].ToolCallID; got != tc.callID {
+				t.Errorf("tool result call id = %q, want %q", got, tc.callID)
+			}
+		})
 	}
 }
 

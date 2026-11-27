@@ -29,11 +29,16 @@ import (
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+	if mdl, cmd, ok := m.handleToolsMessage(msg); ok {
+		return mdl, cmd
+	}
 	switch msg := msg.(type) {
 	case promptbar.HeightChangedMsg:
 		// The prompt bar grew/shrunk (typing past the 2-line resting size,
-		// or back down on reset/submit): shrink or free the band above it
-		// so the message area and the skills pane keep fitting.
+		// the command palette opening/closing, or back down on reset):
+		// shrink or free the band above it so the message area and the
+		// skills pane keep fitting.
+		m.promptHeight = m.Prompt.Height()
 		m.applyPanelSize()
 		return m, nil
 
@@ -56,6 +61,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// prompt bar and the statusline stay pinned at the bottom, so the
 		// pane can never push them off-screen.
 		m.Skills.SetSize(m.msgAreaWidth(), msgAreaHeight)
+		// The tools pane shares that band too; its add form is overlaid at
+		// the terminal size below.
+		m.Tools.SetSize(m.msgAreaWidth(), msgAreaHeight)
+		m.Tools.SetTermSize(m.winWidth, m.winHeight)
 
 		// Stats keeps its full-height dashboard: it renders its own
 		// statusline on its last row.
@@ -68,6 +77,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ChangesList.SetSize(m.winWidth, msgAreaHeight)
 		m.popUp.SetSize(m.winWidth, m.winHeight)
 		m.modal.SetSize(m.winWidth, m.winHeight)
+		m.Coffee.SetSize(m.winWidth, m.winHeight)
 		m.questionnaire.SetWidth(m.winWidth)
 		m.permissionBox.SetSize(m.winWidth, m.winHeight)
 		if m.Mode == modeProviderSelect {
@@ -80,6 +90,40 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case providerselect.CancelledMsg:
 		m.restoreModeForActiveTab()
+		return m, nil
+
+	case providerselect.ServerToggleMsg:
+		return m.handleLocalServerToggle(msg)
+
+	case localServerProbeMsg:
+		// Don't let a slow open-time probe overwrite a start/stop that the
+		// user kicked off in the meantime.
+		if m.localServers != nil {
+			st := m.localServers.Status(msg.Provider)
+			if st.Busy != "" || (st.Running && st.Managed) {
+				return m, nil
+			}
+		}
+		m.providerSelect.SetLocalServerStatus(msg.Provider, msg.Status)
+		return m, nil
+
+	case providerselect.ServerStatusMsg:
+		status := msg.Status
+		if status == "" {
+			status = "start/stop failed"
+		}
+		m.providerSelect.SetLocalServerStatus(msg.Provider, status)
+		if msg.Err != nil {
+			m.MessageArea.AppendMessage(
+				fmt.Sprintf(">**ERROR** %s local server: %s", msg.Provider, msg.Err.Error()),
+				false,
+			)
+		} else {
+			m.MessageArea.AppendMessage(
+				fmt.Sprintf(">**INFO** %s local server: %s", msg.Provider, status),
+				false,
+			)
+		}
 		return m, nil
 
 	case skills.SkillToggleMsg:
@@ -123,6 +167,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		return m.handleKeyPressMsg(msg)
+	case tea.PasteMsg:
+		return m.handlePasteMsg(msg)
 	case tea.MouseClickMsg:
 		return m.handleMouseClickMsg(msg)
 	case tea.MouseWheelMsg:
@@ -164,7 +210,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case streamEndMsg:
 		m.liveActive = false
-		m.ChangesList.RefreshDiffs()
+		if m.ChangesList.Open() {
+			m.ChangesList.RefreshDiffs()
+		}
 
 		// Token accounting. Exact usage arrives in the stream's final chunk;
 		// an interrupted stream (ctrl+i) never receives it, and a few older
@@ -192,17 +240,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Db.RecordUsage(m.status.modelID, m.status.providerName,
 				usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens,
 				len(msg.result.ToolCalls), time.Now())
+			m.refreshStatsIfVisible()
 		}
 
 		// The user pressed ctrl+i. Even if the provider ignored the cancel
 		// and returned happily, we honour the interrupt and stop here rather
 		// than launching another model turn or more tools.
 		if m.stopRequested {
+			if m.liveMsgIdx >= 0 {
+				m.MessageArea.LiveAssistantFinish(m.liveMsgIdx, m.liveContent)
+			}
 			m.endTurn()
 			m.MessageArea.AppendMessage(">**INFO** Generation stopped.", false)
 			return m, nil
 		}
 		if msg.err != nil {
+			if m.liveMsgIdx >= 0 {
+				m.MessageArea.LiveAssistantFinish(m.liveMsgIdx, m.liveContent)
+			}
 			m.endTurn()
 			var perr *providers.ProviderError
 			if errors.As(msg.err, &perr) {
@@ -227,15 +282,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// The live assistant message already shows the streamed text; write
-		// the canonical final content once more (the trailing partial chunk
-		// only lands here).
+		// The stream is over: the live message still holds the plain-text
+		// streaming form. Render the canonical final content through glamour
+		// once here, after any text-embedded tool call has been stripped.
 		content := msg.result.Content
-		if m.liveMsgIdx >= 0 {
-			m.MessageArea.LiveAssistantUpdate(m.liveMsgIdx, content)
-		} else if content != "" {
-			m.MessageArea.AppendMessage(content, false)
-		}
 
 		// Some models (often small local ones) print a tool call as a JSON
 		// blob in their text instead of emitting a native tool_calls block.
@@ -246,18 +296,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if parsed, clean := providers.ParseTextToolCalls(content); len(parsed) > 0 {
 				toolCalls = parsed
 				content = clean
-				if m.liveMsgIdx >= 0 {
-					m.MessageArea.LiveAssistantUpdate(m.liveMsgIdx, content)
-				}
 			}
+		}
+
+		if m.liveMsgIdx >= 0 {
+			m.MessageArea.LiveAssistantFinish(m.liveMsgIdx, content)
+		} else if content != "" {
+			m.MessageArea.AppendMessage(content, false)
 		}
 
 		if len(toolCalls) > 0 {
 			// The assistant asked for tools: run them, feed the results
-			// back into context, then call the model again. aiThink stays
-			// true so the spinner keeps running and submitPrompt won't
-			// launch a concurrent generation; the prompt bar itself stays
-			// focused and usable.
+			// back into context, then call the model again. There is no
+			// turn cap - the loop repeats for as long as the model keeps
+			// requesting tools. aiThink stays true so the spinner keeps
+			// running and submitPrompt won't launch a concurrent
+			// generation; the prompt bar itself stays focused and usable,
+			// and ctrl+i interrupts the turn at any point.
 
 			// Cap the batch. A runaway model that keeps re-emitting the same
 			// calls must not spin forever: only the first maxToolsPerTurn
@@ -275,17 +330,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Context = append(m.Context, providers.Message{
 				Role: "assistant", Content: content, ToolCalls: toolCalls,
 			})
-
-			// Max-steps guardrail so a model stuck re-calling tools can't loop forever.
-			m.stepCount++
-			if m.stepCount > m.maxSteps {
-				m.endTurn()
-				m.MessageArea.AppendMessage(
-					">**ERROR** Reached the maximum number of agent turns. If you want, ask me to continue with the remaining steps.",
-					false,
-				)
-				return m, nil
-			}
 
 			// Render each requested call as a "running" row, then execute
 			// the whole batch in parallel - the update loop collects
@@ -334,7 +378,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.endTurn()
 				return m, nil
 			}
-			return m, compactCmd(p, m.Context, m.status.contextWindow, todo.GetTodoList().String())
+			return m, compactCmd(p, m.Context, m.status.contextWindow, m.status.modelID, todo.GetTodoList().String())
 		}
 
 		m.endTurn()
@@ -353,9 +397,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Db.RecordUsage(m.status.modelID, m.status.providerName,
 				msg.usage.PromptTokens, msg.usage.CompletionTokens,
 				msg.usage.TotalTokens, 0, time.Now())
+			m.refreshStatsIfVisible()
 		}
-		m.Context = providers.CompactContext(m.Context, msg.summary, 2)
-		m.status.lastPromptTokens = providers.EstimateContextTokens(m.Context, m.status.modelID)
+		// compactCmd already applied CompactContext and derived the new
+		// prompt size from the provider-reported summary usage. Its
+		// usage.PromptTokens describes the pre-summary request, so it is
+		// deliberately not assigned to lastPromptTokens here. When nothing
+		// was replaced, keep the previous (still accurate) value.
+		if msg.context != nil {
+			m.Context = msg.context
+		}
+		if msg.promptTokens > 0 {
+			m.status.lastPromptTokens = msg.promptTokens
+		}
 		m.MessageArea.AppendMessage(">**INFO** Conversation condensed to fit the context window - continue when ready.", false)
 		m.endTurn()
 		if m.ChangesList.Open() {
@@ -371,11 +425,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The questions_tool parks the ai here: hold its batch slot open
 		// and render the questionnaire in place of the prompt bar until
 		// the user answers. aiThink stays true so the model can't continue.
+		activeQuestions := questionnaire.Active()
 		if pt.call.Tool_name == questionnairetool.ToolName &&
-			questionnaire.Active() != nil && m.questionnaireSlot == -1 && !m.stopRequested {
+			activeQuestions != nil && m.questionnaireSlot == -1 && !m.stopRequested {
 			m.questionnaireSlot = msg.index
+			// The questionnaire replaces the prompt bar only on the code
+			// tab. Bring that layout to the front so a question can't be
+			// hidden behind the stats/skills pane while the batch waits.
+			m.showCodeTab()
 			m.Mode = modeQuestionnaire
-			m.questionnaire = questionnaire.New(questionnaire.Active())
+			m.questionnaire = questionnaire.New(activeQuestions)
 			m.questionnaire.SetWidth(m.winWidth)
 			m.applyPanelSize()
 			return m, nil
@@ -405,7 +464,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.index < len(m.pendingResults) {
 			m.pendingResults[msg.index] = &res
 		}
-		m.ChangesList.RefreshDiffs()
+		if m.ChangesList.Open() {
+			m.ChangesList.RefreshDiffs()
+		}
 
 		// Still waiting on other calls in the batch.
 		for _, r := range m.pendingResults {
@@ -433,6 +494,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.loopAfterBatch()
 	case modelInfoMsg:
+		// Provider/model switches bump infoGen and start a fresh lookup;
+		// a slower response for an older selection must not overwrite the
+		// current model's context window.
+		if msg.gen != m.infoGen {
+			return m, nil
+		}
+		if msg.model != "" && msg.model != m.status.modelID {
+			return m, nil
+		}
 		if msg.err == nil {
 			m.status.contextWindow = msg.info.ContextWindow
 		}
@@ -481,5 +551,14 @@ func (m model) forwardToComponents(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.Tabs.Active().Name == "stats" {
 		m.Stats, statsCmd = m.Stats.Update(msg)
 	}
-	return m, tea.Batch(tabsCmd, promptCmd, msgAreaCmd, popUpCmd, statsCmd)
+	// The Tools tab's form text inputs also blink on that loop.
+	var toolsCmd tea.Cmd
+	if m.Tabs.Active().Name == "tools" {
+		m.Tools, toolsCmd = m.Tools.Update(msg)
+	}
+	// Coffee's animation tick is an opaque message; forward everything left
+	// over so the overlay advances even when other modes ignore it.
+	var coffeeCmd tea.Cmd
+	m.Coffee, coffeeCmd = m.Coffee.Update(msg)
+	return m, tea.Batch(tabsCmd, promptCmd, msgAreaCmd, popUpCmd, statsCmd, toolsCmd, coffeeCmd)
 }

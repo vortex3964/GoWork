@@ -1,18 +1,44 @@
 package gowork
 
 import (
+	"fmt"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/atotto/clipboard"
 
+	"GoWork/Tui/Components/MentionMenu"
 	popup "GoWork/Tui/Components/PopUp"
 
 	"GoWork/tools/QuestionnaireTool"
+	"GoWork/tools/SkillsTool"
 )
 
 func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	msg_str := msg.String()
+
+	// The "@" menu belongs to the code tab's prompt only. Track the active
+	// tab here (the prompt bar itself is shared with the skills/tools tabs)
+	// and refresh its source snapshot whenever a new mention starts.
+	m.Prompt.SetMentionsEnabled(m.Tabs.Active().Name == "code")
+	if msg_str == "@" && m.Tabs.Active().Name == "code" {
+		switch m.Mode {
+		case modePrompt, modeIdle, modeRecall:
+			m.Prompt.SetMentionItems(m.mentionItems())
+			// A refreshed snapshot can change the number of visible rows
+			// without the prompt bar seeing a key-driven height change.
+			m.syncPromptHeight()
+		}
+	}
+
+	// The coffee animation is an interruptible overlay: it consumes every
+	// key while visible so esc/ctrl+c close it instead of quitting the app
+	// or leaking the key into the prompt.
+	if m.Coffee.IsVisible() {
+		var cmd tea.Cmd
+		m.Coffee, cmd = m.Coffee.Update(msg)
+		return m, cmd
+	}
 
 	if msg_str == "ctrl+c" {
 		if m.Mode == modeProviderSelect {
@@ -35,6 +61,10 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.Mode == modeProviderSelect {
 			return m, nil
 		}
+		// Global shortcuts keep working while a message selection is
+		// active. Drop the selection first so it doesn't reappear behind
+		// the picker.
+		m.MessageArea.EndCopy()
 		// Don't let the picker open (or the provider swap while it's
 		// open) mid-agentic-loop: the in-flight turn re-reads the
 		// provider when it loops back to the model, so switching here
@@ -51,9 +81,13 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// the tool batch. A terminal delivers ctrl+i as the same byte as tab
 	// (0x09), so while a turn is running both spellings interrupt. When
 	// idle, plain tab stays free for tab switching and ctrl+i is a no-op.
+	// While the slash-command palette is open, tab belongs to it as the
+	// completion key even during a running turn; only ctrl+i interrupts
+	// then.
 	if msg_str == "ctrl+i" || msg_str == "tab" {
 		turnRunning := *m.AiThink && m.cancel != nil
-		if isTurnInterrupt(msg_str, turnRunning) {
+		completionTab := msg_str == "tab" && (m.slashPaletteVisible() || m.mentionMenuVisible())
+		if isTurnInterrupt(msg_str, turnRunning) && !completionTab {
 			m.stopRequested = true
 			m.cancel()
 			if m.Mode == modeQuestionnaire {
@@ -66,10 +100,22 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 				return m, m.loopAfterBatch()
 			}
+			// The turn is winding down asynchronously: restore the prompt
+			// now so the user can keep typing or paste while it stops.
+			m.MessageArea.EndCopy()
+			m.MessageArea.CancelTextDrag()
+			m.Prompt.CancelTextDrag()
+			focusCmd := m.focusCodeTabPrompt()
 			m.MessageArea.AppendMessage(">**INFO** Stopping…", false)
-			return m, nil
+			return m, focusCmd
 		}
 		if msg_str == "ctrl+i" {
+			// Nothing is running, but ctrl+i is still a global key: don't
+			// leave a copy selection owning the keyboard.
+			if m.MessageArea.InCopyMode() {
+				m.MessageArea.EndCopy()
+				return m, m.focusCodeTabPrompt()
+			}
 			return m, nil
 		}
 	}
@@ -86,6 +132,110 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.providerSelect, cmd = m.providerSelect.Update(msg)
 		return m, cmd
+	}
+
+	// Message copy mode owns the keyboard while it is active: arrows move
+	// the selection, shift+arrows extend it, enter/ctrl+y copies the
+	// selected range, esc cancels. ctrl+y enters the mode from the code
+	// tab. This runs before prompt handling so those keys don't type into
+	// (or move the cursor of) the textarea.
+	if m.Tabs.Active().Name == "code" && (m.Mode == modePrompt || m.Mode == modeIdle) {
+		if m.MessageArea.InCopyMode() {
+			switch msg_str {
+			case "esc":
+				m.MessageArea.EndCopy()
+				return m, nil
+			case "enter", "ctrl+y":
+				text, ok := m.MessageArea.SelectedText()
+				m.MessageArea.EndCopy()
+				return m, copyTextCmd(text, ok)
+			case "up", "k":
+				m.MessageArea.MoveSelection(-1, false)
+				return m, nil
+			case "down", "j":
+				m.MessageArea.MoveSelection(1, false)
+				return m, nil
+			case "shift+up", "K":
+				m.MessageArea.MoveSelection(-1, true)
+				return m, nil
+			case "shift+down", "J":
+				m.MessageArea.MoveSelection(1, true)
+				return m, nil
+			case "a":
+				m.MessageArea.SelectAll()
+				return m, nil
+			case "ctrl+l", "ctrl+t":
+				// Global layout shortcuts are not copy-mode keys. Leave
+				// the selection and let the normal handlers below run.
+				m.MessageArea.EndCopy()
+			default:
+				// Swallow the key so typing can't change the prompt while
+				// a selection is being made.
+				return m, nil
+			}
+		}
+		if msg_str == "ctrl+y" {
+			if m.MessageArea.BeginCopy() {
+				return m, showPopupCmd(copyModeHint)
+			}
+			return m, showPopupCmd("Nothing to copy yet")
+		}
+	}
+
+	// Slash-command palette keys. It sits above the prompt and owns its
+	// navigation while visible, before the prompt's own up/enter/esc
+	// handling and before global tab switching.
+	if m.slashPaletteVisible() {
+		switch msg_str {
+		case "up":
+			m.Prompt.MovePalette(-1)
+			return m, nil
+		case "down":
+			m.Prompt.MovePalette(1)
+			return m, nil
+		case "tab":
+			if completed, ok := m.Prompt.AcceptPalette(); ok {
+				m.Prompt.SetValue(completed)
+				m.syncPromptHeight()
+			}
+			return m, nil
+		case "enter":
+			if cmd, ok := m.Prompt.PaletteSelected(); ok {
+				m.Prompt.Reset()
+				m.syncPromptHeight()
+				return m, m.runSlashCommand("/" + cmd.Name)
+			}
+			return m, nil
+		case "esc":
+			m.Prompt.ClosePalette()
+			// Closing the palette shrinks the bottom bar; re-layout now so
+			// the message band immediately reclaims the freed rows.
+			m.syncPromptHeight()
+			return m, nil
+		}
+	}
+
+	// The "@" mention menu owns its navigation while visible, exactly like
+	// the slash palette. Tab and Enter complete the highlighted mention into
+	// the prompt without submitting it; only a later Enter sends the prompt.
+	if m.mentionMenuVisible() {
+		switch msg_str {
+		case "up":
+			m.Prompt.MoveMention(-1)
+			return m, nil
+		case "down":
+			m.Prompt.MoveMention(1)
+			return m, nil
+		case "tab", "enter":
+			if m.Prompt.AcceptMention() {
+				m.syncPromptHeight()
+			}
+			return m, nil
+		case "esc":
+			m.Prompt.CloseMentions()
+			m.syncPromptHeight()
+			return m, nil
+		}
 	}
 
 	if msg_str == "ctrl+l" {
@@ -116,16 +266,61 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// The Tools tab's add form does the same: while it is open every key
+	// belongs to its fields.
+	if m.Mode == modeTools && m.Tools.FormVisible() {
+		var cmd tea.Cmd
+		m.Tools, cmd = m.Tools.Update(msg)
+		return m, cmd
+	}
+
+	// A skill-creation modal opened from the Tools tab owns the keyboard too.
+	if m.Mode == modeTools && m.skillForm.Visible() {
+		var cmd tea.Cmd
+		m.skillForm, cmd = m.skillForm.Update(msg)
+		return m, cmd
+	}
+
+	// ctrl+t jumps to the Tools tab from any layout, and toggles back to the
+	// code tab when it is already active.
+	if msg_str == "ctrl+t" {
+		m.toggleToolsTab()
+		m.Prompt.SetMentionsEnabled(m.Tabs.Active().Name == "code")
+		m.syncPromptHeight()
+		return m, nil
+	}
+
+	// Plan (read-only) mode is session-wide, so its toggle works from every
+	// layout that doesn't already own the keyboard: prompt, idle, changes,
+	// recall, stats and skills. Modal forms, the provider picker, the
+	// permission box and the questionnaire handled above keep their keys.
+	if msg_str == "ctrl+shift+p" {
+		m.togglePlanMode()
+		return m, nil
+	}
+	// Esc from the idle layout (the statusline's mode indicator is visible
+	// there) leaves plan mode. While the prompt is focused, the first esc
+	// keeps its usual job of blurring it, and a second esc then exits plan
+	// mode.
+	if msg_str == "esc" && m.planMode && m.Mode == modeIdle {
+		m.setPlanMode(false)
+		return m, nil
+	}
+
 	// Tab navigation works in every mode: ctrl+tab / tab = next,
 	// ctrl+shift+tab / shift+tab = previous.
 	switch msg_str {
 	case "ctrl+tab", "tab":
 		m.Tabs.Next()
 		m.syncModeToTab()
+		m.Prompt.SetMentionsEnabled(m.Tabs.Active().Name == "code")
+		m.syncPromptHeight()
 		return m, nil
 	case "ctrl+shift+tab", "shift+tab":
 		m.Tabs.Prev()
 		m.syncModeToTab()
+		m.Prompt.SetMentionsEnabled(m.Tabs.Active().Name == "code")
+		m.syncPromptHeight()
 		return m, nil
 	}
 
@@ -155,6 +350,12 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.skillForm, cmd = m.skillForm.Update(msg)
 			return m, cmd
 		}
+		// ctrl+n is the explicit new-skill keybind: it opens the same form
+		// as Enter, but works whether or not the prompt bar is focused.
+		if msg_str == "ctrl+n" {
+			m.skillForm.Open()
+			return m, nil
+		}
 		if m.Prompt.Focused() {
 			switch msg_str {
 			case "esc":
@@ -165,6 +366,14 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.syncPromptHeight()
 				return m, nil
 			case "enter":
+				// A slash command is a command, not skill body text: route
+				// it through the runner before the form can claim Enter.
+				if val := m.Prompt.Value(); strings.HasPrefix(strings.TrimSpace(val), "/") {
+					m.Prompt.Reset()
+					m.syncPromptHeight()
+					m.historyIdx = 0
+					return m, m.runSlashCommand(val)
+				}
 				m.skillForm.Open()
 				return m, nil
 			}
@@ -194,6 +403,46 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		var cmd tea.Cmd
 		m.Skills, cmd = m.Skills.Update(msg)
+		return m, cmd
+	}
+
+	// Tools mode mirrors skills: the pane owns navigation and actions, while
+	// its prompt bar is only used to write a new skill body. Enter on a
+	// non-empty prompt opens the skill-name form; Esc leaves the tab.
+	if m.Mode == modeTools {
+		if m.Prompt.Focused() {
+			switch msg_str {
+			case "esc":
+				m.Prompt.Blur()
+				return m, nil
+			case "shift+enter", "ctrl+j":
+				m.Prompt.InsertNewline()
+				m.syncPromptHeight()
+				return m, nil
+			case "enter":
+				if strings.TrimSpace(m.Prompt.Value()) == "" {
+					m.MessageArea.AppendMessage(">**INFO** Type the skill body first, then press enter to name it.", false)
+					return m, nil
+				}
+				m.skillForm.Open()
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.Prompt, cmd = m.Prompt.Update(msg)
+			return m, cmd
+		}
+		switch msg_str {
+		case "i":
+			return m, m.Prompt.Focus()
+		case "esc":
+			if m.Tools.CanExitToolsMode() {
+				m.Tabs.ActiveIdx = 0
+				m.syncModeToTab()
+				return m, nil
+			}
+		}
+		var cmd tea.Cmd
+		m.Tools, cmd = m.Tools.Update(msg)
 		return m, cmd
 	}
 
@@ -327,6 +576,144 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m.forwardToComponents(msg)
 }
 
+// handlePasteMsg routes bracketed paste into the code tab's textarea. A paste
+// is typing intent, so it also ends any active copy selection and restores the
+// prompt focus first: paste must never be swallowed by copy mode or lost on a
+// blurred/idle prompt.
+func (m model) handlePasteMsg(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
+	if m.Tabs.Active().Name == "code" && (m.Mode == modePrompt || m.Mode == modeIdle) {
+		m.MessageArea.EndCopy()
+		m.MessageArea.CancelTextDrag()
+		m.Prompt.CancelTextDrag()
+		m.Mode = modePrompt
+		focusCmd := m.Prompt.Focus()
+		var cmd tea.Cmd
+		m.Prompt, cmd = m.Prompt.Update(msg)
+		m.syncPromptHeight()
+		return m, tea.Batch(focusCmd, cmd)
+	}
+	return m.forwardToComponents(msg)
+}
+
+// slashPaletteVisible reports whether the command palette can own keys right
+// now: it only renders over the code tab's prompt bar.
+func (m model) slashPaletteVisible() bool {
+	return m.Tabs.Active().Name == "code" &&
+		(m.Mode == modePrompt || m.Mode == modeIdle) &&
+		m.Prompt.PaletteVisible()
+}
+
+// mentionMenuVisible reports whether the "@" autocomplete can own keys right
+// now: it only renders over the code tab's prompt bar.
+func (m model) mentionMenuVisible() bool {
+	return m.Tabs.Active().Name == "code" &&
+		(m.Mode == modePrompt || m.Mode == modeIdle) &&
+		m.Prompt.MentionVisible()
+}
+
+// mentionItems snapshots every @-mention source for the current project:
+// installed skills (loaded or not), configured MCP servers, configured LSP
+// servers, and the project's folders/files. All reads are read-only; the
+// snapshot never touches the conversation context.
+func (m model) mentionItems() []mentionmenu.Item {
+	items := make([]mentionmenu.Item, 0, 64)
+
+	if mgr := skillstool.GetManager(); mgr != nil {
+		for _, skill := range mgr.Discover() {
+			if skill.Name == "" || strings.HasPrefix(skill.Name, ".") {
+				continue
+			}
+			desc := strings.TrimSpace(skill.Description)
+			if mgr.IsLoaded(skill.Name) {
+				if desc == "" {
+					desc = "loaded"
+				} else {
+					desc = "loaded · " + desc
+				}
+			}
+			items = append(items, mentionmenu.Item{
+				Kind:        mentionmenu.KindSkill,
+				Name:        skill.Name,
+				Description: desc,
+			})
+		}
+	}
+
+	if m.toolRuntime != nil {
+		for _, server := range m.toolRuntime.MCPServers() {
+			if server.Name == "" {
+				continue
+			}
+			status := "disconnected"
+			switch {
+			case !server.Enabled:
+				status = "disabled"
+			case server.Error != "":
+				status = "error"
+			case server.Connected:
+				status = "connected"
+			}
+			desc := server.Transport
+			if status != "" {
+				desc += " · " + status
+			}
+			if server.Tools > 0 {
+				desc += fmt.Sprintf(" · %d tools", server.Tools)
+			}
+			items = append(items, mentionmenu.Item{
+				Kind:        mentionmenu.KindMCP,
+				Name:        server.Name,
+				Description: desc,
+			})
+		}
+		for _, server := range m.toolRuntime.LSPServers() {
+			if server.Name == "" {
+				continue
+			}
+			desc := strings.Join(server.Languages, ", ")
+			if desc == "" {
+				desc = "language server"
+			}
+			if server.Enabled {
+				desc += " · enabled"
+			} else {
+				desc += " · disabled"
+			}
+			if server.Error != "" {
+				desc += " · error"
+			}
+			items = append(items, mentionmenu.Item{
+				Kind:        mentionmenu.KindLSP,
+				Name:        server.Name,
+				Description: desc,
+			})
+		}
+	} else if m.LSP != nil {
+		// Tests and embedded callers can inject the /lsp seam without a full
+		// tool runtime; enumerate the same read-only server list.
+		for _, server := range m.LSP.Servers() {
+			if server.Name == "" {
+				continue
+			}
+			desc := strings.TrimSpace(server.Language)
+			if desc == "" {
+				desc = "language server"
+			}
+			if status := strings.TrimSpace(server.Status); status != "" {
+				desc += " · " + status
+			}
+			items = append(items, mentionmenu.Item{
+				Kind:        mentionmenu.KindLSP,
+				Name:        server.Name,
+				Description: desc,
+			})
+		}
+	}
+
+	items = append(items, mentionmenu.ProjectItems(m.root)...)
+	return items
+}
+
 func popupCopyMessage(val string) string {
 	oneLine := strings.ReplaceAll(strings.TrimSpace(val), "\n", " ")
 	const maxLen = 40
@@ -337,4 +724,26 @@ func popupCopyMessage(val string) string {
 		return "Copied to clipboard"
 	}
 	return "Copied: " + oneLine
+}
+
+// copyModeHint is shown when copy mode opens so the selection keys and the
+// prompt bar's existing copy shortcut are discoverable.
+const copyModeHint = "Copy: ↑↓ select · shift+↑↓ range · a all · enter copy · esc cancel"
+
+func showPopupCmd(message string) tea.Cmd {
+	return func() tea.Msg { return popup.ShowMsg{Message: message} }
+}
+
+// copyTextCmd writes text to the system clipboard and reports the result as
+// the existing popup toast.
+func copyTextCmd(text string, ok bool) tea.Cmd {
+	if !ok || strings.TrimSpace(text) == "" {
+		return showPopupCmd("Nothing selected to copy")
+	}
+	return func() tea.Msg {
+		if err := clipboard.WriteAll(text); err != nil {
+			return popup.ShowMsg{Message: "Copy failed: " + err.Error()}
+		}
+		return popup.ShowMsg{Message: popupCopyMessage(text)}
+	}
 }

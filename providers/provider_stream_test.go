@@ -83,6 +83,32 @@ func TestOpenAICompatStream(t *testing.T) {
 	}
 }
 
+// TestOpenAICompatStreamCapsToolCallIndex makes sure a malformed server-
+// supplied index cannot grow the tool-call accumulator without limit. The
+// out-of-range call must be dropped while a normal call in the same stream
+// still assembles.
+func TestOpenAICompatStreamCapsToolCallIndex(t *testing.T) {
+	const hugeIndex = 1 << 20
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":%d,\"id\":\"bad_1\",\"function\":{\"name\":\"runaway\",\"arguments\":\"{}\"}}]}}]}\n\n", hugeIndex)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]}}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	res, err := streamOpenAICompat(context.Background(), srv.URL, "test", nil, nil, nil, false, func(string) {})
+	if err != nil {
+		t.Fatalf("streamOpenAICompat: %v", err)
+	}
+	if len(res.ToolCalls) != 1 {
+		t.Fatalf("got %d tool calls, want only the in-range one: %+v", len(res.ToolCalls), res.ToolCalls)
+	}
+	if res.ToolCalls[0].Tool_name != "read_file" || res.ToolCalls[0].Tool_call_id != "call_1" {
+		t.Errorf("tool call = %+v, want call_1/read_file", res.ToolCalls[0])
+	}
+}
+
 // TestStreamContextCancel verifies that canceling the context mid-stream
 // surfaces as a canceled error - this is what the ctrl+i interrupt relies on
 // to stop a running generation.
