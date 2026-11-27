@@ -91,6 +91,10 @@ func ModelSupportsTools(providerName, model string) bool {
 		return true
 	case "openai", "gpt":
 		return true
+	case "opencode-go", "opencodego", "opencode_go":
+		// OpenCode Go only lists chat models, and the gateway rejects tools
+		// for the rare model that lacks them; default to enabling tools.
+		return true
 	case "ollama":
 		return ollamaModelTools(m)
 	case "llamacpp", "lmstudio":
@@ -594,6 +598,14 @@ func streamOpenAICompat(ctx context.Context, url, model string, headers map[stri
 	}
 	defer resp.Body.Close()
 
+	return parseOpenAICompatStream(ctx, resp, onDelta)
+}
+
+// parseOpenAICompatStream consumes an already-open OpenAI-compatible SSE
+// response and assembles the streamed text, tool calls and usage. It is split
+// out of streamOpenAICompat so providers with a custom request/error-mapping
+// layer (OpenCode Go) can share the exact same stream parsing.
+func parseOpenAICompatStream(ctx context.Context, resp *http.Response, onDelta StreamFunc) (GenerateResult, error) {
 	var content strings.Builder
 	var usage Usage
 	finish := ""
@@ -604,7 +616,7 @@ func streamOpenAICompat(ctx context.Context, url, model string, headers map[stri
 	}
 	var toolCalls []*tcAcc
 
-	err = scanStreamLines(ctx, resp, func(line string) error {
+	err := scanStreamLines(ctx, resp, func(line string) error {
 		payload, ok := sseData(line)
 		if !ok {
 			return nil
@@ -825,6 +837,11 @@ func Select_provider(providerName string, model string, api_key string) (Provide
 			return nil, fmt.Errorf("empty api key")
 		}
 		return WithRetries(newOpenAI(model, api_key), 3), nil
+	case "opencode-go", "opencodego", "opencode_go":
+		if api_key == "" {
+			return nil, fmt.Errorf("empty api key")
+		}
+		return WithRetries(newOpenCodeGo(model, api_key), 3), nil
 	case "ollama":
 		return newOllama(model), nil
 	case "llamacpp":
@@ -842,6 +859,9 @@ func IsLocalProvider(providerName string) bool {
 	switch strings.ToLower(strings.TrimSpace(providerName)) {
 	case "ollama", "llamacpp", "lmstudio":
 		return true
+	case "opencode-go", "opencodego", "opencode_go":
+		// Cloud subscription provider: always needs an API key.
+		return false
 	default:
 		return false
 	}
