@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
 
 	"GoWork/tools"
@@ -22,9 +23,9 @@ type Input struct {
 	DestinationPath string `json:"destination_path"`
 }
 
-type Tool struct {}
+type Tool struct{}
 
-//NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface 
+// NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface
 func New() tools.AgentTool { return &Tool{} }
 
 func (t *Tool) Name() string { return "move_file" }
@@ -46,7 +47,7 @@ func (t *Tool) InputSchema() json.RawMessage {
 				"description": "New path for the file, relative to the project root (e.g. \"src/bar.go\"). Missing parent directories are created automatically.",
 			},
 		},
-		"required":               []string{"source_path", "destination_path"},
+		"required":             []string{"source_path", "destination_path"},
 		"additionalProperties": false,
 	}
 	b, _ := json.Marshal(schema)
@@ -55,7 +56,7 @@ func (t *Tool) InputSchema() json.RawMessage {
 
 func (t *Tool) Kind() tools.Kind { return tools.KindNotAllowed }
 
-func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs,rawInput json.RawMessage) (tools.ToolResult, error) {
+func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.RawMessage) (tools.ToolResult, error) {
 	var input Input
 	if err := json.Unmarshal(rawInput, &input); err != nil {
 		return tools.ToolResult{}, fmt.Errorf("move_file: invalid input: %w", err)
@@ -72,6 +73,13 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs,rawInput json.Ra
 
 	// Read the source file fully before touching the destination, so a failed
 	// write never leaves us in a state where the source has already been removed.
+	info, err := args.Root.Stat(input.SourcePath)
+	if err != nil {
+		return tools.Errf("error reading source file: %s", err), nil
+	}
+	if info.IsDir() {
+		return tools.Errf("source_path points to a directory, not a file"), nil
+	}
 	file, err := args.Root.Open(input.SourcePath)
 	if err != nil {
 		return tools.Errf("error reading source file: %s", err), nil
@@ -89,7 +97,11 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs,rawInput json.Ra
 		}
 	}
 
-	dest, err := args.Root.Create(input.DestinationPath)
+	// Create with the source's permission bits rather than Root.Create's
+	// 0666/umask default, then chmod explicitly so overwriting an existing
+	// destination also adopts the source mode.
+	mode := info.Mode().Perm()
+	dest, err := args.Root.OpenFile(input.DestinationPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 	if err != nil {
 		return tools.Errf("error writing destination file: %s", err), nil
 	}
@@ -100,6 +112,9 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs,rawInput json.Ra
 	if err := dest.Close(); err != nil {
 		return tools.Errf("error writing destination file: %s", err), nil
 	}
+	// Best effort: some platforms (notably Windows) do not represent POSIX
+	// permission bits, but the move itself has already succeeded.
+	_ = args.Root.Chmod(input.DestinationPath, mode)
 
 	if err := args.Root.Remove(input.SourcePath); err != nil {
 		return tools.Errf("moved file but failed to remove original at %s: %s", input.SourcePath, err), nil

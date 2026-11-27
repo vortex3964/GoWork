@@ -71,8 +71,21 @@ func (t *Tool) InputSchema() json.RawMessage {
 	return b
 }
 
+// detectNewline reports the line ending style a file already uses. A single
+// CRLF pair is enough to treat the file as CRLF: rewriting it with LF-only
+// replacements is what produced the mixed-ending files this guards against.
+func detectNewline(contents []byte) string {
+	if bytes.Contains(contents, []byte("\r\n")) {
+		return "\r\n"
+	}
+	return "\n"
+}
+
 // splitLines splits contents into lines, treating a single trailing
-func splitLines(contents []byte) []string {
+// newline as the terminator of the last line. CRLF terminators are stripped
+// from line contents when the file uses them, so callers can join the lines
+// back with the detected style without doubling the carriage return.
+func splitLines(contents []byte, newline string) []string {
 	if len(contents) == 0 {
 		return nil
 	}
@@ -88,34 +101,39 @@ func splitLines(contents []byte) []string {
 	parts := bytes.Split(trimmed, []byte("\n"))
 	lines := make([]string, len(parts))
 	for i, p := range parts {
+		if newline == "\r\n" {
+			p = bytes.TrimSuffix(p, []byte("\r"))
+		}
 		lines[i] = string(p)
 	}
 	return lines
 }
 
-// joinLines re-joins lines into file bytes, adding exactly one trailing
-// newline (or nil for zero lines).
-func joinLines(lines []string) []byte {
+// joinLines re-joins lines into file bytes using newline between lines,
+// adding exactly one trailing newline (or nil for zero lines).
+func joinLines(lines []string, newline string) []byte {
 	if len(lines) == 0 {
 		return nil
 	}
-	// len(lines)-1 separators of len 1, plus a final "\n" of len 1,
-	// plus the lines themselves avoids the string-builder growing
-	// past its estimate for typical text.
-	n := len(lines) // trailing "\n"
+	if newline == "" {
+		newline = "\n"
+	}
+	// len(lines)-1 separators plus a final terminator, plus the lines
+	// themselves, avoids the string-builder growing past its estimate for
+	// typical text.
+	n := len(lines) * len(newline)
 	for _, l := range lines {
 		n += len(l)
 	}
-	n += len(lines) - 1 // "\n" separators between lines
 
 	var b strings.Builder
 	b.Grow(n)
 	b.WriteString(lines[0])
 	for _, l := range lines[1:] {
-		b.WriteByte('\n')
+		b.WriteString(newline)
 		b.WriteString(l)
 	}
-	b.WriteByte('\n')
+	b.WriteString(newline)
 	return []byte(b.String())
 }
 
@@ -127,6 +145,10 @@ func replacementLines(newContent string) []string {
 	if newContent == "" {
 		return nil // deleting the range / inserting nothing
 	}
+	// new_content is model-authored and may use either style regardless of
+	// the target file; normalise it to LF here, then join with the file's
+	// own style.
+	newContent = strings.ReplaceAll(newContent, "\r\n", "\n")
 	return strings.Split(strings.TrimSuffix(newContent, "\n"), "\n")
 }
 
@@ -161,7 +183,7 @@ func lineRangeOffsets(data []byte, startLine, endLine int) (start, end int) {
 
 // replaceLineRange replaces the 1-indexed inclusive line range
 // [startLine, endLine] with newContent's lines.
-func replaceLineRange(lines []string, startLine, endLine int, newContent string) ([]byte, int) {
+func replaceLineRange(lines []string, startLine, endLine int, newContent, newline string) ([]byte, int) {
 	replacement := replacementLines(newContent)
 
 	before := lines[:startLine-1]
@@ -178,7 +200,7 @@ func replaceLineRange(lines []string, startLine, endLine int, newContent string)
 	result = append(result, replacement...)
 	result = append(result, after...)
 
-	return joinLines(result), len(result)
+	return joinLines(result, newline), len(result)
 }
 
 // validateRange checks that [startLine, endLine] is a sane, in-bounds
@@ -252,7 +274,11 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		accepted = cl.AcceptAllChangesBytes(src, changes)
 	}
 
-	acceptedLines := splitLines(accepted)
+	// Keep the file's existing line-ending style. Without this, a CRLF file
+	// ends up with LF-only replacement lines (and CRLF leftovers around them)
+	// after every edit.
+	newline := detectNewline(accepted)
+	acceptedLines := splitLines(accepted, newline)
 	if err := validateRange(input.StartLine, input.EndLine, len(acceptedLines)); err != nil {
 		return tools.Errf("%s", err.Error()), nil
 	}
@@ -265,11 +291,11 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		// This tool always terminates a rewritten file with a newline, which
 		// an offset-only replacement cannot express. Keep the old whole-file
 		// path for this rare case so the output stays byte-identical.
-		updated, _ := replaceLineRange(acceptedLines, input.StartLine, input.EndLine, input.NewContent)
+		updated, _ := replaceLineRange(acceptedLines, input.StartLine, input.EndLine, input.NewContent, newline)
 		merged = cl.MergeMarkerBytes(cl.RejectAllChangesBytes(src, changes), updated)
 	} else {
 		start, end := lineRangeOffsets(accepted, input.StartLine, input.EndLine)
-		newText := joinLines(replacementLines(input.NewContent))
+		newText := joinLines(replacementLines(input.NewContent), newline)
 		merged = cl.MergeMarkerEdits(src, accepted, changes, []cl.Edit{{
 			Start: start,
 			End:   end,

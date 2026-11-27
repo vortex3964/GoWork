@@ -60,17 +60,17 @@ INSERT INTO usage (id, session_id, model, provider, prompt_tokens, completion_to
 -- -- messages --
 INSERT INTO messages (session_id, role, content, tool_call_id, tool_calls_json, created_at) VALUES
   (1, 'user', 'Refactor the retry logic in provider.go and add tests', '', '', strftime('%Y-%m-%dT12:05:00Z','now','-29 days')),
-  (1, 'assistant', '', 'c1', '[{"ToolCallId":"c1","ToolName":"read_file"}]', strftime('%Y-%m-%dT12:20:00Z','now','-29 days')),
+  (1, 'assistant', '', 'c1', '[{"Tool_call_id":"c1","Tool_name":"read_file"}]', strftime('%Y-%m-%dT12:20:00Z','now','-29 days')),
   (1, 'tool', 'Read provider.go (1,024 lines).', 'c1', '', strftime('%Y-%m-%dT12:21:00Z','now','-29 days')),
   (1, 'assistant', 'Wrapped retries in a retryingProvider with jittered backoff.', '', '', strftime('%Y-%m-%dT12:40:00Z','now','-29 days')),
   (2, 'user', 'Explain how the tiktoken estimate is wired up', '', '', strftime('%Y-%m-%dT09:30:00Z','now','-23 days')),
   (2, 'assistant', 'It runs tiktoken_go with the gpt-4 encoding when the', '', '', strftime('%Y-%m-%dT09:45:00Z','now','-23 days')),
   (2, 'user', 'Add a filter input to the stats page', '', '', strftime('%Y-%m-%dT14:02:00Z','now','-16 days')),
-  (2, 'assistant', '', '', '{"ToolCallId":"c2","ToolName":"edit_file"}', strftime('%Y-%m-%dT14:30:00Z','now','-16 days')),
+  (2, 'assistant', '', '', '[{"Tool_call_id":"c2","Tool_name":"edit_file"}]', strftime('%Y-%m-%dT14:30:00Z','now','-16 days')),
   (2, 'tool', 'Edited Tui/Components/Stats/stats_screen.go.', 'c2', '', strftime('%Y-%m-%dT14:31:00Z','now','-16 days')),
   (3, 'user', 'Compare gemini 2.5 to gpt-4o on long refactors', '', '', strftime('%Y-%m-%dT10:15:00Z','now','-14 days')),
   (4, 'user', 'Extract the tool dispatcher into its own package', '', '', strftime('%Y-%m-%dT11:00:00Z','now','-5 days')),
-  (4, 'assistant', '', '', '{"ToolCallId":"c3","ToolName":"create_file"}', strftime('%Y-%m-%dT11:20:00Z','now','-5 days')),
+  (4, 'assistant', '', '', '[{"Tool_call_id":"c3","Tool_name":"create_file"}]', strftime('%Y-%m-%dT11:20:00Z','now','-5 days')),
   (4, 'tool', 'Wrote tools/tool.go.', 'c3', '', strftime('%Y-%m-%dT11:21:00Z','now','-5 days')),
   (5, 'user', 'Polish the stats tab and run the test suite', '', '', strftime('%Y-%m-%dT08:45:00Z','now','-0 days'));
 

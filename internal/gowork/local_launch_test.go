@@ -102,6 +102,33 @@ func waitForFileGone(t *testing.T, path string) {
 	t.Fatalf("fake server marker %s still exists; process was not cleaned up", path)
 }
 
+// waitForServiceHandoff waits until the service CLI process has exited after
+// handing its daemon off. Start can legitimately observe real readiness just
+// before the short-lived CLI exits; without waiting, Stop may race that exit
+// and terminate the process tree instead of running the CLI's stop command.
+func waitForServiceHandoff(t *testing.T, mgr *localServerManager, provider string) {
+	t.Helper()
+	key, _, ok := mgr.lookup(provider)
+	if !ok {
+		t.Fatalf("unknown local provider %q", provider)
+	}
+	mgr.mu.Lock()
+	proc := mgr.servers[key]
+	mgr.mu.Unlock()
+	if proc == nil {
+		t.Fatalf("%s has no tracked process after Start", provider)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if exited, _ := proc.result(); exited {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("service CLI for %s did not exit after handoff", provider)
+}
+
 func TestLocalServerStartSuccess(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "llama.pid")
 	srv := fakeHealthServer(t, "/health", func() bool {
@@ -330,6 +357,7 @@ func TestLocalServerServiceLauncher(t *testing.T) {
 	if _, err := os.Stat(readyMarker); err != nil {
 		t.Fatalf("service CLI did not record readiness: %v", err)
 	}
+	waitForServiceHandoff(t, mgr, "lmStudio")
 
 	if _, err := mgr.Stop(context.Background(), "lmStudio"); err != nil {
 		t.Fatalf("Stop: %v", err)
