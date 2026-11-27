@@ -232,17 +232,75 @@ func (d *Dispatcher) Lookup(name string) (AgentTool, bool) {
 	return tool, ok
 }
 
-// LoadIgnores loads .gitignore and .agentignore from root, if present.
-// Shared across any tool that needs to skip ignored paths
-func LoadIgnores(root string) []*ignore.GitIgnore {
-	var ignores []*ignore.GitIgnore
+// ignoreFileState is the cheap fingerprint used to decide whether a compiled
+// ignore file is still current. Missing files get the zero value.
+type ignoreFileState struct {
+	modTime time.Time
+	size    int64
+	present bool
+}
 
-	if gi, err := ignore.CompileIgnoreFile(filepath.Join(root, ".gitignore")); err == nil {
-		ignores = append(ignores, gi)
+func ignoreFileStateAt(path string) ignoreFileState {
+	info, err := os.Stat(path)
+	if err != nil {
+		return ignoreFileState{}
 	}
-	if ai, err := ignore.CompileIgnoreFile(filepath.Join(root, ".agentignore")); err == nil {
-		ignores = append(ignores, ai)
+	return ignoreFileState{modTime: info.ModTime(), size: info.Size(), present: true}
+}
+
+type ignoreCacheEntry struct {
+	gitignore   ignoreFileState
+	agentignore ignoreFileState
+	ignores     []*ignore.GitIgnore
+}
+
+// ignoreCache keeps compiled .gitignore/.agentignore matchers per cleaned
+// root. Compiling the patterns is the expensive part of listing a directory,
+// and the files rarely change, so we only recompile when their mtime or size
+// changes (or when one appears/disappears).
+var ignoreCache = struct {
+	sync.Mutex
+	entries map[string]ignoreCacheEntry
+}{entries: make(map[string]ignoreCacheEntry)}
+
+// LoadIgnores loads .gitignore and .agentignore from root, if present.
+// Shared across any tool that needs to skip ignored paths.
+// The compiled matchers are cached per root and refreshed automatically when
+// either ignore file changes.
+func LoadIgnores(root string) []*ignore.GitIgnore {
+	root = filepath.Clean(root)
+	gitignorePath := filepath.Join(root, ".gitignore")
+	agentignorePath := filepath.Join(root, ".agentignore")
+	gitignoreState := ignoreFileStateAt(gitignorePath)
+	agentignoreState := ignoreFileStateAt(agentignorePath)
+
+	ignoreCache.Lock()
+	entry, ok := ignoreCache.entries[root]
+	if ok && entry.gitignore == gitignoreState && entry.agentignore == agentignoreState {
+		ignoreCache.Unlock()
+		return entry.ignores
 	}
+	ignoreCache.Unlock()
+
+	var ignores []*ignore.GitIgnore
+	if gitignoreState.present {
+		if gi, err := ignore.CompileIgnoreFile(gitignorePath); err == nil {
+			ignores = append(ignores, gi)
+		}
+	}
+	if agentignoreState.present {
+		if ai, err := ignore.CompileIgnoreFile(agentignorePath); err == nil {
+			ignores = append(ignores, ai)
+		}
+	}
+
+	ignoreCache.Lock()
+	ignoreCache.entries[root] = ignoreCacheEntry{
+		gitignore:   gitignoreState,
+		agentignore: agentignoreState,
+		ignores:     ignores,
+	}
+	ignoreCache.Unlock()
 
 	return ignores
 }
