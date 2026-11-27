@@ -37,6 +37,10 @@ type ChangeList struct {
 	//will be used to avoid race conditions (later will consider it when the architecture is more complete)
 	//mu sync.Mutex
 	Changes []Change
+	// Stamp is the on-disk fingerprint (mtime+size) the offsets in Changes
+	// were computed from. Accept/reject compares it against the file before
+	// applying so stale offsets are re-scanned instead of trusted.
+	Stamp fileStamp
 }
 
 func InitChangeList(path string) *ChangeList {
@@ -127,6 +131,40 @@ func (w *WatchList) key(path string) string {
 	return filepath.Clean(path)
 }
 
+// Root returns the project root the watch keys are relative to, or "" when
+// no root has been configured yet.
+func (w *WatchList) Root() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.root == nil {
+		return ""
+	}
+	return *w.root
+}
+
+// ResolveKey maps a canonical watch key to the real filesystem path used for
+// disk I/O. Keys are root-relative, so a process launched from another
+// directory must join the root before touching the file.
+func (w *WatchList) ResolveKey(key string) string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.resolveKeyLocked(key)
+}
+
+func (w *WatchList) resolveKeyLocked(key string) string {
+	if filepath.IsAbs(key) {
+		return key
+	}
+	root := ""
+	if w.root != nil {
+		root = *w.root
+	}
+	if root == "" {
+		return key
+	}
+	return filepath.Join(root, key)
+}
+
 // Add adds a file to the watch list.
 func (w *WatchList) Add(path string) {
 	w.mu.Lock()
@@ -193,10 +231,9 @@ func (w *WatchList) addDirToWatcherLocked(path string) {
 	if w.Watcher == nil {
 		return
 	}
-	dir := filepath.Dir(path)
-	if w.root != nil && *w.root != "" {
-		dir = filepath.Join(*w.root, dir)
-	}
+	// Resolve the key first: absolute keys must not be joined onto the root,
+	// and relative keys need the root to point at the real directory.
+	dir := filepath.Dir(w.resolveKeyLocked(path))
 	if _, ok := w.WatchedDirs[dir]; !ok {
 		_ = w.Watcher.Add(dir)
 		w.WatchedDirs[dir] = struct{}{}
@@ -250,10 +287,68 @@ func GetDiffs(path string) ([]Change, error) {
 	return GetDiffsBytes(data, filepath.Base(path)), nil
 }
 
+// markerLineAt reports whether pos is the start of a diff marker run of at
+// least three copies of ch, with the rest of the line matching what hunkRe
+// accepts: "<<<<<<< old" for the start, "=======" for the separator and any
+// text after ">>>>>>>" for the end.
+func markerLineAt(data []byte, pos int, ch byte) bool {
+	if pos < 0 || pos >= len(data) || data[pos] != ch {
+		return false
+	}
+	i := pos
+	for i < len(data) && data[i] == ch {
+		i++
+	}
+	if i-pos < 3 {
+		return false
+	}
+	lineEnd := bytes.IndexByte(data[i:], '\n')
+	if lineEnd < 0 {
+		lineEnd = len(data) - i
+	}
+	rest := strings.Trim(string(data[i:i+lineEnd]), " \t\r")
+	switch ch {
+	case '<':
+		return rest == "old"
+	case '=':
+		return rest == ""
+	default:
+		return true
+	}
+}
+
+// changeValid reports whether c's offsets point at marker lines in data.
+// Callers use it before slicing so stale offsets are rejected instead of
+// panicking or editing the wrong bytes.
+func changeValid(data []byte, c Change) bool {
+	return c.Start >= 0 && c.Start <= c.Mid && c.Mid <= c.End &&
+		markerLineAt(data, c.Start, '<') &&
+		markerLineAt(data, c.Mid, '=') &&
+		markerLineAt(data, c.End, '>')
+}
+
+// changesValid reports whether every change in changes is valid and the
+// hunks are ordered without overlapping.
+func changesValid(data []byte, changes []Change) bool {
+	pos := 0
+	for _, c := range changes {
+		if c.Start < pos || !changeValid(data, c) {
+			return false
+		}
+		pos = afterLine(data, c.End)
+	}
+	return true
+}
+
 // AcceptChangeBytes applies an "accept" edit (keep new code, drop old +
 // markers) to an in-memory buffer and returns the resulting bytes.
 // Same marker-scanning logic as Accept_change, but with no disk I/O.
+// Malformed or stale offsets leave data unchanged: callers must check the
+// offsets against data (changeValid) before relying on the edit.
 func AcceptChangeBytes(data []byte, start, middle, end int) []byte {
+	if !changeValid(data, Change{Start: start, Mid: middle, End: end}) {
+		return data
+	}
 	endOfEnd := end
 	for endOfEnd < len(data) && data[endOfEnd] != '\n' {
 		endOfEnd++
@@ -282,7 +377,11 @@ func AcceptChangeBytes(data []byte, start, middle, end int) []byte {
 // RejectChangeBytes applies a "reject" edit (keep old code, drop new +
 // markers) to an in-memory buffer and returns the resulting bytes.
 // Same marker-scanning logic as Reject_change, but with no disk I/O.
+// Malformed or stale offsets leave data unchanged.
 func RejectChangeBytes(data []byte, start, middle, end int) []byte {
+	if !changeValid(data, Change{Start: start, Mid: middle, End: end}) {
+		return data
+	}
 	endOfStart := start
 	for endOfStart < len(data) && data[endOfStart] != '\n' {
 		endOfStart++
@@ -311,7 +410,12 @@ func RejectChangeBytes(data []byte, start, middle, end int) []byte {
 // ChangeSections extracts the old and new halves of a change hunk from data
 // (the file bytes the offsets were computed against), dropping the marker
 // lines and trailing newlines. Used to preview what an accept/reject keeps.
+// Stale or malformed offsets return empty halves instead of panicking.
 func ChangeSections(data []byte, c Change) (old, new string) {
+	if !changeValid(data, c) {
+		return "", ""
+	}
+
 	oldStart := c.Start
 	for oldStart < len(data) && data[oldStart] != '\n' {
 		oldStart++
@@ -362,6 +466,9 @@ func Reject_change(path string, start int, middle int, end int) {
 // and skips the old code and markers. Since we walk forward using the
 // pre-computed offsets, subsequent markers aren't shifted by earlier edits.
 func AcceptAllChangesBytes(data []byte, changes []Change) []byte {
+	if !changesValid(data, changes) {
+		return data
+	}
 	var b strings.Builder
 	b.Grow(len(data))
 	pos := 0
@@ -395,6 +502,9 @@ func AcceptAllChangesBytes(data []byte, changes []Change) []byte {
 // For each marker block it keeps the old code (between <<<<<<< and =======)
 // and skips the new code and markers.
 func RejectAllChangesBytes(data []byte, changes []Change) []byte {
+	if !changesValid(data, changes) {
+		return data
+	}
 	var b strings.Builder
 	b.Grow(len(data))
 	pos := 0

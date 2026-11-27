@@ -98,16 +98,69 @@ func TestRefreshDiffsSkipsUnchangedFiles(t *testing.T) {
 }
 
 // TestRefreshDiffsRetainsWatchedFileOnTransientError proves a read/stat
-// failure does not drop the watch entry or its last known changes, and that
-// the file is picked up again once readable.
+// failure that is not "file does not exist" does not drop the watch entry or
+// its last known changes, and that the file is picked up again once readable.
 func TestRefreshDiffsRetainsWatchedFileOnTransientError(t *testing.T) {
 	m, wl, dir := newTestModel(t)
-	path := writeChangeFile(t, dir, "a.txt", markerBlock)
-	wl.Add(path)
+	sub := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeChangeFile(t, sub, "a.txt", markerBlock)
+	key := filepath.Join("sub", "a.txt")
+	wl.Add(key)
 
 	m.open = true
 	m.RefreshDiffs()
-	if got := wl.GetChanges(path); len(got) != 1 {
+	if got := wl.GetChanges(key); len(got) != 1 {
+		t.Fatalf("initial refresh: got %d changes, want 1", len(got))
+	}
+
+	// Make stat fail with ENOTDIR (a transient error, not ENOENT) by
+	// replacing the parent directory with a regular file.
+	moved := sub + ".moved"
+	if err := os.Rename(sub, moved); err != nil {
+		t.Fatalf("rename dir: %v", err)
+	}
+	if err := os.WriteFile(sub, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("replace dir with file: %v", err)
+	}
+	m.RefreshDiffs()
+	if !wl.Has(key) {
+		t.Fatal("transient stat error removed the watched file")
+	}
+	if got := wl.GetChanges(key); len(got) != 1 {
+		t.Fatalf("transient stat error dropped cached changes: got %d, want 1", len(got))
+	}
+
+	// Restore with two hunks; the next refresh must resume normally.
+	if err := os.Remove(sub); err != nil {
+		t.Fatalf("remove decoy: %v", err)
+	}
+	if err := os.Rename(moved, sub); err != nil {
+		t.Fatalf("restore dir: %v", err)
+	}
+	writeChangeFile(t, sub, "a.txt", markerBlock+markerBlock)
+	m.RefreshDiffs()
+	if got := wl.GetChanges(key); len(got) != 2 {
+		t.Fatalf("recovered file was not refreshed: got %d changes, want 2", len(got))
+	}
+}
+
+// TestRefreshDiffsDropsDeletedFile proves a file that is really gone is
+// removed from the watch list (and its cached changes) instead of lingering.
+func TestRefreshDiffsDropsDeletedFile(t *testing.T) {
+	m, wl, dir := newTestModel(t)
+	path := writeChangeFile(t, dir, "a.txt", markerBlock)
+	key := "a.txt"
+	wl.Add(key)
+
+	m.open = true
+	m.RefreshDiffs()
+	if !wl.Has(key) {
+		t.Fatal("file was not watched after initial scan")
+	}
+	if got := wl.GetChanges(key); len(got) != 1 {
 		t.Fatalf("initial refresh: got %d changes, want 1", len(got))
 	}
 
@@ -115,17 +168,18 @@ func TestRefreshDiffsRetainsWatchedFileOnTransientError(t *testing.T) {
 		t.Fatalf("remove: %v", err)
 	}
 	m.RefreshDiffs()
-	if !wl.Has(path) {
-		t.Fatal("transient read error removed the watched file")
-	}
-	if got := wl.GetChanges(path); len(got) != 1 {
-		t.Fatalf("transient read error dropped cached changes: got %d, want 1", len(got))
-	}
 
-	// Recreate with two hunks; the next refresh must resume normally.
-	writeChangeFile(t, dir, "a.txt", markerBlock+markerBlock)
-	m.RefreshDiffs()
-	if got := wl.GetChanges(path); len(got) != 2 {
-		t.Fatalf("recovered file was not refreshed: got %d changes, want 2", len(got))
+	if wl.Has(key) {
+		t.Fatal("deleted file is still watched")
+	}
+	if got := wl.GetChanges(key); len(got) != 0 {
+		t.Fatalf("deleted file kept cached changes: got %d, want 0", len(got))
+	}
+	if _, ok := m.fileStamps[key]; ok {
+		t.Fatal("deleted file kept its stamp")
+	}
+	m.RebuildRows()
+	if len(m.filtered) != 0 {
+		t.Fatalf("deleted file still shown: got %d rows", len(m.filtered))
 	}
 }
