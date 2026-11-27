@@ -78,6 +78,21 @@ func (m model) View() tea.View {
 		content += "\n"
 		content += renderStatusLine(m)
 		content = m.skillForm.Overlay(content)
+	case "tools":
+		// The tools tab shares the skills layout: the three-section pane
+		// fills the message band, the prompt bar and statusline stay pinned,
+		// and the add form / skill-creation modal float over the pane.
+		content = top + "\n" + m.Tools.View()
+		content += "\n"
+		if *m.AiThink && m.Mode != modeQuestionnaire {
+			content += lipgloss.NewStyle().Margin(0, 3).Foreground(style.Info).Render(m.spinner.View() + " thinking....")
+		}
+		content += "\n"
+		content += m.Prompt.View()
+		content += "\n"
+		content += renderStatusLine(m)
+		content = m.Tools.Overlay(content)
+		content = m.skillForm.Overlay(content)
 	default:
 		content += top + "\n"
 		msgWidth := m.msgAreaWidth()

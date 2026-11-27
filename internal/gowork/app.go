@@ -24,6 +24,7 @@ import (
 	"GoWork/Tui/Components/SkillsTab"
 	"GoWork/Tui/Components/Stats"
 	"GoWork/Tui/Components/Tabs"
+	toolstab "GoWork/Tui/Components/ToolsTab"
 
 	db "GoWork/Db"
 
@@ -74,6 +75,7 @@ const (
 	modePermission
 	modeStats
 	modeSkills
+	modeTools
 )
 
 type Mode struct {
@@ -93,6 +95,7 @@ func GetModes() []Mode {
 		modePermission:     {mode: modePermission, label: "PERMISSION", color: "#e2eb98"},
 		modeStats:          {mode: modeStats, label: "STATS", color: "#FFB454"},
 		modeSkills:         {mode: modeSkills, label: "SKILLS", color: "#F5E6B8"},
+		modeTools:          {mode: modeTools, label: "TOOLS", color: "#95E6CB"},
 	}
 }
 
@@ -100,6 +103,7 @@ type model struct {
 	Tabs        tabs.Model
 	Stats       stats.Model
 	Skills      skills.Model
+	Tools       toolstab.Model
 	Coffee      coffee.Model
 	Prompt      promptbar.Model
 	MessageArea messagearea.Model
@@ -213,9 +217,18 @@ type model struct {
 	// opened - the app keeps working, it just records nothing.
 	Db *db.Store
 
-	// LSP is the injected language-server manager used by /lsp. The default
-	// no-op reports none configured until the LSP package is wired in.
+	// LSP is the injected language-server manager used by /lsp. The app wires
+	// it to the real LSP configuration at startup; tests can substitute a
+	// fake, and a nil value falls back to the no-op manager.
 	LSP LSPManager
+
+	// toolRuntime owns the live MCP clients and LSP bridge; baseTools is the
+	// built-in tool set the registry is rebuilt from when a server is added,
+	// removed, or toggled. watchList is kept so the rebuilt dispatcher uses
+	// the same file watcher.
+	toolRuntime *toolRuntime
+	baseTools   []tools.AgentTool
+	watchList   *changeslist.WatchList
 
 	promptHeight int
 }
@@ -276,7 +289,16 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 	holder := &tools.ProviderHolder{}
 	holder.Set(provider)
 
-	t := initTools()
+	// Start the runtime extensions before computing the tool registry so MCP
+	// tools and the LSP bridge are available to the model from the first
+	// turn. Unavailable servers are recorded for the Tools tab, not fatal.
+	rt := newToolRuntime(appDataRoot(root), root)
+	rt.Load()
+
+	baseTools := initTools()
+	t := make([]tools.AgentTool, 0, len(baseTools)+16)
+	t = append(t, baseTools...)
+	t = append(t, rt.Tools()...)
 
 	arr := make([]providers.ToolDef, len(t))
 
@@ -312,8 +334,8 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 		}
 	}
 
-	return model{
-		Tabs:              tabs.New("code", "skills", "stats"),
+	m := model{
+		Tabs:              tabs.New("code", "skills", "tools", "stats"),
 		Prompt:            p,
 		MessageArea:       messagearea.New(),
 		Mode:              modePrompt,
@@ -333,15 +355,23 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 		permissionBox:     permisionbox.New("", "", "", permisionbox.Impact{}),
 		permissionSlot:    -1,
 		Db:                store,
-		LSP:               noopLSPManager{},
+		LSP:               rt,
 		root:              root,
 		promptHeight:      p.Height(),
 		Skills:            skills.New(),
 		Stats:             stats.New(),
+		Tools:             toolstab.New(),
 		Coffee:            coffee.New(),
 		skillForm:         skillform.New(),
 		localServers:      newLocalServerManager(),
+		toolRuntime:       rt,
+		baseTools:         baseTools,
+		watchList:         wl,
 	}
+	// Prime the Tools tab with the startup snapshot so it is accurate even
+	// before the first tab entry (and for /lsp listing errors).
+	m.refreshTools()
+	return m
 }
 
 // setPlanMode switches read-only plan mode on or off and keeps the dispatcher

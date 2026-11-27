@@ -199,6 +199,28 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// The Tools tab's add form does the same: while it is open every key
+	// belongs to its fields.
+	if m.Mode == modeTools && m.Tools.FormVisible() {
+		var cmd tea.Cmd
+		m.Tools, cmd = m.Tools.Update(msg)
+		return m, cmd
+	}
+
+	// A skill-creation modal opened from the Tools tab owns the keyboard too.
+	if m.Mode == modeTools && m.skillForm.Visible() {
+		var cmd tea.Cmd
+		m.skillForm, cmd = m.skillForm.Update(msg)
+		return m, cmd
+	}
+
+	// ctrl+t jumps to the Tools tab from any layout, and toggles back to the
+	// code tab when it is already active.
+	if msg_str == "ctrl+t" {
+		m.toggleToolsTab()
+		return m, nil
+	}
+
 	// Plan (read-only) mode is session-wide, so its toggle works from every
 	// layout that doesn't already own the keyboard: prompt, idle, changes,
 	// recall, stats and skills. Modal forms, the provider picker, the
@@ -294,6 +316,46 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		var cmd tea.Cmd
 		m.Skills, cmd = m.Skills.Update(msg)
+		return m, cmd
+	}
+
+	// Tools mode mirrors skills: the pane owns navigation and actions, while
+	// its prompt bar is only used to write a new skill body. Enter on a
+	// non-empty prompt opens the skill-name form; Esc leaves the tab.
+	if m.Mode == modeTools {
+		if m.Prompt.Focused() {
+			switch msg_str {
+			case "esc":
+				m.Prompt.Blur()
+				return m, nil
+			case "shift+enter", "ctrl+j":
+				m.Prompt.InsertNewline()
+				m.syncPromptHeight()
+				return m, nil
+			case "enter":
+				if strings.TrimSpace(m.Prompt.Value()) == "" {
+					m.MessageArea.AppendMessage(">**INFO** Type the skill body first, then press enter to name it.", false)
+					return m, nil
+				}
+				m.skillForm.Open()
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.Prompt, cmd = m.Prompt.Update(msg)
+			return m, cmd
+		}
+		switch msg_str {
+		case "i":
+			return m, m.Prompt.Focus()
+		case "esc":
+			if m.Tools.CanExitToolsMode() {
+				m.Tabs.ActiveIdx = 0
+				m.syncModeToTab()
+				return m, nil
+			}
+		}
+		var cmd tea.Cmd
+		m.Tools, cmd = m.Tools.Update(msg)
 		return m, cmd
 	}
 

@@ -8,6 +8,7 @@ import (
 
 	"GoWork/Tui/Components/Questionnaire"
 	"GoWork/Tui/Components/SkillsTab"
+	toolstab "GoWork/Tui/Components/ToolsTab"
 
 	"GoWork/providers"
 	"GoWork/tools/SkillsTool"
@@ -88,6 +89,7 @@ func (m *model) applyPanelSize() {
 	}
 	m.MessageArea.SetSize(m.msgAreaWidth(), msgAreaHeight)
 	m.Skills.SetSize(m.msgAreaWidth(), msgAreaHeight)
+	m.Tools.SetSize(m.msgAreaWidth(), msgAreaHeight)
 }
 
 // syncPromptHeight re-layouts the band when the prompt bar's height changed
@@ -111,6 +113,11 @@ func (m *model) toggleTodoPanel() {
 // skills tab pins both bars (the pane shares the message-area band), any
 // other tab returns to the normal prompt layout.
 func (m *model) syncModeToTab() {
+	if m.Tabs.Active().Name != "tools" {
+		// Leaving Tools never leaves a detached add form waiting to
+		// reappear when the user comes back.
+		m.Tools.CloseForm()
+	}
 	if m.Tabs.Active().Name == "stats" {
 		m.Mode = modeStats
 		m.Prompt.Blur()
@@ -119,9 +126,30 @@ func (m *model) syncModeToTab() {
 		m.Mode = modeSkills
 		m.Prompt.Blur()
 		m.refreshSkills()
-	} else if m.Mode == modeStats || m.Mode == modeSkills {
+	} else if m.Tabs.Active().Name == "tools" {
+		m.Mode = modeTools
+		m.Prompt.Blur()
+		m.refreshTools()
+	} else if m.Mode == modeStats || m.Mode == modeSkills || m.Mode == modeTools {
 		m.Mode = modePrompt
 		m.Prompt.Focus()
+	}
+}
+
+// toggleToolsTab jumps to the Tools tab, or back to the code tab when Tools is
+// already active. Used by ctrl+t from every layout.
+func (m *model) toggleToolsTab() {
+	if m.Tabs.Active().Name == "tools" {
+		m.Tabs.ActiveIdx = 0
+		m.syncModeToTab()
+		return
+	}
+	for i, tab := range m.Tabs.Tabs {
+		if tab.Name == "tools" {
+			m.Tabs.ActiveIdx = i
+			m.syncModeToTab()
+			return
+		}
 	}
 }
 
@@ -170,6 +198,33 @@ func (m *model) refreshSkills() {
 	m.Skills.SetData(entries)
 }
 
+// refreshTools rebuilds the Tools tab snapshot: discovered/loaded skills plus
+// the runtime's live MCP and LSP state. Called on tab entry and after every
+// tool-tab change.
+func (m *model) refreshTools() {
+	var data toolstab.Data
+	if mgr := skillstool.GetManager(); mgr != nil {
+		for _, e := range mgr.Discover() {
+			if e.Name == "" || strings.HasPrefix(e.Name, ".") {
+				continue
+			}
+			data.Skills = append(data.Skills, toolstab.Skill{
+				Name:        e.Name,
+				Description: e.Description,
+				Path:        e.Path,
+				Loaded:      mgr.IsLoaded(e.Name),
+			})
+		}
+	}
+	if m.toolRuntime != nil {
+		data.MCP = m.toolRuntime.MCPServers()
+		data.LSP = m.toolRuntime.LSPServers()
+		data.MCPConfigPath, data.LSPConfigPath = m.toolRuntime.ConfigPaths()
+		data.MCPError, data.LSPError = m.toolRuntime.Errors()
+	}
+	m.Tools.SetData(data)
+}
+
 // syncSkillToolDef re-registers the skill tool's definition with the
 // providers registry so the agent sees the current skill set every turn.
 func (m *model) syncSkillToolDef() {
@@ -182,6 +237,7 @@ func (m *model) syncSkillToolDef() {
 // the session record.
 func (m *model) syncSkillsState() {
 	m.refreshSkills()
+	m.refreshTools()
 	m.syncSkillToolDef()
 	if m.Db != nil {
 		mgr := skillstool.GetManager()

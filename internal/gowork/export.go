@@ -23,6 +23,7 @@ const (
 	ModePermission     UIMode = modePermission
 	ModeStats          UIMode = modeStats
 	ModeSkills         UIMode = modeSkills
+	ModeTools          UIMode = modeTools
 )
 
 // CLIOptions is the parsed command line exposed for tests in package test.

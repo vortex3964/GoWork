@@ -29,6 +29,9 @@ import (
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+	if mdl, cmd, ok := m.handleToolsMessage(msg); ok {
+		return mdl, cmd
+	}
 	switch msg := msg.(type) {
 	case promptbar.HeightChangedMsg:
 		// The prompt bar grew/shrunk (typing past the 2-line resting size,
@@ -58,6 +61,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// prompt bar and the statusline stay pinned at the bottom, so the
 		// pane can never push them off-screen.
 		m.Skills.SetSize(m.msgAreaWidth(), msgAreaHeight)
+		// The tools pane shares that band too; its add form is overlaid at
+		// the terminal size below.
+		m.Tools.SetSize(m.msgAreaWidth(), msgAreaHeight)
+		m.Tools.SetTermSize(m.winWidth, m.winHeight)
 
 		// Stats keeps its full-height dashboard: it renders its own
 		// statusline on its last row.
@@ -535,9 +542,14 @@ func (m model) forwardToComponents(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.Tabs.Active().Name == "stats" {
 		m.Stats, statsCmd = m.Stats.Update(msg)
 	}
+	// The Tools tab's form text inputs also blink on that loop.
+	var toolsCmd tea.Cmd
+	if m.Tabs.Active().Name == "tools" {
+		m.Tools, toolsCmd = m.Tools.Update(msg)
+	}
 	// Coffee's animation tick is an opaque message; forward everything left
 	// over so the overlay advances even when other modes ignore it.
 	var coffeeCmd tea.Cmd
 	m.Coffee, coffeeCmd = m.Coffee.Update(msg)
-	return m, tea.Batch(tabsCmd, promptCmd, msgAreaCmd, popUpCmd, statsCmd, coffeeCmd)
+	return m, tea.Batch(tabsCmd, promptCmd, msgAreaCmd, popUpCmd, statsCmd, toolsCmd, coffeeCmd)
 }

@@ -81,7 +81,7 @@ func (m model) handleMouseClickMsg(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 				m.MessageArea.EndCopy()
 			}
 			m.syncModeToTab()
-		case (m.Tabs.Active().Name == "code" || m.Tabs.Active().Name == "skills") &&
+		case (m.Tabs.Active().Name == "code" || m.Tabs.Active().Name == "skills" || m.Tabs.Active().Name == "tools") &&
 			msg.Y >= m.promptTop() && msg.Y < m.promptTop()+m.Prompt.Height():
 			m.historyIdx = 0
 			if m.Tabs.Active().Name == "code" {
@@ -118,6 +118,21 @@ func (m model) handleMouseWheelMsg(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 			}
 		case msg.Y >= topBarHeight && msg.Y < promptTop:
 			m.Skills.HandleMouseWheel(msg.Button == tea.MouseWheelUp)
+		}
+		return m, nil
+	}
+	if m.Tabs.Active().Name == "tools" {
+		promptTop := m.promptTop()
+		switch {
+		case msg.Y >= promptTop && msg.Y < promptTop+m.Prompt.Height():
+			switch msg.Button {
+			case tea.MouseWheelUp:
+				m.Prompt.ScrollUp()
+			case tea.MouseWheelDown:
+				m.Prompt.ScrollDown()
+			}
+		case msg.Y >= topBarHeight && msg.Y < promptTop:
+			m.Tools.HandleMouseWheel(msg.Button == tea.MouseWheelUp)
 		}
 		return m, nil
 	}

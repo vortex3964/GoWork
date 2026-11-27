@@ -20,12 +20,16 @@ guarded tools, and keeps every change reviewable before it lands.
 - **Skills.** Reusable instruction sets live as `SKILL.md` files. Load the ones
   a session needs from the Skills tab; the model receives them through the
   `skill` tool.
+- **Tools tab.** Skills, MCP servers, and language servers in one place. See
+  what is active, add or remove MCP/LSP servers, and inspect connection,
+  tool-count, and error status. MCP tools and LSP diagnostics/symbol tools are
+  registered with the model automatically.
 - **Stats and session history.** Token usage and session messages are stored
   in SQLite. The Stats tab shows per-model usage, and `-S` restores a previous
   session with its messages and loaded skills.
 - **Cloud and local models.** Google, Anthropic, Groq, OpenAI, OpenCode Go,
   Ollama, llama.cpp, and LM Studio are supported out of the box.
-- **Terminal-first interface.** Tabs for code, skills, and stats, a todo
+- **Terminal-first interface.** Tabs for code, skills, tools, and stats, a todo
   panel, provider picker, permission prompts, and automatic context
   compaction.
 - **PDF reading.** `read_file` converts PDFs to Markdown through an optional
@@ -199,6 +203,64 @@ GoWork reads environment variables and an optional `.env` file:
 
 `.env` is ignored by git, so keys stay out of the repository.
 
+### MCP servers and language servers
+
+MCP and LSP configurations live in the app's data directory next to the
+installed executable (a source checkout falls back to the working directory).
+Both files are created the first time you add an entry from the Tools tab.
+
+`.mcp.json` uses the familiar `mcpServers` object:
+
+```json
+{
+  "mcpServers": {
+    "files": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    },
+    "remote": {
+      "type": "http",
+      "url": "https://example.com/mcp"
+    },
+    "disabled-example": {
+      "command": "some-server",
+      "disabled": true
+    }
+  }
+}
+```
+
+A server with `command` runs over stdio; a server with `url` uses Streamable
+HTTP (with an SSE fallback). `env`, `headers`, and the optional `startupTimeout`,
+`requestTimeout`, and `shutdownTimeout` fields are supported. Enabled servers
+are started at launch, their tools are discovered through `tools/list`, and
+each tool is registered with a provider-safe namespaced name such as
+`mcp_files_read_file_1a2b3c4d`. A server that cannot start does not prevent
+the app from launching: its error is shown in the Tools tab and the rest of
+the tools keep working. Clients are stopped when the app exits.
+
+`.lsp.json` stores user-configured language servers:
+
+```json
+{
+  "servers": [
+    {
+      "name": "gopls",
+      "command": "gopls",
+      "args": [],
+      "language_ids": ["go"],
+      "enabled": true
+    }
+  ]
+}
+```
+
+Enabled language servers expose `lsp_diagnostics`, `lsp_symbols`, and
+`lsp_definition`. Server processes start lazily on the first LSP tool call and
+are shut down when the app exits or the server is disabled/removed. `/lsp`
+lists this configuration; `/lsp configure <name>` enables an existing entry or
+adds a known server found on `PATH`.
+
 ## Keybinds
 
 ### Global
@@ -206,6 +268,7 @@ GoWork reads environment variables and an optional `.env` file:
 | Key | Action |
 | --- | --- |
 | `ctrl+p` | Open the provider and model picker. |
+| `ctrl+t` | Jump to the Tools tab (or back to the code tab when it is active). |
 | `ctrl+i` or `tab` while a turn is running | Interrupt the current generation or tool batch. |
 | `tab` / `shift+tab` while idle | Next / previous tab. |
 | `ctrl+l` | Open or close the changes list on the code tab. |
@@ -282,6 +345,27 @@ GoWork reads environment variables and an optional `.env` file:
 | `i` or `enter` | Focus the prompt bar. |
 | `esc` | Leave the tab. |
 
+### Tools tab
+
+The Tools tab lists Skills, MCP servers, and LSP servers in three sections.
+Status lines report loaded/enabled counts, MCP connection state and discovered
+tool counts, and any startup or configuration error. Configuration changes are
+written immediately and the model-visible tool list is refreshed.
+
+| Key | Action |
+| --- | --- |
+| `left` / `right`, `h` / `l` | Move between the Skills, MCP, and LSP sections. |
+| `1`, `2`, `3` | Jump directly to Skills, MCP, or LSP. |
+| `up` / `down`, `k` / `j` | Select a row. |
+| `space` or `enter` | Load/unload a skill, or enable/disable an MCP or LSP server. |
+| `p` / `x` | Load / unload the selected skill. |
+| `a` | Add an MCP server (MCP section) or language server (LSP section). |
+| `d` | Remove the selected MCP or LSP server. |
+| `c` | Create a skill from the prompt bar text. |
+| `i` | Focus the prompt bar for the new skill's body. |
+| `tab` / `shift+tab` (form closed) | Switch tabs. |
+| `esc` | Close the add form, or leave the tab. |
+
 ### Stats tab
 
 | Key | Action |
@@ -305,13 +389,14 @@ and never sent to the model.
 | `/model` | Open the provider/model picker. |
 | `/stats` | Switch to the usage dashboard. |
 | `/skills` | Switch to the skills tab. |
+| `/tools` | Switch to the tools tab (skills, MCP, LSP). |
 | `/save` | Save the current session to the local database immediately. |
 | `/new` | Clear the conversation context and start a new session record. |
 | `/fork` | Fork the current context into a new session record. |
 | `/compact` | Condense the conversation now. |
 | `/context [path]` | Show estimated context tokens, or add a file (bounded to 32 KiB) to the conversation. |
 | `/coffee` | Play the coffee-break animation; `esc` or `ctrl+c` stops it. |
-| `/lsp [list\|configure <server>]` | List or configure language servers (reports none configured until LSP wiring lands). |
+| `/lsp [list\|configure <server>]` | List the configured language servers, or enable/configure one. `configure` also adds a known server detected on `PATH`. |
 
 ## Tools
 
@@ -332,6 +417,10 @@ These are the exact tool names the model can call:
 | `todo_list` | Maintain the session's short task list. |
 | `questions_tool` | Ask up to 7 questions with up to 3 options each and pause the turn for the answer. |
 | `skill` | Load one of the session's loaded skills. |
+| `mcp_<server>_<tool>_<hash>` | Any tool exposed by a connected MCP server. The original tool name is used for the actual MCP request. |
+| `lsp_diagnostics` | Return errors and warnings for a project file from the configured language server. |
+| `lsp_symbols` | List symbols in a project file. |
+| `lsp_definition` | Find the definition of a symbol at a file position. |
 | `web_search` | Search the web through DuckDuckGo Lite. Requires permission. |
 | `web_fetch` | Fetch a URL, extract readable text, and summarize or cache long pages. Requires permission. |
 
@@ -365,6 +454,9 @@ outside a checkout.
   is created on first run and is never removed by the installer.
 - **Skills:** `.GoWork/skills/<name>/SKILL.md` next to the installed
   executable. Project files are not used for GoWork's own skill storage.
+- **MCP and LSP configuration:** `.mcp.json` and `.lsp.json` in the app data
+  directory next to the executable. The Tools tab and `/lsp` write them
+  atomically with private permissions.
 - **Bundled assets:** `prompts/`, `logo/`, and `tools/Scripts/` next to the
   executable. Source checkouts fall back to the repository root and then the
   current directory, so `go run .` keeps working.

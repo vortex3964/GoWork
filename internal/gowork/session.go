@@ -79,9 +79,11 @@ func (m *model) resumeSession(id int64) {
 }
 
 // flushSession is the save-on-exit path: it finalizes the current session
-// (writes usage + messages), then closes the database. Fired from the
-// program's quit filter when a QuitMsg arrives.
+// (writes usage + messages), closes the database, and stops every MCP client
+// and language-server process the runtime owns. Fired from the program's quit
+// filter when a QuitMsg arrives.
 func (m model) flushSession() {
+	m.closeToolClients()
 	if m.Db == nil {
 		return
 	}

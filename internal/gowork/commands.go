@@ -61,14 +61,14 @@ type LSPManager interface {
 	Configure(name string) error
 }
 
-// noopLSPManager is the default until LSP support is wired: it reports no
-// servers and a clear "not available" error for configure attempts.
+// noopLSPManager covers tests and callers that build a model without the
+// runtime; it reports no servers and a clear error for configure attempts.
 type noopLSPManager struct{}
 
 func (noopLSPManager) Servers() []LSPServer { return nil }
 
 func (noopLSPManager) Configure(name string) error {
-	return fmt.Errorf("LSP support is not wired up yet")
+	return fmt.Errorf("LSP support is unavailable in this session")
 }
 
 // slashCommandSpecs is the single registry shared by the palette and /help.
@@ -77,6 +77,7 @@ var slashCommandSpecs = []commandpalette.Command{
 	{Name: "model", Usage: "/model", Description: "Pick the provider and model"},
 	{Name: "stats", Usage: "/stats", Description: "Open the usage dashboard"},
 	{Name: "skills", Usage: "/skills", Description: "Open the skills tab"},
+	{Name: "tools", Usage: "/tools", Description: "Open the tools tab (skills, MCP, LSP)"},
 	{Name: "save", Usage: "/save", Description: "Save the current session now"},
 	{Name: "new", Usage: "/new", Description: "Clear context and start a new session"},
 	{Name: "fork", Usage: "/fork", Description: "Fork the current context into a new session"},
@@ -200,6 +201,8 @@ func (m *model) runSlashCommand(input string) tea.Cmd {
 		return m.selectTabCmd("stats")
 	case "skills":
 		return m.selectTabCmd("skills")
+	case "tools":
+		return m.selectTabCmd("tools")
 	case "save":
 		if m.commandBusy() {
 			m.MessageArea.AppendMessage(">**INFO** Wait for the current turn to finish before saving.", false)
@@ -379,9 +382,16 @@ func (m *model) lspCommand(args []string) tea.Cmd {
 				m.MessageArea.AppendMessage(">**INFO** Usage: /lsp configure <server>", false)
 				return nil
 			}
+			if m.commandBusy() {
+				m.MessageArea.AppendMessage(">**INFO** Wait for the current turn to finish before changing language servers.", false)
+				return nil
+			}
 			if err := mgr.Configure(args[1]); err != nil {
 				m.MessageArea.AppendMessage(">**ERROR** Could not configure LSP server "+args[1]+": "+err.Error(), false)
 				return nil
+			}
+			if m.toolRuntime != nil {
+				m.afterToolChange()
 			}
 			m.MessageArea.AppendMessage(">**INFO** Configured LSP server "+args[1]+".", false)
 			return nil
@@ -394,7 +404,7 @@ func (m *model) lspCommand(args []string) tea.Cmd {
 	}
 	servers := mgr.Servers()
 	if len(servers) == 0 {
-		m.MessageArea.AppendMessage(">**INFO** No language servers configured. LSP support is not wired up yet.", false)
+		m.MessageArea.AppendMessage(">**INFO** No language servers configured. Add one from the Tools tab (ctrl+t, then a).", false)
 		return nil
 	}
 	var b strings.Builder
@@ -420,6 +430,7 @@ Keys
   ctrl+y                   select/copy messages
   ctrl+u                   clear prompt
   ctrl+p                   provider/model picker
+  ctrl+t                   tools tab (skills, MCP, LSP)
   ctrl+l                   changes list
   ctrl+shift+p             toggle plan (read-only) mode
   ctrl+i, tab (running)    interrupt the AI
