@@ -653,7 +653,3 @@ removed, so running `env` does not print the agent's provider keys. The
 scrubbing is name-based and is not a security boundary; the approved command
 can still read files the user account can access, including a project `.env`.
 
-## Roadmap
-
-- Spreadsheet and document editing beyond plain text.
-- Image understanding for models that support it.
