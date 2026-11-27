@@ -141,6 +141,36 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Slash-command palette keys. It sits above the prompt and owns its
+	// navigation while visible, before the prompt's own up/enter/esc
+	// handling and before global tab switching.
+	if m.Tabs.Active().Name == "code" && (m.Mode == modePrompt || m.Mode == modeIdle) && m.Prompt.PaletteVisible() {
+		switch msg_str {
+		case "up":
+			m.Prompt.MovePalette(-1)
+			return m, nil
+		case "down":
+			m.Prompt.MovePalette(1)
+			return m, nil
+		case "tab":
+			if completed, ok := m.Prompt.AcceptPalette(); ok {
+				m.Prompt.SetValue(completed)
+				m.syncPromptHeight()
+			}
+			return m, nil
+		case "enter":
+			if cmd, ok := m.Prompt.PaletteSelected(); ok {
+				m.Prompt.Reset()
+				m.syncPromptHeight()
+				return m, m.runSlashCommand("/" + cmd.Name)
+			}
+			return m, nil
+		case "esc":
+			m.Prompt.ClosePalette()
+			return m, nil
+		}
+	}
+
 	if msg_str == "ctrl+l" {
 		if m.Mode == modeChangeHandling {
 			m.ChangesList.Close()

@@ -1,10 +1,13 @@
 package promptbar
 
 import (
+	"strings"
+
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"GoWork/Tui/Components/CommandPalette"
 	"GoWork/Tui/Style"
 )
 
@@ -29,9 +32,10 @@ const (
 
 type Model struct {
 	area textarea.Model
-	// lastHeight is the bar height (text rows) from the previous frame, used
-	// to detect growth/shrink and notify the shell so it can re-layout.
-	lastHeight int
+	// palette is the slash-command autocomplete window rendered above the
+	// prompt box. Its height is part of Height so the shell re-layouts the
+	// band when it appears/disappears.
+	palette commandpalette.Model
 }
 
 // HeightChangedMsg asks main.go to redo the band layout because the prompt
@@ -72,14 +76,19 @@ func New() Model {
 	ta.SetHeight(visibleLines)
 	ta.SetWidth(20)
 	ta.Blur()
-	return Model{area: ta, lastHeight: visibleLines}
+	return Model{area: ta, palette: commandpalette.New()}
+}
+
+// SetCommands installs the slash-command registry used by the palette.
+func (m *Model) SetCommands(commands []commandpalette.Command) {
+	m.palette.SetCommands(commands)
+	m.palette.Sync(m.area.Value())
 }
 
 // Height returns the bar's full rendered height in terminal rows: the
-// visible text rows (textarea height, grows up to maxVisibleLines) plus the
-// two border rows.
+// palette rows (when visible), the visible text rows, and the two border rows.
 func (m Model) Height() int {
-	return m.area.Height() + borderHeight
+	return m.area.Height() + borderHeight + m.palette.Height()
 }
 
 // CurrentContentRows returns how many text rows are currently visible in the
@@ -95,9 +104,7 @@ func (m *Model) SetWidth(outerWidth int) {
 		inner = 1
 	}
 	m.area.SetWidth(inner)
-	// The wrap width can change how many rows the content needs; keep the
-	// height tracker in sync.
-	m.lastHeight = m.area.Height()
+	m.palette.SetWidth(outerWidth - marginSide*2)
 }
 
 func (m *Model) Focus() tea.Cmd {
@@ -106,6 +113,7 @@ func (m *Model) Focus() tea.Cmd {
 
 func (m *Model) Blur() {
 	m.area.Blur()
+	m.palette.Sync("")
 }
 
 func (m Model) Focused() bool {
@@ -126,29 +134,56 @@ func (m Model) Value() string {
 
 func (m *Model) InsertNewline() {
 	m.area.InsertRune('\n')
+	m.palette.Sync(m.area.Value())
+}
+
+// PaletteVisible reports whether the slash-command autocomplete is showing.
+func (m Model) PaletteVisible() bool { return m.palette.Visible() }
+
+// MovePalette moves the palette selection by delta.
+func (m *Model) MovePalette(delta int) { m.palette.Move(delta) }
+
+// PaletteSelected returns the highlighted command.
+func (m Model) PaletteSelected() (commandpalette.Command, bool) {
+	return m.palette.Selected()
+}
+
+// ClosePalette dismisses the palette until the prompt text changes again.
+func (m *Model) ClosePalette() { m.palette.Close() }
+
+// AcceptPalette closes the palette and returns the selected command as
+// completed prompt text (including the trailing space).
+func (m *Model) AcceptPalette() (string, bool) {
+	cmd, ok := m.palette.Selected()
+	if !ok {
+		return "", false
+	}
+	m.palette.Close()
+	return "/" + cmd.Name + " ", true
 }
 
 // Reset clears the bar and brings its height back down to the resting size.
 func (m *Model) Reset() {
 	m.area.Reset()
 	m.area.SetHeight(visibleLines)
-	m.lastHeight = visibleLines
+	m.palette.Sync("")
 }
 
 // SetValue replaces the bar's content and resizes it to fit what was set.
 func (m *Model) SetValue(str string) {
 	m.area.SetValue(str)
-	m.lastHeight = m.area.Height()
+	m.palette.Sync(str)
 }
 
 func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	if _, ok := msg.(tea.KeyPressMsg); ok && !m.Focused() {
 		return *m, nil
 	}
+	oldHeight := m.Height()
 	var cmd tea.Cmd
 	m.area, cmd = m.area.Update(msg)
-	if h := m.area.Height(); h != m.lastHeight {
-		m.lastHeight = h
+	m.palette.Sync(m.area.Value())
+	if m.Height() != oldHeight {
 		if cmd == nil {
 			cmd = func() tea.Msg { return HeightChangedMsg{} }
 		} else {
@@ -159,10 +194,14 @@ func (m *Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 }
 
 func (m *Model) View() string {
-	// Apply the margin to the outside of the prompt style
+	parts := make([]string, 0, 2)
+	if pv := m.palette.View(); pv != "" {
+		parts = append(parts, pv)
+	}
+	parts = append(parts, style.PromptStyle.Render(m.area.View()))
 	return lipgloss.NewStyle().
 		Margin(0, marginSide).
-		Render(style.PromptStyle.Render(m.area.View()))
+		Render(strings.Join(parts, "\n"))
 }
 
 func (m *Model) IsEmpty() bool {

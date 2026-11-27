@@ -209,6 +209,10 @@ type model struct {
 	// opened - the app keeps working, it just records nothing.
 	Db *db.Store
 
+	// LSP is the injected language-server manager used by /lsp. The default
+	// no-op reports none configured until the LSP package is wired in.
+	LSP LSPManager
+
 	promptHeight int
 }
 
@@ -284,6 +288,7 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 	}
 
 	p := promptbar.New()
+	p.SetCommands(slashCommands())
 	p.Focus()
 
 	changesList := changeslist.New(wl)
@@ -324,6 +329,7 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 		permissionBox:     permisionbox.New("", "", "", permisionbox.Impact{}),
 		permissionSlot:    -1,
 		Db:                store,
+		LSP:               noopLSPManager{},
 		root:              root,
 		promptHeight:      p.Height(),
 		Skills:            skills.New(),

@@ -32,8 +32,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case promptbar.HeightChangedMsg:
 		// The prompt bar grew/shrunk (typing past the 2-line resting size,
-		// or back down on reset/submit): shrink or free the band above it
-		// so the message area and the skills pane keep fitting.
+		// the command palette opening/closing, or back down on reset):
+		// shrink or free the band above it so the message area and the
+		// skills pane keep fitting.
+		m.promptHeight = m.Prompt.Height()
 		m.applyPanelSize()
 		return m, nil
 

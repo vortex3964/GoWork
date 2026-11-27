@@ -397,6 +397,17 @@ func (m *model) submitPrompt() []tea.Cmd {
 	if val == "" {
 		return cmds
 	}
+	// Slash commands are shell actions, never model input: route them
+	// before they can reach Context or the provider.
+	if strings.HasPrefix(strings.TrimSpace(val), "/") {
+		m.Prompt.Reset()
+		m.syncPromptHeight()
+		m.historyIdx = 0
+		if cmd := m.runSlashCommand(val); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return cmds
+	}
 	// Block submitting a second request while one is still running (the
 	// agentic loop can hold aiThink true across many tool turns, so this
 	// guards against launching concurrent generations).

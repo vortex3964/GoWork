@@ -206,6 +206,10 @@ GoWork reads environment variables and an optional `.env` file:
 | `ctrl+v` | Paste into the prompt. |
 | `ctrl+u` | Clear the prompt. |
 | `esc` | Leave prompt entry. |
+| `up` / `down` (palette open) | Move the slash-command selection. |
+| `tab` (palette open) | Complete the selected command. |
+| `enter` (palette open) | Run the selected command. |
+| `esc` (palette open) | Dismiss the palette without clearing the prompt. |
 
 ### Message area
 
@@ -262,6 +266,27 @@ GoWork reads environment variables and an optional `.env` file:
 | `left` / `right` | Move the day selection on the usage chart. |
 | `enter` | Open the selected model's details. |
 | `esc` | Close a view or leave the tab. |
+
+## Slash commands
+
+Type `/` in the prompt bar to open the command palette. Matching commands
+appear above the prompt; `up`/`down` select, `tab` completes, `enter` runs the
+selection, and `esc` dismisses the palette. Command text is handled by the app
+and never sent to the model.
+
+| Command | Action |
+| --- | --- |
+| `/help` | Show the keybind and command help modal. |
+| `/model` | Open the provider/model picker. |
+| `/stats` | Switch to the usage dashboard. |
+| `/skills` | Switch to the skills tab. |
+| `/save` | Save the current session to the local database immediately. |
+| `/new` | Clear the conversation context and start a new session record. |
+| `/fork` | Fork the current context into a new session record. |
+| `/compact` | Condense the conversation now. |
+| `/context [path]` | Show estimated context tokens, or add a file (bounded to 32 KiB) to the conversation. |
+| `/coffee` | Play the coffee-break animation; `esc` or `ctrl+c` stops it. |
+| `/lsp [list\|configure <server>]` | List or configure language servers (reports none configured until LSP wiring lands). |
 
 ## Tools
 
