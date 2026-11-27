@@ -49,6 +49,8 @@ func (m model) handleMouseClickMsg(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		msg.Y > m.panelTop() && msg.Y < m.promptTop() && msg.X < m.msgAreaWidth() {
 		switch msg.Button {
 		case tea.MouseRight:
+			m.MessageArea.CancelTextDrag()
+			m.Prompt.CancelTextDrag()
 			if m.MessageArea.HandleClick(msg.X, msg.Y-m.panelTop(), false) {
 				text, ok := m.MessageArea.SelectedText()
 				m.MessageArea.EndCopy()
@@ -56,8 +58,13 @@ func (m model) handleMouseClickMsg(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case tea.MouseLeft:
+			m.Prompt.CancelTextDrag()
 			extend := msg.Mod.Contains(tea.ModShift)
 			if m.MessageArea.HandleClick(msg.X, msg.Y-m.panelTop(), extend) {
+				// Arm a character-granular drag on the same press. If the
+				// pointer never moves this stays invisible and the normal
+				// whole-message click selection above is all that happens.
+				m.MessageArea.BeginTextDrag(msg.X, msg.Y-m.panelTop())
 				return m, showPopupCmd(copyModeHint)
 			}
 		}
@@ -79,6 +86,8 @@ func (m model) handleMouseClickMsg(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 				// Leaving the code tab shouldn't leave a silent selection
 				// waiting to reappear when the user comes back.
 				m.MessageArea.EndCopy()
+				m.MessageArea.CancelTextDrag()
+				m.Prompt.CancelTextDrag()
 			}
 			m.syncModeToTab()
 		case (m.Tabs.Active().Name == "code" || m.Tabs.Active().Name == "skills" || m.Tabs.Active().Name == "tools") &&
@@ -87,6 +96,8 @@ func (m model) handleMouseClickMsg(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 			if m.Tabs.Active().Name == "code" {
 				m.Mode = modePrompt
 			}
+			m.MessageArea.CancelTextDrag()
+			m.Prompt.BeginTextDrag(msg.X, msg.Y-m.promptTop())
 			return m, m.Prompt.Focus()
 		}
 	}
@@ -185,6 +196,14 @@ func (m model) handleMouseMotionMsg(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd)
 		m.applyPanelSize()
 		return m, nil
 	}
+	if m.Prompt.TextDragActive() {
+		m.Prompt.UpdateTextDrag(msg.X, msg.Y-m.promptTop())
+		return m, nil
+	}
+	if m.Tabs.Active().Name == "code" && m.MessageArea.TextDragActive() {
+		m.MessageArea.UpdateTextDrag(msg.X, msg.Y-m.panelTop())
+		return m, nil
+	}
 	return m, nil
 }
 
@@ -193,5 +212,16 @@ func (m model) handleMouseReleaseMsg(msg tea.MouseReleaseMsg) (tea.Model, tea.Cm
 		return m, nil
 	}
 	m.panelDragActive = false
+	if m.Prompt.TextDragActive() {
+		text, ok := m.Prompt.EndTextDrag()
+		m.MessageArea.CancelTextDrag()
+		if ok {
+			return m, copyTextCmd(text, true)
+		}
+		return m, nil
+	}
+	if text, ok := m.MessageArea.EndTextDrag(); ok {
+		return m, copyTextCmd(text, true)
+	}
 	return m, nil
 }

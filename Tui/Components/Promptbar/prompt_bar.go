@@ -36,6 +36,11 @@ type Model struct {
 	// prompt box. Its height is part of Height so the shell re-layouts the
 	// band when it appears/disappears.
 	palette commandpalette.Model
+
+	// textDrag tracks a mouse drag over the prompt text. It is separate
+	// from the textarea's keyboard state, so a click that doesn't move
+	// leaves normal editing and cursor behaviour unchanged.
+	textDrag promptTextDrag
 }
 
 // HeightChangedMsg asks main.go to redo the band layout because the prompt
@@ -199,9 +204,10 @@ func (m *Model) View() string {
 		parts = append(parts, pv)
 	}
 	parts = append(parts, style.PromptStyle.Render(m.area.View()))
-	return lipgloss.NewStyle().
+	view := lipgloss.NewStyle().
 		Margin(0, marginSide).
 		Render(strings.Join(parts, "\n"))
+	return m.overlayTextDrag(view)
 }
 
 func (m *Model) IsEmpty() bool {

@@ -136,6 +136,11 @@ type Model struct {
 	selFocus  int
 	copyMode  bool
 
+	// textDrag is the character-granular selection made by dragging with
+	// the mouse. It is independent of the whole-message copy selection
+	// above until the pointer actually moves.
+	textDrag textDragState
+
 	// mdRenderer is the glamour renderer used for AI messages, cached
 	// and only rebuilt when the width it was built for (mdWidth) no
 	// longer matches what we need, since constructing one isn't free.
@@ -308,6 +313,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 // View renders the message area, including its border and outer margin.
 func (m Model) View() string {
 	view := lipgloss.NewStyle().Margin(0, padSide).Render(m.vp.View())
+	view = m.overlayTextDrag(view)
 	return m.overlaySelection(view)
 }
 
