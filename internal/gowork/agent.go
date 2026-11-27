@@ -256,6 +256,11 @@ func (m *model) dispatchPendingBatch() tea.Cmd {
 // this bounds it to the model's context window (when known) so the original
 // user request is never the thing that gets dropped when the window fills.
 func (m *model) contextForModel() []providers.Message {
+	// Belt-and-braces: a dangling assistant tool call must never reach a
+	// provider (OpenAI/Anthropic reject it). Normal turns are already
+	// repaired at their boundaries, so this is a no-op there; it also keeps
+	// m.Context valid for the save path and any later request.
+	m.Context, _ = repairContext(m.Context)
 	return providers.TrimContext(m.Context, m.status.contextWindow, m.status.modelID)
 }
 
@@ -304,6 +309,12 @@ func compactCmd(p providers.Provider, messages []providers.Message, window int, 
 // the prompt. Used when a turn finishes, errors, or is interrupted. It also
 // cancels any still-live context (harmless if the work already wound down).
 func (m *model) endTurn() {
+	// A batch can be abandoned mid-flight (ctrl+i while a permission prompt
+	// or questionnaire is open, a tool that never reports, an erroring
+	// provider). Close any tool call whose result never arrived so the next
+	// request and the saved session are well-formed.
+	m.Context, _ = repairContext(m.Context)
+
 	// A turn ending while the questionnaire is still up must drop it so the
 	// mode can't stay stuck answering a turn that's already gone.
 	if m.Mode == modeQuestionnaire {

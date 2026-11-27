@@ -32,7 +32,9 @@ func TestResumeSessionRestoresSkills(t *testing.T) {
 	store.SetSessionSkills([]string{"hello"})
 	msgs := []providers.Message{
 		{Role: "user", Content: "use the hello skill"},
-		{Role: "assistant", Content: "sure"},
+		{Role: "assistant", Content: "sure", ToolCalls: []providers.ToolCall{
+			{Tool_call_id: "c1", Tool_name: "read_file"},
+		}},
 		{Role: "tool", Content: "result", ToolCallID: "c1"},
 	}
 	if err := store.FinalizeSession(msgs, 100); err != nil {
