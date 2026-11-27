@@ -74,13 +74,13 @@ func TestPromptDragCopiesArbitraryText(t *testing.T) {
 	if !m.Prompt.TextDragActive() {
 		t.Fatal("prompt click did not arm a text drag")
 	}
-	m = dragMotion(t, m, x+5, y)
+	m = dragMotion(t, m, x+4, y)
 	text, ok := m.Prompt.TextDragText()
 	if !ok || text != "hello" {
 		t.Fatalf("prompt drag preview = %q (ok=%v), want %q", text, ok, "hello")
 	}
 
-	m, cmd := dragRelease(t, m, x+5, y)
+	m, cmd := dragRelease(t, m, x+4, y)
 	if cmd == nil {
 		t.Fatal("releasing a prompt text drag produced no copy command")
 	}

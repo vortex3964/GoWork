@@ -44,9 +44,11 @@ func (m Model) TextDragActive() bool { return m.textDrag.active }
 func (m Model) TextDragMoved() bool { return m.textDrag.active && m.textDrag.moved }
 
 // BeginTextDrag starts tracking a drag at a prompt-local screen position.
-// y is relative to the top of the prompt component (palette included).
+// y is relative to the top of the prompt component (palette included). A
+// press outside the text rows is rejected so palette and border clicks keep
+// their normal behaviour.
 func (m *Model) BeginTextDrag(x, y int) bool {
-	p, ok := m.textPointAt(x, y)
+	p, ok := m.textPointAt(x, y, false)
 	if !ok {
 		return false
 	}
@@ -54,12 +56,14 @@ func (m *Model) BeginTextDrag(x, y int) bool {
 	return true
 }
 
-// UpdateTextDrag moves the focus of the prompt selection.
+// UpdateTextDrag moves the focus of the prompt selection. Once a drag is
+// active, positions outside the text rows clamp to the nearest visible row so
+// the selection still extends when the pointer leaves the box.
 func (m *Model) UpdateTextDrag(x, y int) bool {
 	if !m.textDrag.active {
 		return false
 	}
-	p, ok := m.textPointAt(x, y)
+	p, ok := m.textPointAt(x, y, true)
 	if !ok {
 		return false
 	}
@@ -90,16 +94,28 @@ func (m *Model) EndTextDrag() (string, bool) {
 
 // TextDragText returns the prompt text currently covered by the drag.
 func (m Model) TextDragText() (string, bool) {
-	if !m.textDrag.active {
+	if !m.textDrag.active || !m.textDrag.moved {
 		return "", false
 	}
-	return m.textBetween(m.textDrag.anchor, m.textDrag.focus)
+	a, b := m.dragRange()
+	return m.textBetween(a, b)
+}
+
+// dragRange normalises the drag endpoints and includes the cell under the
+// pointer, matching normal terminal text selection.
+func (m Model) dragRange() (promptPoint, promptPoint) {
+	a, b := m.textDrag.anchor, m.textDrag.focus
+	if a.line > b.line || (a.line == b.line && a.col > b.col) {
+		a, b = b, a
+	}
+	b.col++
+	return a, b
 }
 
 // textPointAt maps a prompt-local screen position to a logical line/rune
-// position. Rows outside the text area clamp to its nearest edge so dragging
-// past the box still extends the selection.
-func (m *Model) textPointAt(x, y int) (promptPoint, bool) {
+// position. When clamp is true, rows outside the text area snap to the first
+// or last visible row; otherwise they are rejected.
+func (m *Model) textPointAt(x, y int, clamp bool) (promptPoint, bool) {
 	value := m.area.Value()
 	if value == "" {
 		return promptPoint{}, false
@@ -112,7 +128,14 @@ func (m *Model) textPointAt(x, y int) (promptPoint, bool) {
 	top := m.palette.Height() + style.PromptStyle.GetBorderTopSize()
 	row := y - top
 	if row < 0 || row >= m.area.Height() {
-		return promptPoint{}, false
+		if !clamp {
+			return promptPoint{}, false
+		}
+		if row < 0 {
+			row = 0
+		} else {
+			row = m.area.Height() - 1
+		}
 	}
 	visual := m.area.ScrollYOffset() + row
 	rows := promptVisualRows(value, width)
@@ -222,10 +245,7 @@ func (m Model) overlayTextDrag(view string) string {
 	}
 	lines := strings.Split(value, "\n")
 
-	a, b := m.textDrag.anchor, m.textDrag.focus
-	if a.line > b.line || (a.line == b.line && a.col > b.col) {
-		a, b = b, a
-	}
+	a, b := m.dragRange()
 
 	originX := marginSide + style.PromptStyle.GetBorderLeftSize() + style.PromptStyle.GetPaddingLeft()
 	originY := m.palette.Height() + style.PromptStyle.GetBorderTopSize()
@@ -339,9 +359,12 @@ func wrapPromptLine(runes []rune, width int) []promptRow {
 			spaces = 0
 			spacesFrom = -1
 		} else {
+			// Mirror bubbles' textarea: only the accumulated word is
+			// measured here. The current row's width is deliberately not
+			// included; textarea starts a new row only once the word
+			// itself would overflow.
 			lastCharLen := uniseg.StringWidth(string(r))
-			if uniseg.StringWidth(string(mapped[row].runes))+
-				uniseg.StringWidth(string(word))+lastCharLen > width {
+			if uniseg.StringWidth(string(word))+lastCharLen > width {
 				if len(mapped[row].runes) > 0 {
 					row++
 					mapped = append(mapped, mappedRow{start: -1, end: -1})

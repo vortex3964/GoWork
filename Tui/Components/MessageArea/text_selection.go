@@ -91,10 +91,22 @@ func (m *Model) EndTextDrag() (string, bool) {
 
 // TextDragText returns the text currently covered by the drag selection.
 func (m Model) TextDragText() (string, bool) {
-	if !m.textDrag.active {
+	if !m.textDrag.active || !m.textDrag.moved {
 		return "", false
 	}
-	return m.textBetween(m.textDrag.anchor, m.textDrag.focus)
+	a, b := m.dragRange()
+	return m.textBetween(a, b)
+}
+
+// dragRange normalises the drag endpoints and includes the cell under the
+// pointer, matching normal terminal text selection.
+func (m Model) dragRange() (textPoint, textPoint) {
+	a, b := m.textDrag.anchor, m.textDrag.focus
+	if a.line > b.line || (a.line == b.line && a.col > b.col) {
+		a, b = b, a
+	}
+	b.col++
+	return a, b
 }
 
 // textPointAt maps a band-relative screen position to a logical content line
@@ -185,10 +197,7 @@ func (m Model) overlayTextDrag(view string) string {
 		return view
 	}
 
-	a, b := m.textDrag.anchor, m.textDrag.focus
-	if a.line > b.line || (a.line == b.line && a.col > b.col) {
-		a, b = b, a
-	}
+	a, b := m.dragRange()
 
 	originX := padSide + m.vp.Style.GetBorderLeftSize() + m.vp.Style.GetPaddingLeft()
 	originY := m.vp.Style.GetBorderTopSize() + m.vp.Style.GetPaddingTop()
