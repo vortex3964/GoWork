@@ -13,8 +13,8 @@ import (
 	"os"
 	"strings"
 
-	"GoWork/tools"
 	cl "GoWork/Tui/Components/ChangesList"
+	"GoWork/tools"
 )
 
 type Input struct {
@@ -26,7 +26,7 @@ type Input struct {
 
 type Tool struct{}
 
-//NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface
+// NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface
 func New() tools.AgentTool { return &Tool{} }
 
 func (t *Tool) Name() string { return "edit_file" }
@@ -64,7 +64,7 @@ func (t *Tool) InputSchema() json.RawMessage {
 				"description": "The text to place at the given line range. Can be empty (to delete the range), a single line, or multiple lines.",
 			},
 		},
-		"required":               []string{"file_path", "start_line", "end_line", "new_content"},
+		"required":             []string{"file_path", "start_line", "end_line", "new_content"},
 		"additionalProperties": false,
 	}
 	b, _ := json.Marshal(schema)
@@ -92,7 +92,7 @@ func splitLines(contents []byte) []string {
 	}
 	return lines
 }
- 
+
 // joinLines re-joins lines into file bytes, adding exactly one trailing
 // newline (or nil for zero lines).
 func joinLines(lines []string) []byte {
@@ -107,7 +107,7 @@ func joinLines(lines []string) []byte {
 		n += len(l)
 	}
 	n += len(lines) - 1 // "\n" separators between lines
- 
+
 	var b strings.Builder
 	b.Grow(n)
 	b.WriteString(lines[0])
@@ -118,7 +118,7 @@ func joinLines(lines []string) []byte {
 	b.WriteByte('\n')
 	return []byte(b.String())
 }
- 
+
 // replacementLines converts new_content into the lines that replace a range.
 // A single trailing newline is the normal line terminator, not an extra empty
 // line, so strip exactly one before splitting. Additional trailing newlines
@@ -130,11 +130,40 @@ func replacementLines(newContent string) []string {
 	return strings.Split(strings.TrimSuffix(newContent, "\n"), "\n")
 }
 
+// lineStartOffset returns the byte offset where the 1-indexed line starts.
+// A line past the end of the data maps to len(data).
+func lineStartOffset(data []byte, line int) int {
+	if line <= 1 {
+		return 0
+	}
+	current := 1
+	for i, b := range data {
+		if b == '\n' {
+			current++
+			if current == line {
+				return i + 1
+			}
+		}
+	}
+	return len(data)
+}
+
+// lineRangeOffsets returns the byte range [start, end) that the 1-indexed
+// inclusive line range [startLine, endLine] covers. For an insertion
+// (endLine < startLine) start == end at the insertion point.
+func lineRangeOffsets(data []byte, startLine, endLine int) (start, end int) {
+	start = lineStartOffset(data, startLine)
+	if endLine < startLine {
+		return start, start
+	}
+	return start, lineStartOffset(data, endLine+1)
+}
+
 // replaceLineRange replaces the 1-indexed inclusive line range
-// [startLine, endLine] with newContent's lines. 
+// [startLine, endLine] with newContent's lines.
 func replaceLineRange(lines []string, startLine, endLine int, newContent string) ([]byte, int) {
 	replacement := replacementLines(newContent)
- 
+
 	before := lines[:startLine-1]
 	var after []string
 	if endLine >= startLine {
@@ -143,15 +172,15 @@ func replaceLineRange(lines []string, startLine, endLine int, newContent string)
 		// insertion point, nothing removed
 		after = lines[startLine-1:]
 	}
- 
+
 	result := make([]string, 0, len(before)+len(replacement)+len(after))
 	result = append(result, before...)
 	result = append(result, replacement...)
 	result = append(result, after...)
- 
+
 	return joinLines(result), len(result)
 }
- 
+
 // validateRange checks that [startLine, endLine] is a sane, in-bounds
 // range (or insertion point) for a file with lineCount lines.
 func validateRange(startLine, endLine, lineCount int) error {
@@ -169,7 +198,7 @@ func validateRange(startLine, endLine, lineCount int) error {
 	}
 	return nil
 }
- 
+
 func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.RawMessage) (tools.ToolResult, error) {
 	var input Input
 	if err := json.Unmarshal(rawInput, &input); err != nil {
@@ -181,7 +210,7 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	if input.FilePath == "." {
 		return tools.Errf("file_path must point to a file, not the project root"), nil
 	}
- 
+
 	// Open and stat the existing file through the sandboxed root.
 	f, err := args.Root.Open(input.FilePath)
 	if err != nil {
@@ -190,7 +219,7 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		}
 		return tools.ToolResult{}, fmt.Errorf("edit_file: opening %s: %w", input.FilePath, err)
 	}
- 
+
 	info, err := f.Stat()
 	if err != nil {
 		f.Close()
@@ -200,7 +229,7 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		f.Close()
 		return tools.Errf("%s is a directory, not a file", input.FilePath), nil
 	}
- 
+
 	src, err := io.ReadAll(f)
 	f.Close() // close the read handle before reopening for write
 	if err != nil {
@@ -216,35 +245,44 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		}
 	}
 
-	var accepted, rejected []byte
+	var changes []cl.Change
+	accepted := src
 	if args.WatchList != nil {
-		changes := args.WatchList.GetChanges(input.FilePath)
+		changes = args.WatchList.GetChanges(input.FilePath)
 		accepted = cl.AcceptAllChangesBytes(src, changes)
-		rejected = cl.RejectAllChangesBytes(src, changes)
-	} else {
-		accepted = src
-		rejected = src
 	}
- 
+
 	acceptedLines := splitLines(accepted)
 	if err := validateRange(input.StartLine, input.EndLine, len(acceptedLines)); err != nil {
 		return tools.Errf("%s", err.Error()), nil
 	}
- 
-	// make the edit
-	updated, _ := replaceLineRange(acceptedLines, input.StartLine, input.EndLine, input.NewContent)
- 
-	// merge the edit against the rejected (pre-existing-pending-changes)
-	// baseline, producing fresh <<<<<<< old / >>>>>>> Ai change markers
-	// around this new edit.
-	merged := cl.MergeMarkerBytes(rejected, updated)
- 
+
+	// The edit replaces a known byte range, so turn it directly into one
+	// marker hunk instead of diffing the whole file. Existing pending
+	// changes are re-emitted from their stored offsets by the helper.
+	var merged []byte
+	if len(accepted) > 0 && accepted[len(accepted)-1] != '\n' {
+		// This tool always terminates a rewritten file with a newline, which
+		// an offset-only replacement cannot express. Keep the old whole-file
+		// path for this rare case so the output stays byte-identical.
+		updated, _ := replaceLineRange(acceptedLines, input.StartLine, input.EndLine, input.NewContent)
+		merged = cl.MergeMarkerBytes(cl.RejectAllChangesBytes(src, changes), updated)
+	} else {
+		start, end := lineRangeOffsets(accepted, input.StartLine, input.EndLine)
+		newText := joinLines(replacementLines(input.NewContent))
+		merged = cl.MergeMarkerEdits(src, accepted, changes, []cl.Edit{{
+			Start: start,
+			End:   end,
+			New:   newText,
+		}})
+	}
+
 	// Reopen (truncating) through the sandboxed root and write the new contents.
 	wf, err := args.Root.OpenFile(input.FilePath, os.O_WRONLY|os.O_TRUNC, 0)
 	if err != nil {
 		return tools.ToolResult{}, fmt.Errorf("edit_file: opening %s for write: %w", input.FilePath, err)
 	}
- 
+
 	if args.WatchList != nil {
 		args.WatchList.Add(input.FilePath)
 	}
@@ -264,7 +302,6 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 			args.ReadState.Record(args.PathKey(input.FilePath), fresh.ModTime())
 		}
 	}
- 
+
 	return tools.Ok(fmt.Sprintf("successfully edited lines %d-%d in %s", input.StartLine, input.EndLine, input.FilePath)), nil
 }
- 

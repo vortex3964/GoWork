@@ -198,6 +198,21 @@ func TestRun_ExternalChangeAfterRecordedRead_Rejected(t *testing.T) {
 	}
 }
 
+func TestRun_NoOpReplacementLeavesFileUnchanged(t *testing.T) {
+	tool, dir := setupTool(t)
+
+	content, isErr := runEdit(t, tool, dir, "same.go", "one\ntwo\nthree\n", 2, 2, "two")
+	if isErr {
+		t.Fatalf("expected success, got tool error: %s", content)
+	}
+
+	got := readFile(t, filepath.Join(dir, "same.go"))
+	want := "one\ntwo\nthree\n"
+	if got != want {
+		t.Errorf("no-op edit should leave the file unchanged:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
 func TestRun_ReplaceMultiLineRange_WithMultiLineContent(t *testing.T) {
 	tool, dir := setupTool(t)
 

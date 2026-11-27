@@ -1,10 +1,12 @@
 package changeslist
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 
@@ -480,6 +482,512 @@ func MergeMarkerBytes(original []byte, modified []byte) []byte {
 	flush()
 
 	return []byte(result.String())
+}
+
+// Edit is a replacement of accepted[Start:End] with New. Start and End are
+// byte offsets into the accepted view of a file (the on-disk bytes with every
+// pending change applied). New is the replacement text.
+type Edit struct {
+	Start int
+	End   int
+	New   []byte
+}
+
+// InsertMergeMarkerHunk inserts exactly one merge-marker block into base,
+// replacing base[start:end] with newText. It uses the caller's known byte
+// offsets and never diffs base. Offsets must describe base.
+func InsertMergeMarkerHunk(base []byte, start, end int, newText []byte) []byte {
+	if start < 0 {
+		start = 0
+	}
+	if end < start {
+		end = start
+	}
+	if end > len(base) {
+		end = len(base)
+	}
+
+	const startMarker = "<<<<<<< old\n"
+	const midMarker = "=======\n"
+	const endMarker = ">>>>>>> Ai change\n"
+
+	out := make([]byte, 0, len(base)-(end-start)+len(newText)+len(startMarker)+len(midMarker)+len(endMarker))
+	out = append(out, base[:start]...)
+	out = append(out, startMarker...)
+	out = append(out, base[start:end]...)
+	out = append(out, midMarker...)
+	out = append(out, newText...)
+	out = append(out, endMarker...)
+	out = append(out, base[end:]...)
+	return out
+}
+
+// mergeUnit is one segment of the on-disk file in the order it appears:
+// either untouched text shared by the accepted/rejected views, or a whole
+// pending marker block. Accepted offsets let edits be placed without scanning
+// the file again.
+type mergeUnit struct {
+	pending bool
+
+	srcStart, srcEnd int // range in the on-disk buffer (marker block for pending)
+	accStart, accEnd int // corresponding range in the accepted view
+
+	oldStart, oldEnd int // pending: old half between <<<<<<< and =======
+	newStart, newEnd int // pending: new half between ======= and >>>>>>>
+
+	edit int // index into the expanded edit list, -1 when untouched
+}
+
+// afterLine returns the offset just past the newline that ends the line at
+// pos (or len(data) when there is no newline).
+func afterLine(data []byte, pos int) int {
+	for pos < len(data) && data[pos] != '\n' {
+		pos++
+	}
+	if pos < len(data) {
+		pos++
+	}
+	return pos
+}
+
+// buildMergeUnits splits src into equal and pending-marker units using the
+// known change offsets. It returns false when the offsets are malformed or
+// out of order, in which case callers fall back to the full-file diff.
+func buildMergeUnits(src []byte, changes []Change) ([]mergeUnit, bool) {
+	units := make([]mergeUnit, 0, 2*len(changes)+1)
+	srcPos, accPos := 0, 0
+
+	for _, c := range changes {
+		if c.Start < srcPos || c.Mid < c.Start || c.End < c.Mid || c.End > len(src) {
+			return nil, false
+		}
+		if c.Start > srcPos {
+			n := c.Start - srcPos
+			units = append(units, mergeUnit{
+				srcStart: srcPos, srcEnd: c.Start,
+				accStart: accPos, accEnd: accPos + n,
+				edit: -1,
+			})
+			accPos += n
+		}
+
+		oldStart := afterLine(src, c.Start)
+		newStart := afterLine(src, c.Mid)
+		blockEnd := afterLine(src, c.End)
+		if oldStart > c.Mid || newStart > c.End || blockEnd < c.End {
+			return nil, false
+		}
+
+		units = append(units, mergeUnit{
+			pending:  true,
+			srcStart: c.Start, srcEnd: blockEnd,
+			accStart: accPos, accEnd: accPos + (c.End - newStart),
+			oldStart: oldStart, oldEnd: c.Mid,
+			newStart: newStart, newEnd: c.End,
+			edit: -1,
+		})
+		accPos += c.End - newStart
+		srcPos = blockEnd
+	}
+
+	if srcPos < len(src) {
+		n := len(src) - srcPos
+		units = append(units, mergeUnit{
+			srcStart: srcPos, srcEnd: len(src),
+			accStart: accPos, accEnd: accPos + n,
+			edit: -1,
+		})
+	}
+
+	return units, true
+}
+
+// mergeExpanded is one or more caller edits after being widened to cover any
+// pending marker block they intersected. Widening keeps a new edit from
+// cutting a pending hunk in half: the whole hunk is replaced by the new one.
+type mergeExpanded struct {
+	accStart, accEnd int
+	members          []int // indices into the caller's edits, in order
+	oldText          []byte
+	newText          []byte
+}
+
+// expandEdits widens edits around pending blocks and expands their new text.
+// It returns false when the edit list is malformed.
+func expandEdits(src []byte, units []mergeUnit, edits []Edit, accepted []byte) ([]mergeExpanded, bool) {
+	expanded := make([]mergeExpanded, 0, len(edits))
+	prevEnd := 0
+	for i, e := range edits {
+		if e.Start < 0 || e.Start > e.End || e.End > len(accepted) || e.Start < prevEnd {
+			return nil, false
+		}
+		prevEnd = e.End
+
+		start, end := e.Start, e.End
+
+		// Marker hunks are line-oriented: a match in the middle of a line
+		// shows the whole old/new line. An insertion between lines stays at
+		// its exact point; one inside a line widens to that line too.
+		if start < end {
+			if start > 0 && accepted[start-1] != '\n' {
+				start = bytes.LastIndexByte(accepted[:start], '\n') + 1
+			}
+			if end > 0 && end < len(accepted) && accepted[end-1] != '\n' {
+				if nl := bytes.IndexByte(accepted[end:], '\n'); nl >= 0 {
+					end += nl + 1
+				} else {
+					end = len(accepted)
+				}
+			}
+		} else if start > 0 && start < len(accepted) && accepted[start-1] != '\n' {
+			lineStart := bytes.LastIndexByte(accepted[:start], '\n') + 1
+			start = lineStart
+			if nl := bytes.IndexByte(accepted[lineStart:], '\n'); nl >= 0 {
+				end = lineStart + nl + 1
+			} else {
+				end = len(accepted)
+			}
+		}
+
+		for _, u := range units {
+			if !u.pending {
+				continue
+			}
+			overlaps := start < u.accEnd && end > u.accStart
+			// A pure insertion strictly inside a pending new half still has
+			// to widen, otherwise it would split the existing marker block.
+			insertsInside := start == end && u.accStart < start && start < u.accEnd
+			if overlaps || insertsInside {
+				if u.accStart < start {
+					start = u.accStart
+				}
+				if u.accEnd > end {
+					end = u.accEnd
+				}
+			}
+		}
+
+		expanded = append(expanded, mergeExpanded{
+			accStart: start,
+			accEnd:   end,
+			members:  []int{i},
+		})
+	}
+
+	sort.SliceStable(expanded, func(i, j int) bool {
+		return expanded[i].accStart < expanded[j].accStart
+	})
+
+	// Widening can make two edits overlap (e.g. two replacements inside the
+	// same pending hunk). Fold them into one hunk so offsets stay valid.
+	merged := expanded[:0]
+	for _, e := range expanded {
+		if n := len(merged); n > 0 && e.accStart < merged[n-1].accEnd {
+			merged[n-1].accEnd = max(merged[n-1].accEnd, e.accEnd)
+			merged[n-1].members = append(merged[n-1].members, e.members...)
+			continue
+		}
+		merged = append(merged, e)
+	}
+	expanded = merged
+
+	for i := range expanded {
+		e := &expanded[i]
+
+		// New text is the accepted span with the caller's replacements
+		// applied, in order.
+		sort.Ints(e.members)
+		pos := e.accStart
+		for _, m := range e.members {
+			me := edits[m]
+			if me.Start < pos || me.End > e.accEnd {
+				return nil, false
+			}
+			e.newText = append(e.newText, accepted[pos:me.Start]...)
+			e.newText = append(e.newText, me.New...)
+			pos = me.End
+		}
+		e.newText = append(e.newText, accepted[pos:e.accEnd]...)
+
+		// A replacement that does not end in a newline joins the following
+		// line in the rewritten file. The old line-based diff treats that
+		// whole joined line as changed, so the marker hunk must cover it too.
+		if len(e.newText) > 0 && e.newText[len(e.newText)-1] != '\n' && e.accEnd < len(accepted) {
+			next := afterLine(accepted, e.accEnd)
+			// Land on a whole pending block rather than splitting one.
+			for _, u := range units {
+				if u.pending && next > u.accStart && next < u.accEnd {
+					next = u.accEnd
+					break
+				}
+			}
+			e.newText = append(e.newText, accepted[e.accEnd:next]...)
+			e.accEnd = next
+		}
+
+		// Old text is the rejected view of the covered span: untouched bytes
+		// plus the old half of every pending block inside it.
+		for _, u := range units {
+			if u.accEnd <= e.accStart || u.accStart >= e.accEnd {
+				continue
+			}
+			if u.pending {
+				e.oldText = append(e.oldText, src[u.oldStart:u.oldEnd]...)
+				continue
+			}
+			lo := max(e.accStart, u.accStart)
+			hi := min(e.accEnd, u.accEnd)
+			from := u.srcStart + (lo - u.accStart)
+			to := u.srcStart + (hi - u.accStart)
+			e.oldText = append(e.oldText, src[from:to]...)
+		}
+	}
+
+	return expanded, true
+}
+
+// MergeMarkerEdits returns src with marker blocks for every pending change
+// plus fresh marker blocks for edits. It works from the known marker offsets
+// and edit byte ranges, so the file is never diffed as a whole.
+//
+// accepted must be src with all pending changes accepted, and each Edit's
+// offsets refer to accepted. Existing pending changes are preserved by
+// re-emitting their old/new halves; an edit that intersects a pending block
+// absorbs that whole block, mirroring the previous full-file diff.
+func MergeMarkerEdits(src, accepted []byte, changes []Change, edits []Edit) []byte {
+	// The line-oriented fast path assumes newline-terminated text. A file
+	// without a final newline can gain one when it is rewritten; fall back to
+	// the old diff for that rare case so behaviour stays identical.
+	if (len(src) > 0 && src[len(src)-1] != '\n') || (len(accepted) > 0 && accepted[len(accepted)-1] != '\n') {
+		return mergeMarkerEditsFallback(src, accepted, changes, edits)
+	}
+
+	units, ok := buildMergeUnits(src, changes)
+	if !ok {
+		return mergeMarkerEditsFallback(src, accepted, changes, edits)
+	}
+	accLen := 0
+	if n := len(units); n > 0 {
+		accLen = units[n-1].accEnd
+	}
+	if accLen != len(accepted) {
+		return mergeMarkerEditsFallback(src, accepted, changes, edits)
+	}
+
+	expanded, ok := expandEdits(src, units, edits, accepted)
+	if !ok {
+		return mergeMarkerEditsFallback(src, accepted, changes, edits)
+	}
+
+	// Split untouched units at every edit boundary so each unit belongs
+	// wholly to one edit or to no edit.
+	type splitPoints map[int]struct{}
+	splits := make(splitPoints)
+	for _, e := range expanded {
+		splits[e.accStart] = struct{}{}
+		splits[e.accEnd] = struct{}{}
+	}
+
+	ordered := make([]mergeUnit, 0, len(units)+2*len(expanded))
+	zeroAt := make(map[int][]int)
+	for i, e := range expanded {
+		if e.accStart == e.accEnd {
+			zeroAt[e.accStart] = append(zeroAt[e.accStart], i)
+		}
+	}
+
+	appendZeroes := func(at int) {
+		idxs := zeroAt[at]
+		if len(idxs) == 0 {
+			return
+		}
+		sort.Ints(idxs)
+		for _, i := range idxs {
+			ordered = append(ordered, mergeUnit{
+				accStart: at, accEnd: at, edit: i,
+			})
+		}
+		delete(zeroAt, at)
+	}
+
+	for _, u := range units {
+		if !u.pending {
+			points := make([]int, 0, 2)
+			for p := range splits {
+				if p > u.accStart && p < u.accEnd {
+					points = append(points, p)
+				}
+			}
+			if len(points) == 0 {
+				appendZeroes(u.accStart)
+				ordered = append(ordered, u)
+				continue
+			}
+			sort.Ints(points)
+			curAcc, curSrc := u.accStart, u.srcStart
+			for _, p := range points {
+				if p <= curAcc {
+					continue
+				}
+				appendZeroes(curAcc)
+				ordered = append(ordered, mergeUnit{
+					srcStart: curSrc, srcEnd: curSrc + (p - curAcc),
+					accStart: curAcc, accEnd: p,
+					edit: -1,
+				})
+				curSrc += p - curAcc
+				curAcc = p
+			}
+			appendZeroes(curAcc)
+			ordered = append(ordered, mergeUnit{
+				srcStart: curSrc, srcEnd: u.srcEnd,
+				accStart: curAcc, accEnd: u.accEnd,
+				edit: -1,
+			})
+			continue
+		}
+
+		appendZeroes(u.accStart)
+		ordered = append(ordered, u)
+	}
+	appendZeroes(len(accepted))
+	if len(zeroAt) != 0 {
+		// Every edit boundary should have been visited; if not, fall back
+		// rather than emit hunks out of order.
+		return mergeMarkerEditsFallback(src, accepted, changes, edits)
+	}
+
+	// Assign each non-insertion unit to the edit covering it.
+	for i := range ordered {
+		u := &ordered[i]
+		if u.edit >= 0 {
+			continue
+		}
+		for ei := range expanded {
+			e := &expanded[ei]
+			if u.accStart >= e.accStart && u.accEnd <= e.accEnd {
+				u.edit = ei
+				break
+			}
+		}
+	}
+
+	// Emit equal text and raw hunk pieces in order. Adjacent hunk pieces are
+	// coalesced before diffing so two edits with no unchanged line between
+	// them still produce a single marker block, just like the old full-file
+	// diff did.
+	type mergePiece struct {
+		equal   []byte
+		oldText []byte
+		newText []byte
+		hunk    bool
+	}
+	pieces := make([]mergePiece, 0, len(ordered)+len(expanded))
+	emitted := make([]bool, len(expanded))
+
+	for _, u := range ordered {
+		if u.edit >= 0 {
+			if !emitted[u.edit] {
+				emitted[u.edit] = true
+				pieces = append(pieces, mergePiece{
+					oldText: expanded[u.edit].oldText,
+					newText: expanded[u.edit].newText,
+					hunk:    true,
+				})
+			}
+			continue
+		}
+		if u.pending {
+			pieces = append(pieces, mergePiece{
+				oldText: src[u.oldStart:u.oldEnd],
+				newText: src[u.newStart:u.newEnd],
+				hunk:    true,
+			})
+			continue
+		}
+		if u.srcEnd > u.srcStart {
+			pieces = append(pieces, mergePiece{equal: src[u.srcStart:u.srcEnd]})
+		}
+	}
+	for i, e := range expanded {
+		if !emitted[i] {
+			pieces = append(pieces, mergePiece{oldText: e.oldText, newText: e.newText, hunk: true})
+		}
+	}
+
+	var out strings.Builder
+	out.Grow(len(src))
+	var hunkOld, hunkNew []byte
+	inHunk := false
+	flush := func() {
+		if !inHunk {
+			return
+		}
+		out.Write(MergeMarkerBytes(hunkOld, hunkNew))
+		hunkOld = hunkOld[:0]
+		hunkNew = hunkNew[:0]
+		inHunk = false
+	}
+
+	for _, p := range pieces {
+		if !p.hunk {
+			if len(p.equal) == 0 {
+				continue
+			}
+			flush()
+			out.Write(p.equal)
+			continue
+		}
+		if len(p.oldText) == 0 && len(p.newText) == 0 {
+			continue
+		}
+		if bytes.Equal(p.oldText, p.newText) {
+			// Nothing changed in this span; the old diff kept it as equal
+			// text (relevant for no-op edits and malformed marker blocks).
+			if len(p.oldText) > 0 {
+				flush()
+				out.Write(p.oldText)
+			}
+			continue
+		}
+		hunkOld = append(hunkOld, p.oldText...)
+		hunkNew = append(hunkNew, p.newText...)
+		inHunk = true
+	}
+	flush()
+
+	return []byte(out.String())
+}
+
+// mergeMarkerEditsFallback is the old whole-file implementation, used only
+// for malformed offsets or text that does not end in a newline.
+func mergeMarkerEditsFallback(src, accepted []byte, changes []Change, edits []Edit) []byte {
+	rejected := RejectAllChangesBytes(src, changes)
+	updated := applyEdits(accepted, edits)
+	return MergeMarkerBytes(rejected, updated)
+}
+
+// applyEdits applies non-overlapping edits to data in order.
+func applyEdits(data []byte, edits []Edit) []byte {
+	if len(edits) == 0 {
+		return data
+	}
+	ordered := append([]Edit(nil), edits...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Start < ordered[j].Start })
+
+	var out bytes.Buffer
+	out.Grow(len(data))
+	pos := 0
+	for _, e := range ordered {
+		if e.Start < pos || e.Start > e.End || e.End > len(data) {
+			return data
+		}
+		out.Write(data[pos:e.Start])
+		out.Write(e.New)
+		pos = e.End
+	}
+	out.Write(data[pos:])
+	return out.Bytes()
 }
 
 // MergeMarkerFiles reads filepath1 (original) and filepath2 (modified),
