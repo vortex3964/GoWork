@@ -43,7 +43,13 @@ the providers we support local or paid
 gemini\
 groq\
 chat gpt\
-anthropic
+anthropic\
+opencode-go
+
+`opencode-go` uses the OpenCode Go subscription tier. Paste your OpenCode Go
+subscription key into the same API key prompt as the other cloud providers
+(stored as `API_KEY`). The provider sends an `x-opencode-session` header to
+keep a conversation stable on the gateway.
 
 ### local no api key needed
 lmStudio\

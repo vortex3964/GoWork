@@ -168,11 +168,29 @@ func shellOut(dir string, arg ...string) string {
 }
 
 func get_supported_providers() []string {
-	return []string{"google", "anthropic", "groq", "openAi", "local"}
+	return []string{"google", "anthropic", "groq", "openAi", "opencode-go", "local"}
 }
 
 func get_supported_providers_local() []string {
 	return []string{"ollama", "llamaCpp", "lmStudio"}
+}
+
+// authFailureDetail prefers the provider's response body, which carries
+// entitlement messages such as "OpenCode Go subscription required", and falls
+// back to its status message when the body is empty.
+func authFailureDetail(perr *providers.ProviderError) string {
+	if perr == nil {
+		return "check your API key."
+	}
+	if perr.Err != nil {
+		if detail := strings.TrimSpace(perr.Err.Error()); detail != "" {
+			return detail
+		}
+	}
+	if detail := strings.TrimSpace(perr.Message); detail != "" {
+		return detail
+	}
+	return "check your API key."
 }
 
 // streamDeltaMsg carries a new chunk of assistant text while a generation is
@@ -1931,7 +1949,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case providers.ErrRateLimited:
 					m.MessageArea.AppendMessage("Rate limited - try again in a moment.", false)
 				case providers.ErrAuthFailed:
-					m.MessageArea.AppendMessage("Auth failed - check your API key.", false)
+					m.MessageArea.AppendMessage("Auth failed - "+authFailureDetail(perr), false)
 				case providers.ErrContextExceeded:
 					m.MessageArea.AppendMessage("Context window exceeded - try trimming history.", false)
 				case providers.ErrCanceled:
