@@ -24,7 +24,7 @@ func (t *LoadTool) Name() string { return LoadToolName }
 func (t *LoadTool) Kind() tools.Kind { return tools.KindAllowed }
 
 func (t *LoadTool) Description() string {
-	return `Lists, loads or unloads skills for this session. Skills must already be installed on disk; this tool never downloads anything. Loading adds a skill to the skill tool's available_skills block, unloading removes it. Use action "list" to see installed and loaded skills.`
+	return `Lists, loads or unloads skills for this session without downloading or writing files. Use action "list" to see every installed skill and whether it is loaded. Loading adds a skill to the skill tool's available_skills block for the next model turn; unloading removes it from this session only. Use this after skill_install when load was not requested, or to load a persisted skill in a new session.`
 }
 
 func (t *LoadTool) InputSchema() json.RawMessage {
@@ -93,7 +93,7 @@ func (t *LoadTool) Run(_ context.Context, _ tools.DispatchArgs, rawInput json.Ra
 			return tools.Errf("skill_load: action \"load\" requires a name"), nil
 		}
 		if !m.Load(name) {
-			return tools.Errf("skill_load: no installed skill named %q", name), nil
+			return tools.Errf("skill_load: no installed skill named %q\nnext call: skill_load {\"action\":\"list\"} to see installed names, or skill_install to install it first", name), nil
 		}
 		rebuildSkillToolDef()
 		return tools.Ok(fmt.Sprintf("loaded skill %q for this session", name)), nil

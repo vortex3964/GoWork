@@ -25,18 +25,18 @@ Use these exact names and paths relative to the project root. Batch independent 
 - `grep_search`: search file contents; honors `.gitignore`/`.agentignore`, skips hidden files by default, and includes pending changes.
 - `file_search`: find files by name or path pattern.
 - `list_directory`: list a directory's immediate entries.
-- `edit_file`: replace an inclusive 1-indexed line range in an existing file. Requires approval. Re-read if the file changed since your last read or write; a single trailing newline is the normal line ending.
-- `write_file`: replace an exact, unique text snippet in an existing file. Requires approval. Use `replace_all_mentions` when it appears multiple times. It does not detect external changes, so re-read when freshness matters.
+- `edit_file`: replace an inclusive 1-indexed line range. Requires approval; re-read if the file changed since your last read or write.
+- `write_file`: replace an exact, unique snippet in an existing file. Requires approval; set `replace_all_mentions` for duplicates. Re-read when freshness matters.
 - `create_file_tool`: create a new file with complete, non-empty content. Requires approval. It refuses to overwrite an existing file. A path ending in `/` creates only a directory.
 - `move_file`, `delete_file`: move or delete files. Both require approval. `move_file` overwrites an existing destination.
-- `bash`: run a shell command after per-call approval. Only `working_dir` is confined; the approved command is not sandboxed and may read or write other paths and use the network, so keep it focused and non-destructive. A best-effort deny list rejects common download/admin/install commands, and credential-looking environment variables are scrubbed before the shell starts. Long commands may be backgrounded.
+- `bash`: run a shell command after per-call approval. Only `working_dir` is confined; the command is not sandboxed, so keep it focused and non-destructive. A deny list rejects common download/admin/install commands and credential-like env vars are scrubbed.
 - `skill`: load a skill from the session's available skills when its instructions apply.
-- `skill_install`, `skill_load`, `mcp_install`, `mcp_list`, `mcp_remove`: skill/MCP install and management. Install and remove tools require approval; list and load do not.
+- `skill_install`, `skill_load`, `mcp_install`, `mcp_list`, `mcp_remove`: skill/MCP management. Install and remove require approval; list and load do not.
 - `web_fetch`, `web_search`: consult external sources when the task needs them. Both require approval.
 - `todo_list`: maintain a short session plan with baseline, push, mark, clear, and list actions.
 - `questions_tool`: ask up to 7 questions with up to 3 options each; the turn pauses for the answer.
 
-To add a skill or MCP server, load `gowork-bootstrap` with `skill_load` (`action: load`, `name: gowork-bootstrap`) and follow it. It is seeded, not auto-loaded; downloads are untrusted. No `bash` installs.
+For skills and MCPs, call `skill_install` or `mcp_install` directly: their descriptions cover sources, `path`/`ref`, `dry_run` first, rollback, and verification. `skill_load` loads a persisted skill. `gowork-bootstrap` has longer examples but is optional. Downloads are untrusted; never install with `bash`.
 
 ## Safety and scope
 - Stay inside the project root and use the file tools for file operations rather than shell workarounds.

@@ -7,10 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/url"
 	"os"
 	"path"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -188,8 +186,12 @@ func (r *toolRuntime) Remove(name string) error {
 // Install implements mcptool.Runtime. It merges an inline or downloaded MCP
 // config into the chosen scope, writes it atomically, and optionally starts
 // the changed servers through the same clients the Tools tab owns.
-func (r *toolRuntime) Install(ctx context.Context, opts tools.MCPInstallOptions) (tools.MCPInstallResult, error) {
-	var result tools.MCPInstallResult
+func (r *toolRuntime) Install(ctx context.Context, opts tools.MCPInstallOptions) (result tools.MCPInstallResult, err error) {
+	defer func() {
+		if err != nil {
+			err = sanitizeMCPInstallError(err)
+		}
+	}()
 	if r == nil {
 		return result, errors.New("MCP runtime is not available")
 	}
@@ -211,9 +213,15 @@ func (r *toolRuntime) Install(ctx context.Context, opts tools.MCPInstallOptions)
 	if err != nil {
 		return result, err
 	}
+	previousData, readErr := os.ReadFile(configPath)
+	configExisted := readErr == nil
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return result, readErr
+	}
+	previous := cloneMCPConfig(cfg)
 	incoming, err := r.loadMCPInstallConfigLocked(ctx, opts)
 	if err != nil {
-		return result, sanitizeMCPInstallError(err)
+		return result, err
 	}
 	selected, err := selectInstallMCPServers(incoming, opts.Servers)
 	if err != nil {
@@ -240,36 +248,87 @@ func (r *toolRuntime) Install(ctx context.Context, opts tools.MCPInstallOptions)
 		return result, nil
 	}
 
+	changed := append(append([]string(nil), added...), updated...)
+	sort.Strings(changed)
+	preConnected := make(map[string]bool, len(changed))
+	for _, name := range changed {
+		preConnected[name] = r.mcpClients[name] != nil
+	}
+
 	r.setScopeMCPConfigLocked(scope, working)
 	if err := r.saveMCPConfigScopeLocked(scope); err != nil {
 		r.setScopeMCPConfigLocked(scope, cfg)
-		return result, sanitizeMCPInstallError(err)
+		return result, err
 	}
 	r.rebuildMCPConfigLocked()
 
-	changed := append(append([]string(nil), added...), updated...)
-	sort.Strings(changed)
+	rollback := func(cause error, started []string) (tools.MCPInstallResult, error) {
+		for _, name := range started {
+			r.closeMCPClient(name)
+		}
+		r.setScopeMCPConfigLocked(scope, previous)
+		r.rebuildMCPConfigLocked()
+
+		var rollbackErrs []error
+		if configExisted {
+			if restoreErr := writeConfigFile(configPath, previousData); restoreErr != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("restoring mcp config: %w", restoreErr))
+			}
+		} else if removeErr := os.Remove(configPath); removeErr != nil && !os.IsNotExist(removeErr) {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("removing new mcp config: %w", removeErr))
+		}
+		for _, name := range changed {
+			if !preConnected[name] {
+				continue
+			}
+			server, ok := r.mcpCfg.Server(name)
+			if !ok {
+				continue
+			}
+			if restartErr := r.connectMCP(server); restartErr != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("restarting previous server %q: %w", name, restartErr))
+			}
+		}
+		if len(rollbackErrs) > 0 {
+			return result, fmt.Errorf("%w; rollback also failed: %v", cause, errors.Join(rollbackErrs...))
+		}
+		return result, fmt.Errorf("%w; install rolled back: no config was saved and no new server was left running", cause)
+	}
+
 	for _, name := range changed {
 		r.closeMCPClient(name)
 	}
+
+	var started []string
 	if opts.Start {
+		var startErrs []error
 		for _, name := range changed {
 			server, ok := r.mcpCfg.Server(name)
 			if !ok || !server.IsEnabled() {
 				continue
 			}
 			if err := r.connectMCP(server); err != nil {
-				result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", name, err))
+				startErrs = append(startErrs, fmt.Errorf("%s: %w", name, err))
 				continue
 			}
+			started = append(started, name)
 			result.Started = append(result.Started, name)
+		}
+		if len(startErrs) > 0 {
+			return rollback(errors.Join(startErrs...), started)
 		}
 	}
 	for _, name := range changed {
-		result.Tools += len(r.mcpTools[name])
+		count := len(r.mcpTools[name])
+		result.Tools += count
+		if count > 0 {
+			if result.ServerTools == nil {
+				result.ServerTools = map[string]int{}
+			}
+			result.ServerTools[name] = count
+		}
 	}
 	sort.Strings(result.Started)
-	sort.Strings(result.Errors)
 	return result, nil
 }
 
@@ -363,7 +422,7 @@ func (r *toolRuntime) loadMCPInstallConfigLocked(ctx context.Context, opts tools
 		return cfg, nil
 	}
 
-	input, err := applyMCPInstallRef(source, opts.Ref, r.root)
+	input, err := tools.ApplyMCPInstallRef(source, opts.Ref, r.root)
 	if err != nil {
 		return nil, err
 	}
@@ -376,7 +435,9 @@ func (r *toolRuntime) loadMCPInstallConfigLocked(ctx context.Context, opts tools
 		return nil, err
 	}
 
-	candidates := remote.Candidates
+	all := append([]remotesource.Candidate(nil), remote.Candidates...)
+	sort.Slice(all, func(i, j int) bool { return all[i].Path < all[j].Path })
+	candidates := all
 	if wanted := strings.TrimSpace(opts.Path); wanted != "" {
 		filtered := make([]remotesource.Candidate, 0, len(candidates))
 		for _, candidate := range candidates {
@@ -384,21 +445,16 @@ func (r *toolRuntime) loadMCPInstallConfigLocked(ctx context.Context, opts tools
 				filtered = append(filtered, candidate)
 			}
 		}
+		if len(filtered) == 0 {
+			return nil, fmt.Errorf("no mcp config matches path %q; candidates: %s\nnext call: repeat mcp_install with \"path\" set to one of the candidate paths above", wanted, mcpInstallCandidateList(all))
+		}
 		candidates = filtered
 	}
 	if len(candidates) == 0 {
-		if strings.TrimSpace(opts.Path) != "" {
-			return nil, fmt.Errorf("no mcp config matching %q in source", opts.Path)
-		}
-		return nil, errors.New("source contains no mcp config")
+		return nil, errors.New("source contains no mcp config\nnext call: pass a repository containing .mcp.json/mcp.json, a raw URL to one config file, a project-relative path, or use inline \"config\"")
 	}
 	if len(candidates) > 1 {
-		paths := make([]string, 0, len(candidates))
-		for _, candidate := range candidates {
-			paths = append(paths, candidate.Path)
-		}
-		sort.Strings(paths)
-		return nil, fmt.Errorf("source contains multiple files; set path to one of: %s", strings.Join(paths, ", "))
+		return nil, fmt.Errorf("source contains multiple files; set path to one of: %s\nnext call: repeat mcp_install with \"path\" set to one exact candidate path, \"start\":true", mcpInstallCandidateList(candidates))
 	}
 
 	data, err := remote.Fetch(ctx, candidates[0])
@@ -407,57 +463,18 @@ func (r *toolRuntime) loadMCPInstallConfigLocked(ctx context.Context, opts tools
 	}
 	cfg, err := mcp.ParseConfig(data)
 	if err != nil {
-		return nil, fmt.Errorf("invalid mcp config: %w", err)
+		return nil, fmt.Errorf("invalid mcp config in %s: %w\nnext call: fix the JSON to use one \"mcpServers\" object, or pass path to another candidate", candidates[0].Path, err)
 	}
 	return cfg, nil
 }
 
-func applyMCPInstallRef(source, ref, root string) (string, error) {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return source, nil
+func mcpInstallCandidateList(candidates []remotesource.Candidate) string {
+	paths := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		paths = append(paths, candidate.Path)
 	}
-	if strings.ContainsAny(ref, " \t\r\n") || strings.Contains(ref, "/") {
-		return "", errors.New("invalid ref: must not contain whitespace or path separators")
-	}
-	source = strings.TrimSpace(source)
-
-	if strings.Contains(source, "://") {
-		parsed, err := url.Parse(source)
-		if err != nil {
-			return "", errors.New("invalid GitHub repository URL")
-		}
-		host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
-		if host != "github.com" && host != "www.github.com" {
-			return "", errors.New("ref is only supported for GitHub repository sources")
-		}
-		segments := fieldsNonEmpty(parsed.Path)
-		if len(segments) != 2 {
-			return "", errors.New("source already pins a ref or path; remove the separate ref field")
-		}
-		return strings.TrimRight(source, "/") + "/tree/" + url.PathEscape(ref), nil
-	}
-
-	if filepath.IsAbs(source) || strings.HasPrefix(source, ".") {
-		return "", errors.New("ref is not valid for a local source")
-	}
-	if root != "" {
-		if info, err := os.Stat(filepath.Join(root, source)); err == nil && (info.IsDir() || info.Mode().IsRegular()) {
-			return "", errors.New("ref is not valid for a local source")
-		}
-	}
-	if strings.Contains(source, "@") {
-		return "", errors.New("ref was supplied both in source and in the ref field")
-	}
-	return source + "@" + ref, nil
-}
-
-func fieldsNonEmpty(value string) []string {
-	value = strings.Trim(value, `/\`)
-	if value == "" {
-		return nil
-	}
-	return strings.FieldsFunc(value, func(r rune) bool { return r == '/' || r == '\\' })
+	sort.Strings(paths)
+	return strings.Join(paths, ", ")
 }
 
 func matchMCPInstallPath(candidate, wanted string) bool {

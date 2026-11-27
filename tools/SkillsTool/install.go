@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/url"
 	"os"
@@ -113,6 +114,7 @@ func (m *Manager) InstallWithProvenance(name, content string, overwrite bool, pr
 	}
 	defer root.Close()
 
+	dirCreated := false
 	info, err := root.Lstat(name)
 	switch {
 	case err == nil:
@@ -126,11 +128,13 @@ func (m *Manager) InstallWithProvenance(name, content string, overwrite bool, pr
 		if err := root.Mkdir(name, 0o755); err != nil {
 			return Skill{}, fmt.Errorf("creating skill directory: %w", err)
 		}
+		dirCreated = true
 	default:
 		return Skill{}, fmt.Errorf("inspecting skill directory: %w", err)
 	}
 
 	target := filepath.Join(name, SkillFileName)
+	provTarget := filepath.Join(name, ProvenanceFileName)
 	if existing, err := root.Lstat(target); err == nil {
 		if existing.Mode()&os.ModeSymlink != 0 {
 			return Skill{}, fmt.Errorf("skill file %q is a symlink", target)
@@ -145,18 +149,55 @@ func (m *Manager) InstallWithProvenance(name, content string, overwrite bool, pr
 		return Skill{}, fmt.Errorf("inspecting skill file: %w", err)
 	}
 
+	// Snapshot both files before the first write. If the second write fails,
+	// both are restored (or removed when new) so a failed install cannot leave
+	// a half-written skill or a stale provenance sidecar.
+	cleanupNewDir := func() {
+		if dirCreated {
+			_ = root.Remove(name)
+		}
+	}
+	skillSnapshot, err := snapshotRootFile(root, target)
+	if err != nil {
+		cleanupNewDir()
+		return Skill{}, err
+	}
+	provSnapshot, err := snapshotRootFile(root, provTarget)
+	if err != nil {
+		cleanupNewDir()
+		return Skill{}, err
+	}
+	rollback := func(cause error) error {
+		var rollbackErrs []error
+		if err := restoreRootFile(root, provTarget, provSnapshot); err != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("restoring provenance: %w", err))
+		}
+		if err := restoreRootFile(root, target, skillSnapshot); err != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("restoring SKILL.md: %w", err))
+		}
+		if dirCreated {
+			if err := root.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("removing new skill directory: %w", err))
+			}
+		}
+		if len(rollbackErrs) > 0 {
+			return fmt.Errorf("%w; rollback also failed: %v", cause, errors.Join(rollbackErrs...))
+		}
+		return fmt.Errorf("%w (install rolled back; no files were changed)", cause)
+	}
+
 	if err := writeRootFileAtomic(root, target, []byte(content), 0o644); err != nil {
-		return Skill{}, fmt.Errorf("writing skill file: %w", err)
+		return Skill{}, rollback(fmt.Errorf("writing skill file: %w", err))
 	}
 
 	prov = normalizeProvenance(prov, content)
 	provData, err := json.MarshalIndent(prov, "", "  ")
 	if err != nil {
-		return Skill{}, fmt.Errorf("encoding skill provenance: %w", err)
+		return Skill{}, rollback(fmt.Errorf("encoding skill provenance: %w", err))
 	}
 	provData = append(provData, '\n')
-	if err := writeRootFileAtomic(root, filepath.Join(name, ProvenanceFileName), provData, 0o644); err != nil {
-		return Skill{}, fmt.Errorf("writing skill provenance: %w", err)
+	if err := writeRootFileAtomic(root, provTarget, provData, 0o644); err != nil {
+		return Skill{}, rollback(fmt.Errorf("writing skill provenance: %w", err))
 	}
 
 	// Best-effort directory fsync: the file itself was synced before rename,
@@ -220,6 +261,52 @@ func writeRootFileAtomic(root *os.Root, name string, data []byte, perm os.FileMo
 	}
 	renamed = true
 	return nil
+}
+
+// rootFileSnapshot is the prior state of one file inside the skills root.
+type rootFileSnapshot struct {
+	exists bool
+	data   []byte
+	mode   os.FileMode
+}
+
+func snapshotRootFile(root *os.Root, name string) (rootFileSnapshot, error) {
+	info, err := root.Lstat(name)
+	if errors.Is(err, fs.ErrNotExist) {
+		return rootFileSnapshot{}, nil
+	}
+	if err != nil {
+		return rootFileSnapshot{}, fmt.Errorf("inspecting skill file: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return rootFileSnapshot{}, fmt.Errorf("skill file %q is a symlink", name)
+	}
+	if !info.Mode().IsRegular() {
+		return rootFileSnapshot{}, fmt.Errorf("skill file %q is not a regular file", name)
+	}
+	f, err := root.Open(name)
+	if err != nil {
+		return rootFileSnapshot{}, fmt.Errorf("reading skill file: %w", err)
+	}
+	data, readErr := io.ReadAll(f)
+	closeErr := f.Close()
+	if readErr != nil {
+		return rootFileSnapshot{}, fmt.Errorf("reading skill file: %w", readErr)
+	}
+	if closeErr != nil {
+		return rootFileSnapshot{}, fmt.Errorf("closing skill file: %w", closeErr)
+	}
+	return rootFileSnapshot{exists: true, data: data, mode: info.Mode().Perm()}, nil
+}
+
+func restoreRootFile(root *os.Root, name string, snapshot rootFileSnapshot) error {
+	if !snapshot.exists {
+		if err := root.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	return writeRootFileAtomic(root, name, snapshot.data, snapshot.mode)
 }
 
 func randomSuffix() (string, error) {
