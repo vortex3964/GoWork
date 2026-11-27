@@ -218,6 +218,78 @@ func TestCompactContextEmptySummaryIsNoOp(t *testing.T) {
 	}
 }
 
+func TestCompactContextIfChangedReportsNoOp(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "task"},
+		{Role: "assistant", Content: "answer"},
+	}
+	if got, changed := CompactContextIfChanged(msgs, "summary", 2); changed {
+		t.Errorf("compaction with nothing old enough reported a change: %+v", got)
+	}
+
+	full := []Message{
+		{Role: "user", Content: "old"},
+		{Role: "assistant", Content: "old answer"},
+		{Role: "user", Content: "recent"},
+		{Role: "assistant", Content: "recent answer"},
+	}
+	got, changed := CompactContextIfChanged(full, "summary", 1)
+	if !changed {
+		t.Fatal("compaction that replaced an old turn reported no change")
+	}
+	if len(got) >= len(full) {
+		t.Errorf("compacted history did not shrink: %d >= %d", len(got), len(full))
+	}
+}
+
+// TestEstimateCompactedContextTokensReusesProviderSummaryUsage makes sure the
+// post-compaction prompt estimate takes the summary's size from the provider
+// instead of recounting the whole (potentially huge) summary text.
+func TestEstimateCompactedContextTokensReusesProviderSummaryUsage(t *testing.T) {
+	InitToolsDef(nil)
+	const model = "gpt-4o"
+
+	compacted := []Message{
+		{Role: "user", Content: "summary preamble\n\n" + repeat("s", 40000)},
+		{Role: "user", Content: "retained task"},
+		{Role: "assistant", Content: "retained answer"},
+	}
+	const summaryTokens = 25
+	usage := Usage{PromptTokens: 99000, CompletionTokens: summaryTokens, TotalTokens: 99025}
+
+	got := EstimateCompactedContextTokens(compacted, usage, model)
+	summaryPart := EstimateOverheadTokensForModel(model) + summaryTokens + 16
+	// The retained tail is tiny; allow slack so the assertion doesn't depend
+	// on whether the background tokenizer has finished loading.
+	if got < summaryPart || got > summaryPart+100 {
+		t.Fatalf("EstimateCompactedContextTokens = %d, want %d plus a small tail estimate", got, summaryPart)
+	}
+
+	// The huge summary body must not have been counted; a full recount
+	// would dwarf the provider-reported 25-token summary.
+	if full := EstimateContextTokens(compacted, model); got >= full {
+		t.Fatalf("estimate %d did not reuse provider summary usage (full recount %d)", got, full)
+	}
+	if got >= usage.PromptTokens {
+		t.Fatalf("estimate %d should describe the compacted context, not the pre-summary request (%d)", got, usage.PromptTokens)
+	}
+}
+
+// TestEstimateCompactedContextTokensFallsBackWithoutUsage covers providers
+// that don't report completion usage: the summary is estimated locally.
+func TestEstimateCompactedContextTokensFallsBackWithoutUsage(t *testing.T) {
+	InitToolsDef(nil)
+	const model = "gpt-4o"
+	compacted := []Message{
+		{Role: "user", Content: "summary"},
+		{Role: "assistant", Content: "answer"},
+	}
+	got := EstimateCompactedContextTokens(compacted, Usage{}, model)
+	if want := EstimateContextTokens(compacted, model); got != want {
+		t.Fatalf("fallback estimate = %d, want %d", got, want)
+	}
+}
+
 func TestWithoutSystemOmitsPromptAndTools(t *testing.T) {
 	InitSystemPrompt("SYSTEM PROMPT")
 	InitToolsDef([]ToolDef{{Name: "read_file", Description: "reads", InputSchema: json.RawMessage(`{"type":"object"}`)}})

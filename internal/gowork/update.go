@@ -343,7 +343,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.endTurn()
 				return m, nil
 			}
-			return m, compactCmd(p, m.Context, m.status.contextWindow, todo.GetTodoList().String())
+			return m, compactCmd(p, m.Context, m.status.contextWindow, m.status.modelID, todo.GetTodoList().String())
 		}
 
 		m.endTurn()
@@ -363,8 +363,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				msg.usage.PromptTokens, msg.usage.CompletionTokens,
 				msg.usage.TotalTokens, 0, time.Now())
 		}
-		m.Context = providers.CompactContext(m.Context, msg.summary, 2)
-		m.status.lastPromptTokens = providers.EstimateContextTokens(m.Context, m.status.modelID)
+		// compactCmd already applied CompactContext and derived the new
+		// prompt size from the provider-reported summary usage. Its
+		// usage.PromptTokens describes the pre-summary request, so it is
+		// deliberately not assigned to lastPromptTokens here. When nothing
+		// was replaced, keep the previous (still accurate) value.
+		if msg.context != nil {
+			m.Context = msg.context
+		}
+		if msg.promptTokens > 0 {
+			m.status.lastPromptTokens = msg.promptTokens
+		}
 		m.MessageArea.AppendMessage(">**INFO** Conversation condensed to fit the context window - continue when ready.", false)
 		m.endTurn()
 		if m.ChangesList.Open() {

@@ -299,7 +299,7 @@ func (m *model) startManualCompaction() tea.Cmd {
 	}
 	*m.AiThink = true
 	m.MessageArea.AppendMessage(">**INFO** Condensing the conversation...", false)
-	return tea.Batch(m.spinner.Tick, compactCmd(p, m.Context, m.status.contextWindow))
+	return tea.Batch(m.spinner.Tick, compactCmd(p, m.Context, m.status.contextWindow, m.status.modelID))
 }
 
 func (m *model) contextCommand(args []string) tea.Cmd {

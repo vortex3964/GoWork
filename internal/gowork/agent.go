@@ -45,11 +45,17 @@ type modelInfoMsg struct {
 
 // compactResultMsg reports the outcome of a context-compaction call: the
 // model's summary of the earlier conversation, plus the tokens the summary
-// itself cost.
+// itself cost. The usage describes the compaction request itself (the
+// pre-summary history plus the compaction prompt), not the compressed history
+// that replaces it, so promptTokens carries the cheap post-compaction estimate
+// derived from that usage. context is the compacted history and is nil when
+// compaction could not shrink anything.
 type compactResultMsg struct {
-	summary string
-	usage   providers.Usage
-	err     error
+	summary      string
+	usage        providers.Usage
+	context      []providers.Message
+	promptTokens int
+	err          error
 }
 
 // pendingTool is one assistant-requested tool call waiting to run, paired
@@ -270,7 +276,11 @@ func isCancelError(err error) bool {
 // history (see compactResultMsg). It reads m's state once up front and never
 // touches the model from this goroutine. todoState snapshots the live todo
 // list so the summary's Work State can reflect outstanding tasks.
-func compactCmd(p providers.Provider, messages []providers.Message, window int, todoState ...string) tea.Cmd {
+//
+// The compacted history and its prompt-token estimate are computed here too,
+// off the update loop, so compactResultMsg handling never has to recount the
+// compressed transcript. model is the model ID used for that estimate.
+func compactCmd(p providers.Provider, messages []providers.Message, window int, model string, todoState ...string) tea.Cmd {
 	return func() tea.Msg {
 		// The compaction call only needs history + the compaction prompt:
 		// WithoutSystem makes providers skip the system prompt and tool
@@ -281,7 +291,12 @@ func compactCmd(p providers.Provider, messages []providers.Message, window int, 
 		if err != nil {
 			return compactResultMsg{err: err}
 		}
-		return compactResultMsg{summary: res.Content, usage: res.Usage}
+		msg := compactResultMsg{summary: res.Content, usage: res.Usage}
+		if compacted, changed := providers.CompactContextIfChanged(messages, res.Content, providers.DefaultCompactionKeepTurns); changed {
+			msg.context = compacted
+			msg.promptTokens = providers.EstimateCompactedContextTokens(compacted, res.Usage, model)
+		}
+		return msg
 	}
 }
 

@@ -1,5 +1,11 @@
 package gowork
 
+import (
+	tea "charm.land/bubbletea/v2"
+
+	"GoWork/providers"
+)
+
 // Model is the application model exposed for tests in package test.
 type Model = model
 
@@ -59,4 +65,33 @@ func (m *model) EndTurn() {
 // ResumeSession restores a previously saved session's messages and skills.
 func (m *model) ResumeSession(id int64) {
 	m.resumeSession(id)
+}
+
+// RunCompaction executes the compaction command synchronously and returns the
+// message the update loop would receive. Exposed for tests in package test.
+func RunCompaction(p providers.Provider, messages []providers.Message, window int, model string, todoState ...string) tea.Msg {
+	return compactCmd(p, messages, window, model, todoState...)()
+}
+
+// SetContextWindow records the model's known context window. Exposed for
+// tests in package test.
+func (m *model) SetContextWindow(n int) {
+	m.status.contextWindow = n
+}
+
+// PromptTokens returns the prompt-token count the statusline and the
+// compaction trigger are currently using.
+func (m model) PromptTokens() int {
+	return m.status.lastPromptTokens
+}
+
+// SessionTokens returns the running session token total.
+func (m model) SessionTokens() int {
+	return m.status.sessionTokens
+}
+
+// ShouldCompact reports whether the current context is in the compaction
+// zone.
+func (m model) ShouldCompact() bool {
+	return m.shouldCompact()
 }
