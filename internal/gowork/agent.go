@@ -139,6 +139,12 @@ func (m *model) nextPendingPermissionSlice() int {
 		if m.AutoAcceptTools {
 			continue
 		}
+		if m.planMode && !tools.PlanModeAllows(m.pendingTools[i].call.Tool_name, m.pendingTools[i].call.Input) {
+			// The dispatcher will refuse this call in plan mode. Don't ask
+			// the user to approve an action that cannot run: let it fall
+			// through to the dispatcher's model-readable refusal instead.
+			continue
+		}
 		tool, ok := m.tool_dispatcher.Lookup(m.pendingTools[i].call.Tool_name)
 		if !ok || tool.Kind() == tools.KindAllowed {
 			continue

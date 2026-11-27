@@ -32,6 +32,17 @@ func IsTurnInterrupt(key string, turnRunning bool) bool {
 	return isTurnInterrupt(key, turnRunning)
 }
 
+// PlanModeActive reports whether the app is in read-only plan mode.
+func (m model) PlanModeActive() bool {
+	return m.planMode
+}
+
+// StatusLineText renders the current statusline so tests can assert on its
+// mode indicators.
+func (m model) StatusLineText() string {
+	return renderStatusLine(m)
+}
+
 // AppDataRoot is where GoWork keeps its own data (the executable's folder).
 func AppDataRoot(projectRoot string) string {
 	return appDataRoot(projectRoot)

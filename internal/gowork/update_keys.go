@@ -116,6 +116,23 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// Plan (read-only) mode is session-wide, so its toggle works from every
+	// layout that doesn't already own the keyboard: prompt, idle, changes,
+	// recall, stats and skills. Modal forms, the provider picker, the
+	// permission box and the questionnaire handled above keep their keys.
+	if msg_str == "ctrl+shift+p" {
+		m.togglePlanMode()
+		return m, nil
+	}
+	// Esc from the idle layout (the statusline's mode indicator is visible
+	// there) leaves plan mode. While the prompt is focused, the first esc
+	// keeps its usual job of blurring it, and a second esc then exits plan
+	// mode.
+	if msg_str == "esc" && m.planMode && m.Mode == modeIdle {
+		m.setPlanMode(false)
+		return m, nil
+	}
+
 	// Tab navigation works in every mode: ctrl+tab / tab = next,
 	// ctrl+shift+tab / shift+tab = previous.
 	switch msg_str {

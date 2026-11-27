@@ -42,6 +42,7 @@ const (
 	statusCtxBG      = "#e0af68" // context window % used
 	statusTokBG      = "#9ece6a" // session token total
 	statusTodoBG     = "#8B5A2B" // todo panel open (brown)
+	statusPlanBG     = "#bb9af7" // read-only plan mode (violet)
 
 	statusFG = "#1a1b26"
 )
@@ -87,6 +88,11 @@ func renderStatusLine(m model) string {
 		{bg: statusModelBG, text: m.status.modelID},
 		{bg: statusProviderBG, text: m.status.providerName},
 	})
+	if m.planMode {
+		left += renderChain([]segment{
+			{bg: statusPlanBG, text: "PLAN · READ-ONLY"},
+		})
+	}
 	if m.todoPanelOpen {
 		todoCount := todo.GetTodoList().Size
 		left += renderChain([]segment{

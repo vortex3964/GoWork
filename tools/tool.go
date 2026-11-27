@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	ignore "github.com/sabhiram/go-gitignore"
 	cl "GoWork/Tui/Components/ChangesList"
@@ -183,12 +184,70 @@ type AgentTool interface {
 //code for the dispatcher
 type Dispatcher struct {
 	tools map[string]AgentTool
-	args DispatchArgs
+	args  DispatchArgs
+	// planMode turns the dispatcher read-only: mutating calls are refused
+	// with a model-readable result while reads keep working. Atomic because
+	// tool batches run on worker goroutines while the TUI can flip the mode.
+	planMode atomic.Bool
 }
 
 type ToolUse struct {
 	Name  string          `json:"name"`
 	Input json.RawMessage `json:"input"`
+}
+
+// planModeReadOnlyTools is the positive allowlist for plan (read-only) mode.
+// The gate is default-deny, so a newly added tool stays blocked until it is
+// deliberately classified here.
+var planModeReadOnlyTools = map[string]struct{}{
+	"read_file":      {},
+	"grep_search":    {},
+	"file_search":    {},
+	"list_directory": {},
+	"skill":          {},
+	// web_search only queries the web; it does not touch the workspace.
+	"web_search": {},
+}
+
+// PlanModeAllows reports whether a tool call is safe to run while plan mode is
+// active. Read-only tools are allowed, todo_list is allowed only for its
+// non-mutating "list" action, and every unknown name is treated as mutating
+// (default deny). web_fetch is blocked because long pages are persisted under
+// the project root, bash is blocked because it can change anything, and
+// questions_tool is blocked because it mutates the session's questionnaire
+// state and parks the turn.
+func PlanModeAllows(name string, input json.RawMessage) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+
+	if name == "todo_list" {
+		var in struct {
+			Action string `json:"action"`
+		}
+		if err := json.Unmarshal(input, &in); err != nil {
+			return false
+		}
+		return strings.EqualFold(strings.TrimSpace(in.Action), "list")
+	}
+
+	_, ok := planModeReadOnlyTools[name]
+	return ok
+}
+
+// SetPlanMode switches the dispatcher between normal operation and read-only
+// plan mode. Safe to call while tool batches are running.
+func (d *Dispatcher) SetPlanMode(on bool) {
+	if d == nil {
+		return
+	}
+	d.planMode.Store(on)
+}
+
+// PlanMode reports whether read-only plan mode is enabled.
+func (d *Dispatcher) PlanMode() bool {
+	if d == nil {
+		return false
+	}
+	return d.planMode.Load()
 }
 
 func InitDispacher(projectRoot string , wl *cl.WatchList , getProvider ProviderGetter ,tools ... AgentTool) ( *Dispatcher , error ) {
@@ -216,6 +275,14 @@ func (d *Dispatcher) Dispach(ctx context.Context , tu ToolUse )  ToolResult {
 
 	if !ok {
 		return Errf("unknown tool:%q",tu.Name)
+	}
+
+	// Plan mode is enforced here, at the single choke point every tool call
+	// passes through, rather than in individual tools. The model gets a
+	// normal tool result explaining the refusal so it can pivot to read-only
+	// investigation instead of silently losing the call.
+	if d.planMode.Load() && !PlanModeAllows(tu.Name, tu.Input) {
+		return Errf(">**PLAN MODE** Tool `%s` is blocked because plan mode is read-only and this tool can modify the workspace. No changes were made. Use read_file, grep_search, file_search or list_directory to inspect the code and present a plan, or ask the user to leave plan mode (ctrl+shift+p) before applying changes.", tu.Name)
 	}
 
 	res , err := tool.Run(ctx , d.args , tu.Input)

@@ -115,6 +115,11 @@ type model struct {
 	// which UI mode we're in (idle, prompt entry, provider select, ...)
 	Mode uiMode
 
+	// planMode is the session-wide read-only switch (ctrl+shift+p). It is
+	// orthogonal to Mode: the prompt stays usable, but the dispatcher refuses
+	// every mutating tool call until the switch is turned off again.
+	planMode bool
+
 	// size of the window
 	winWidth  int
 	winHeight int
@@ -323,6 +328,37 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 		Stats:             stats.New(),
 		skillForm:         skillform.New(),
 	}
+}
+
+// setPlanMode switches read-only plan mode on or off and keeps the dispatcher
+// in sync. Plan mode is session-wide and independent of the active tab or
+// prompt focus: read tools keep working, mutating tools return a refusal the
+// model can read. The message area gets a short explanation on every change so
+// the state is discoverable in-app.
+func (m *model) setPlanMode(on bool) {
+	if m.planMode == on {
+		return
+	}
+	m.planMode = on
+	if m.tool_dispatcher != nil {
+		m.tool_dispatcher.SetPlanMode(on)
+	}
+	if on {
+		m.MessageArea.AppendMessage(
+			">**PLAN MODE ON** Read-only: file writes, edits, moves, deletes, bash and web_fetch are blocked. Read-only tools still work. Press ctrl+shift+p to leave plan mode (or esc when the prompt is not focused).",
+			false,
+		)
+		return
+	}
+	m.MessageArea.AppendMessage(
+		">**INFO** Plan mode off - tools may modify the workspace again.",
+		false,
+	)
+}
+
+// togglePlanMode flips read-only plan mode.
+func (m *model) togglePlanMode() {
+	m.setPlanMode(!m.planMode)
 }
 
 // maxAgentStepsFromEnv reads MAX_AGENT_STEPS (a positive int) and falls back
