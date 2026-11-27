@@ -1,0 +1,149 @@
+package gowork
+
+import tea "charm.land/bubbletea/v2"
+
+func (m model) handleMouseClickMsg(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
+	if m.Mode == modeProviderSelect || m.Mode == modePermission {
+		return m, nil
+	}
+	if m.Mode == modeQuestionnaire {
+		return m, nil
+	}
+	if msg.Button == tea.MouseLeft {
+		// On the stats tab the whole area below the tabs belongs to the
+		// dashboard: clicks select list rows, wheel scrolls.
+		if m.Tabs.Active().Name == "stats" && msg.Y >= m.panelTop() {
+			m.Stats.HandleMouseClick(msg.X, msg.Y-m.panelTop())
+			return m, nil
+		}
+		if m.Tabs.Active().Name == "skills" && msg.Y >= m.panelTop() && msg.Y < m.promptTop() {
+			m.Skills.HandleMouseClick(msg.X, msg.Y-m.panelTop())
+			return m, nil
+		}
+		// The tab strip renders taller than one line (its border adds top
+		// and bottom rows), so let clicks anywhere on it switch tabs. The
+		// prompt bar sits pinned just above the statusline at the bottom
+		// of the screen, so it owns exactly m.Prompt.Height() rows starting
+		// at promptTop() - anything below that is the statusline, which
+		// isn't clickable. On the code and skills tabs, whose layouts
+		// pin the prompt bar, clicking it focuses it.
+		// The todo panel toggle arrow, drawn at the middle of the
+		// message band. Clicking it flips the sidebar open/closed.
+		if m.Tabs.Active().Name == "code" && msg.Y == m.arrowRow() && msg.X == m.arrowCol() {
+			m.toggleTodoPanel()
+			return m, nil
+		}
+		// Starting a drag anywhere on the panel's left edge (the same
+		// column as the toggle arrow, but any band row) arms the resize
+		// handle MouseMotionMsg then follows with the live cursor.
+		if m.todoPanelOpen && m.Tabs.Active().Name == "code" &&
+			msg.Y > m.panelTop() && msg.Y < m.promptTop() &&
+			abs(msg.X-m.arrowCol()) <= 1 {
+			m.panelDragActive = true
+			m.panelDragStartX = msg.X
+			m.panelDragWidth = m.panelWidth()
+			return m, nil
+		}
+		switch {
+		case msg.Y < m.Tabs.Height():
+			m.Tabs.HandleClick(msg.X)
+			m.syncModeToTab()
+		case (m.Tabs.Active().Name == "code" || m.Tabs.Active().Name == "skills") &&
+			msg.Y >= m.promptTop() && msg.Y < m.promptTop()+m.Prompt.Height():
+			m.historyIdx = 0
+			if m.Tabs.Active().Name == "code" {
+				m.Mode = modePrompt
+			}
+			return m, m.Prompt.Focus()
+		}
+	}
+	return m, nil
+}
+
+func (m model) handleMouseWheelMsg(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	if m.Mode == modeProviderSelect || m.Mode == modePermission {
+		return m, nil
+	}
+	if m.Mode == modeQuestionnaire {
+		return m, nil
+	}
+	// Scrolling either box doesn't require focus — same as scrolling
+	// a window you're not "in" in nvim.
+	if m.Tabs.Active().Name == "stats" {
+		m.Stats.HandleMouseWheel(msg.X, msg.Y-m.panelTop(), msg.Button == tea.MouseWheelUp)
+		return m, nil
+	}
+	if m.Tabs.Active().Name == "skills" {
+		promptTop := m.promptTop()
+		switch {
+		case msg.Y >= promptTop && msg.Y < promptTop+m.Prompt.Height():
+			switch msg.Button {
+			case tea.MouseWheelUp:
+				m.Prompt.ScrollUp()
+			case tea.MouseWheelDown:
+				m.Prompt.ScrollDown()
+			}
+		case msg.Y >= topBarHeight && msg.Y < promptTop:
+			m.Skills.HandleMouseWheel(msg.Button == tea.MouseWheelUp)
+		}
+		return m, nil
+	}
+	if m.Tabs.Active().Name == "code" {
+		promptTop := m.promptTop()
+		switch {
+		case msg.Y >= promptTop && msg.Y < promptTop+m.Prompt.Height():
+			switch msg.Button {
+			case tea.MouseWheelUp:
+				m.Prompt.ScrollUp()
+			case tea.MouseWheelDown:
+				m.Prompt.ScrollDown()
+			}
+		case m.Mode == modeChangeHandling && msg.Y >= topBarHeight && msg.Y < promptTop:
+			// The wheel is reserved for the file-explorer pane
+			// while the changes list is open the results list
+			// is navigated with the arrow keys instead.
+			switch msg.Button {
+			case tea.MouseWheelUp:
+				m.ChangesList.ExplorerScrollUp()
+			case tea.MouseWheelDown:
+				m.ChangesList.ExplorerScrollDown()
+			}
+		case msg.Y >= topBarHeight && msg.Y < promptTop:
+			switch msg.Button {
+			case tea.MouseWheelUp:
+				m.MessageArea.ScrollUp()
+			case tea.MouseWheelDown:
+				m.MessageArea.ScrollDown()
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m model) handleMouseMotionMsg(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd) {
+	if m.Mode == modePermission {
+		return m, nil
+	}
+	if m.panelDragActive && m.todoPanelOpen && m.Tabs.Active().Name == "code" {
+		delta := msg.X - m.panelDragStartX
+		w := m.panelDragWidth + delta
+		if w < 20 {
+			w = 20
+		}
+		if w > m.winWidth/2 {
+			w = m.winWidth / 2
+		}
+		m.todoPanelWidth = w
+		m.applyPanelSize()
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m model) handleMouseReleaseMsg(msg tea.MouseReleaseMsg) (tea.Model, tea.Cmd) {
+	if m.Mode == modePermission {
+		return m, nil
+	}
+	m.panelDragActive = false
+	return m, nil
+}

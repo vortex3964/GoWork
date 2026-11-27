@@ -1,0 +1,340 @@
+package gowork
+
+import (
+	"strings"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/atotto/clipboard"
+
+	popup "GoWork/Tui/Components/PopUp"
+
+	"GoWork/tools/QuestionnaireTool"
+)
+
+func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	msg_str := msg.String()
+
+	if msg_str == "ctrl+c" {
+		if m.Mode == modeProviderSelect {
+			var cmd tea.Cmd
+			m.providerSelect, cmd = m.providerSelect.Update(msg)
+			return m, cmd
+		}
+		return m, tea.Quit
+	}
+
+	// While a permission request is up, every key goes to the permisionbox
+	// (except ctrl+c above, which still quits).
+	if m.Mode == modePermission {
+		var cmd tea.Cmd
+		m.permissionBox, cmd = m.permissionBox.Update(msg)
+		return m, cmd
+	}
+
+	if msg_str == "ctrl+p" {
+		if m.Mode == modeProviderSelect {
+			return m, nil
+		}
+		// Don't let the picker open (or the provider swap while it's
+		// open) mid-agentic-loop: the in-flight turn re-reads the
+		// provider when it loops back to the model, so switching here
+		// would send the rest of the run to a different provider with
+		// context shaped for another one.
+		if *m.AiThink {
+			m.MessageArea.AppendMessage(">**INFO** Wait for the current turn to finish before switching providers.", false)
+			return m, nil
+		}
+		return m, m.openProviderSelect()
+	}
+
+	// ctrl+i interrupts the current turn - the streamed generation and/or
+	// the tool batch. A terminal delivers ctrl+i as the same byte as tab
+	// (0x09), so while a turn is running both spellings interrupt. When
+	// idle, plain tab stays free for tab switching and ctrl+i is a no-op.
+	if msg_str == "ctrl+i" || msg_str == "tab" {
+		turnRunning := *m.AiThink && m.cancel != nil
+		if isTurnInterrupt(msg_str, turnRunning) {
+			m.stopRequested = true
+			m.cancel()
+			if m.Mode == modeQuestionnaire {
+				// Abort the open questionnaire so the batch can wind down.
+				m.answerQuestionnaire(questionnairetool.FormatCancelled())
+				for _, r := range m.pendingResults {
+					if r == nil {
+						return m, nil
+					}
+				}
+				return m, m.loopAfterBatch()
+			}
+			m.MessageArea.AppendMessage(">**INFO** Stopping…", false)
+			return m, nil
+		}
+		if msg_str == "ctrl+i" {
+			return m, nil
+		}
+	}
+
+	// A visible modal swallows all keys so the user has to dismiss it
+	// (Enter confirms its focused button, Escape cancels).
+	if m.modal.IsVisible() {
+		var cmd tea.Cmd
+		m.modal, cmd = m.modal.Update(msg)
+		return m, cmd
+	}
+
+	if m.Mode == modeProviderSelect {
+		var cmd tea.Cmd
+		m.providerSelect, cmd = m.providerSelect.Update(msg)
+		return m, cmd
+	}
+
+	if msg_str == "ctrl+l" {
+		if m.Mode == modeChangeHandling {
+			m.ChangesList.Close()
+			return m, m.restoreModeForActiveTab()
+		}
+		if !canOpenChangesList(m.Mode, m.Tabs.Active().Name) {
+			return m, nil
+		}
+		m.Prompt.Blur()
+		m.Mode = modeChangeHandling
+		return m, tea.Batch(m.ChangesList.Toggle(), m.ChangesList.WatchCmd())
+	}
+
+	// A pending questionnaire owns every key until the user answers
+	if m.Mode == modeQuestionnaire {
+		var cmd tea.Cmd
+		m.questionnaire, cmd = m.questionnaire.Update(msg)
+		return m, cmd
+	}
+
+	// An open skill form owns its keys before tab navigation kicks in,
+	// so tab/shift+tab move between its fields instead of the top tabs.
+	if m.Mode == modeSkills && m.skillForm.Visible() {
+		var cmd tea.Cmd
+		m.skillForm, cmd = m.skillForm.Update(msg)
+		return m, cmd
+	}
+
+	// Tab navigation works in every mode: ctrl+tab / tab = next,
+	// ctrl+shift+tab / shift+tab = previous.
+	switch msg_str {
+	case "ctrl+tab", "tab":
+		m.Tabs.Next()
+		m.syncModeToTab()
+		return m, nil
+	case "ctrl+shift+tab", "shift+tab":
+		m.Tabs.Prev()
+		m.syncModeToTab()
+		return m, nil
+	}
+
+	// In stats mode every remaining key is the stats screen's to handle:
+	// up/down navigate the list, left/right pan, enter magnifies, / or
+	// any printable char filters, and esc dismisses whatever's open
+	// (filter/detail) or leaves the tab altogether.
+	if m.Mode == modeStats {
+		switch msg_str {
+		case "esc":
+			if m.Stats.CanExitStatsMode() {
+				m.Tabs.ActiveIdx = 0
+				m.syncModeToTab()
+				return m, nil
+			}
+		}
+		var cmd tea.Cmd
+		m.Stats, cmd = m.Stats.Update(msg)
+		return m, cmd
+	}
+
+	// Skills mode mirrors stats: the prompt bar is hidden, and the
+	// open skill-form modal or an active search swallows keys first.
+	if m.Mode == modeSkills {
+		if m.skillForm.Visible() {
+			var cmd tea.Cmd
+			m.skillForm, cmd = m.skillForm.Update(msg)
+			return m, cmd
+		}
+		if m.Prompt.Focused() {
+			switch msg_str {
+			case "esc":
+				m.Prompt.Blur()
+				return m, nil
+			case "shift+enter", "ctrl+j":
+				m.Prompt.InsertNewline()
+				m.syncPromptHeight()
+				return m, nil
+			case "enter":
+				m.skillForm.Open()
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.Prompt, cmd = m.Prompt.Update(msg)
+			return m, cmd
+		}
+		switch msg_str {
+		case "enter":
+			// A committed search keeps its Enter; otherwise Enter
+			// focuses the prompt bar (mirroring the code tab).
+			if m.Skills.Filtering() {
+				var cmd tea.Cmd
+				m.Skills, cmd = m.Skills.Update(msg)
+				return m, cmd
+			}
+			return m, m.Prompt.Focus()
+		case "i":
+			m.Prompt.Focus()
+			return m, nil
+		case "esc":
+			if m.Skills.CanExitSkillsMode() {
+				m.Tabs.ActiveIdx = 0
+				m.syncModeToTab()
+				return m, nil
+			}
+		}
+		var cmd tea.Cmd
+		m.Skills, cmd = m.Skills.Update(msg)
+		return m, cmd
+	}
+
+	if m.Mode == modeChangeHandling {
+		switch msg_str {
+		case "esc", "tab", "enter":
+			m.ChangesList.Close()
+			m.Mode = modePrompt
+			return m, m.Prompt.Focus()
+		case "up":
+			m.ChangesList.CursorUp()
+			return m, nil
+		case "down":
+			m.ChangesList.CursorDown()
+			return m, nil
+		case "?":
+			m.ChangesList.ToggleHelp()
+			return m, nil
+		case "ctrl+a":
+			return m, m.ChangesList.AcceptSelected()
+		case "ctrl+r":
+			return m, m.ChangesList.RejectSelected()
+		case "ctrl+f":
+			return m, m.ChangesList.AcceptAll()
+		case "ctrl+d":
+			return m, m.ChangesList.RejectAll()
+		default:
+			var cmd tea.Cmd
+			m.ChangesList, cmd = m.ChangesList.Update(msg)
+			return m, cmd
+		}
+	}
+
+	if m.Mode == modeRecall {
+		switch msg_str {
+		case "esc":
+			m.Prompt.Blur()
+			m.Mode = modeIdle
+			m.historyIdx = 0
+			return m, nil
+		case "up":
+			if val := m.MessageArea.LastUserMessage(m.historyIdx + 1); val != "" {
+				m.historyIdx++
+				m.Prompt.SetValue(val)
+				m.syncPromptHeight()
+			}
+			return m, nil
+		case "down":
+			if m.historyIdx > 1 {
+				m.historyIdx--
+				m.Prompt.SetValue(m.MessageArea.LastUserMessage(m.historyIdx))
+				m.syncPromptHeight()
+			} else {
+				m.historyIdx = 0
+				m.Prompt.Reset()
+				m.syncPromptHeight()
+				m.Mode = modePrompt
+			}
+			return m, nil
+		case "left", "right":
+			var cmd tea.Cmd
+			m.Prompt, cmd = m.Prompt.Update(msg)
+			return m, cmd
+		case "enter":
+			m.Mode = modePrompt
+			return m, tea.Batch(m.submitPrompt()...)
+		default:
+			m.Mode = modePrompt
+			m.historyIdx = 0
+			var cmd tea.Cmd
+			m.Prompt, cmd = m.Prompt.Update(msg)
+			return m, cmd
+		}
+	}
+
+	if m.Mode == modePrompt {
+		switch msg_str {
+		case "esc":
+			m.Prompt.Blur()
+			m.Mode = modeIdle
+			m.historyIdx = 0
+			return m, nil
+		case "shift+enter", "ctrl+j":
+			m.Prompt.InsertNewline()
+			m.syncPromptHeight()
+			return m, nil
+		case "up":
+			// Only recall history when the prompt is empty; otherwise
+			// let the textarea handle cursor movement as usual.
+			if m.Prompt.IsEmpty() {
+				if val := m.MessageArea.LastUserMessage(1); val != "" {
+					m.historyIdx = 1
+					m.Prompt.SetValue(val)
+					m.syncPromptHeight()
+					m.Mode = modeRecall
+				}
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.Prompt, cmd = m.Prompt.Update(msg)
+			return m, cmd
+		case "ctrl+a":
+			val := m.Prompt.Value()
+			if val != "" {
+				return m, func() tea.Msg {
+					if err := clipboard.WriteAll(val); err != nil {
+						return popup.ShowMsg{Message: "Copy failed: " + err.Error()}
+					}
+					return popup.ShowMsg{Message: popupCopyMessage(val)}
+				}
+			}
+			return m, nil
+		case "ctrl+u":
+			m.Prompt.Reset()
+			m.syncPromptHeight()
+			m.historyIdx = 0
+			return m, nil
+		case "enter":
+			return m, tea.Batch(m.submitPrompt()...)
+		}
+		var cmd tea.Cmd
+		m.Prompt, cmd = m.Prompt.Update(msg)
+		return m, cmd
+	} else {
+		switch msg_str {
+		case "enter":
+			m.Mode = modePrompt
+			return m, m.Prompt.Focus()
+		}
+	}
+	return m.forwardToComponents(msg)
+}
+
+func popupCopyMessage(val string) string {
+	oneLine := strings.ReplaceAll(strings.TrimSpace(val), "\n", " ")
+	const maxLen = 40
+	if len(oneLine) > maxLen {
+		oneLine = oneLine[:maxLen] + "…"
+	}
+	if oneLine == "" {
+		return "Copied to clipboard"
+	}
+	return "Copied: " + oneLine
+}

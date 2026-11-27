@@ -1,4 +1,4 @@
-package main
+package gowork
 
 import (
 	"fmt"
@@ -76,8 +76,8 @@ func renderStatusLine(m model) string {
 	modes := GetModes()
 	modeText := "?"
 	modeColor := statusModelBG
-	if int(m.mode) >= 0 && int(m.mode) < len(modes) {
-		cur := modes[m.mode]
+	if int(m.Mode) >= 0 && int(m.Mode) < len(modes) {
+		cur := modes[m.Mode]
 		modeText = cur.label
 		modeColor = cur.color
 	}

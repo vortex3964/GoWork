@@ -9,8 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	grepsearchtool "GoWork/tools/GrepSearchTool"
+	cl "GoWork/Tui/Components/ChangesList"
 	"GoWork/tools"
+	grepsearchtool "GoWork/tools/GrepSearchTool"
 )
 
 func requireRG(t *testing.T) {
@@ -559,21 +560,67 @@ func TestAgentignoreRespected(t *testing.T) {
 	}
 }
 
-func TestHiddenFilesSearched(t *testing.T) {
+func TestHiddenSecretsSkippedByDefault(t *testing.T) {
 	requireRG(t)
 	dir := t.TempDir()
-	// Tool passes --hidden, so dotfiles not covered by an ignore file
-	// should still be searched.
-	writeFile(t, dir, ".env", "needle\n")
+	// Hidden files and directories commonly hold credentials; a default
+	// search must not read them.
+	writeFile(t, dir, ".env", "SECRET_API_KEY=supersecret\n")
+	writeFile(t, dir, ".git/config", "[remote \"origin\"]\n\turl = https://user:SECRET_GIT_TOKEN@example.com/repo.git\n")
+	writeFile(t, dir, "visible.go", "package main\n\n// SECRET_VISIBLE_MARKER\n")
 	args := newDispatchArgs(t, dir)
 	tool := grepsearchtool.New()
 
-	res := run(t, tool, args, grepsearchtool.Input{Pattern: "needle"})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "SECRET"})
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content)
 	}
-	if !strings.Contains(res.Content, ".env:1: needle") {
-		t.Errorf("expected hidden file to be searched, got:\n%s", res.Content)
+	if !strings.Contains(res.Content, "visible.go:3: // SECRET_VISIBLE_MARKER") {
+		t.Errorf("expected visible file match, got:\n%s", res.Content)
+	}
+	for _, stale := range []string{"SECRET_API_KEY", "supersecret", "SECRET_GIT_TOKEN", ".env", ".git/config"} {
+		if strings.Contains(res.Content, stale) {
+			t.Errorf("default search leaked hidden content %q:\n%s", stale, res.Content)
+		}
+	}
+
+	// Targeted secret values must not match either.
+	for _, pattern := range []string{"supersecret", "SECRET_GIT_TOKEN"} {
+		res = run(t, tool, args, grepsearchtool.Input{Pattern: pattern})
+		if res.IsError {
+			t.Fatalf("unexpected error: %s", res.Content)
+		}
+		if res.Content != "No matches found" {
+			t.Errorf("expected no match for hidden secret %q, got:\n%s", pattern, res.Content)
+		}
+	}
+}
+
+func TestPendingHiddenChangeSkippedByDefault(t *testing.T) {
+	requireRG(t)
+	dir := t.TempDir()
+	writeFile(t, dir, ".env", "VISIBLE=1\n<<<<<<< old\noldsecret\n=======\nSECRET_API_KEY=pendingsecret\n>>>>>>> Ai change\n")
+	args, wl := newPendingArgs(t, dir)
+	markPending(t, wl, dir, ".env")
+	tool := grepsearchtool.New()
+
+	// A watched hidden file with pending changes must not bypass the
+	// default hidden-file exclusion during a directory scan.
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "SECRET"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if res.Content != "No matches found" {
+		t.Errorf("expected pending hidden file to be skipped, got:\n%s", res.Content)
+	}
+
+	// An explicitly named hidden file is still searched, like rg does.
+	res = run(t, tool, args, grepsearchtool.Input{Pattern: "SECRET", Path: ".env"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, ".env:2: SECRET_API_KEY=pendingsecret") {
+		t.Errorf("expected explicit hidden file to use accepted view, got:\n%s", res.Content)
 	}
 }
 
@@ -647,6 +694,206 @@ func TestSingleFileAsPath(t *testing.T) {
 	}
 	if strings.Contains(res.Content, "b.go") {
 		t.Errorf("did not expect b.go to be searched when Path targets a.go, got:\n%s", res.Content)
+	}
+}
+
+// newPendingArgs creates DispatchArgs backed by a WatchList so tests can
+// register pending changes the same way the TUI does.
+func newPendingArgs(t *testing.T, dir string) (tools.DispatchArgs, *cl.WatchList) {
+	t.Helper()
+	wl, err := cl.NewWatchList(nil)
+	if err != nil {
+		t.Fatalf("NewWatchList: %v", err)
+	}
+	t.Cleanup(func() { _ = wl.Watcher.Close() })
+
+	args, err := tools.InitDispatchArgs(dir, wl, nil)
+	if err != nil {
+		t.Fatalf("InitDispatchArgs: %v", err)
+	}
+	t.Cleanup(func() { _ = args.Root.Close() })
+	return args, wl
+}
+
+// markPending watches rel and records the diff hunks found in its marked-up
+// on-disk content, which is how write_file/edit_file leave a file.
+func markPending(t *testing.T, wl *cl.WatchList, dir, rel string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, rel))
+	if err != nil {
+		t.Fatalf("reading %s: %v", rel, err)
+	}
+	changes := cl.GetDiffsBytes(data, rel)
+	if len(changes) == 0 {
+		t.Fatalf("expected diff markers in %s", rel)
+	}
+	wl.Add(rel)
+	wl.Changeslist[rel] = cl.ChangeList{Changes: changes}
+}
+
+func TestPendingChangesSearchAcceptedView(t *testing.T) {
+	requireRG(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "a.txt", "one\n<<<<<<< old\ntwo\n=======\nTWO\n>>>>>>> Ai change\nthree\n")
+	args, wl := newPendingArgs(t, dir)
+	markPending(t, wl, dir, "a.txt")
+	tool := grepsearchtool.New()
+
+	// "two" only exists on the old side, which read_file drops on accept.
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "two"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if res.Content != "No matches found" {
+		t.Errorf("expected stale old-side word not to match, got:\n%s", res.Content)
+	}
+
+	// "TWO" is the accepted line and must be reported at the accepted-view
+	// line number (2), not its marked-up on-disk line (5).
+	res = run(t, tool, args, grepsearchtool.Input{Pattern: "TWO"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "a.txt:2: TWO") {
+		t.Errorf("expected accepted-view line number 2, got:\n%s", res.Content)
+	}
+	for _, stale := range []string{"a.txt:5:", "<<<<<<<", "=======", ">>>>>>>", "Ai change"} {
+		if strings.Contains(res.Content, stale) {
+			t.Errorf("output leaked stale marker content %q:\n%s", stale, res.Content)
+		}
+	}
+}
+
+func TestPendingChangesLineNumbersMatchAcceptedView(t *testing.T) {
+	requireRG(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "a.txt", "keep1\n<<<<<<< old\nold1\n=======\nnew1\n>>>>>>> Ai change\nkeep2\n<<<<<<< old\nold2\n=======\nnew2\n>>>>>>> Ai change\nkeep3\n")
+	args, wl := newPendingArgs(t, dir)
+	markPending(t, wl, dir, "a.txt")
+	tool := grepsearchtool.New()
+
+	// Accepted view is keep1/new1/keep2/new2/keep3, so new2 is line 4 even
+	// though it sits on line 11 of the marked-up file.
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "new2"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "a.txt:4: new2") {
+		t.Errorf("expected accepted-view line 4, got:\n%s", res.Content)
+	}
+	if strings.Contains(res.Content, "a.txt:11:") {
+		t.Errorf("reported marked-up line number:\n%s", res.Content)
+	}
+
+	// Old-side words from either hunk are gone after accept.
+	res = run(t, tool, args, grepsearchtool.Input{Pattern: "old[12]"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if res.Content != "No matches found" {
+		t.Errorf("expected no old-side matches, got:\n%s", res.Content)
+	}
+}
+
+func TestPendingChangesContextLinesUseAcceptedView(t *testing.T) {
+	requireRG(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "a.txt", "keep1\n<<<<<<< old\nold1\n=======\nnew1\n>>>>>>> Ai change\nkeep2\n")
+	args, wl := newPendingArgs(t, dir)
+	markPending(t, wl, dir, "a.txt")
+	tool := grepsearchtool.New()
+
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "new1", ContextLines: 1})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	for _, want := range []string{"a.txt:2: new1", "a.txt-1- keep1", "a.txt-3- keep2"} {
+		if !strings.Contains(res.Content, want) {
+			t.Errorf("expected %q in accepted-view context, got:\n%s", want, res.Content)
+		}
+	}
+	for _, stale := range []string{"<<<<<<<", "=======", ">>>>>>>", "old1"} {
+		if strings.Contains(res.Content, stale) {
+			t.Errorf("context leaked stale content %q:\n%s", stale, res.Content)
+		}
+	}
+}
+
+func TestPendingChangesRespectIncludeAndPathScope(t *testing.T) {
+	requireRG(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "pkg/a.go", "package pkg\n<<<<<<< old\nstaleGo\n=======\nneedleGo\n>>>>>>> Ai change\n")
+	writeFile(t, dir, "pkg/b.txt", "<<<<<<< old\nstaleTxt\n=======\nneedleTxt\n>>>>>>> Ai change\n")
+	writeFile(t, dir, "other/c.go", "needleGo\n")
+	args, wl := newPendingArgs(t, dir)
+	markPending(t, wl, dir, "pkg/a.go")
+	markPending(t, wl, dir, "pkg/b.txt")
+	tool := grepsearchtool.New()
+
+	// include applies to pending files found by a directory scan.
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "needle", Include: "*.go"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "pkg/a.go:2: needleGo") {
+		t.Errorf("expected pending .go match at accepted line 2, got:\n%s", res.Content)
+	}
+	if !strings.Contains(res.Content, "other/c.go:1: needleGo") {
+		t.Errorf("expected ordinary file match, got:\n%s", res.Content)
+	}
+	if strings.Contains(res.Content, "pkg/b.txt") {
+		t.Errorf("pending .txt file should have been filtered by include:\n%s", res.Content)
+	}
+	if strings.Contains(res.Content, "staleGo") {
+		t.Errorf("old-side word leaked into output:\n%s", res.Content)
+	}
+
+	// path scope applies to pending files too.
+	res = run(t, tool, args, grepsearchtool.Input{Pattern: "needle", Path: "pkg"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "pkg/a.go:2: needleGo") || !strings.Contains(res.Content, "pkg/b.txt:1: needleTxt") {
+		t.Errorf("expected both pending files in scope, got:\n%s", res.Content)
+	}
+	if strings.Contains(res.Content, "other/c.go") {
+		t.Errorf("file outside path scope was searched:\n%s", res.Content)
+	}
+
+	// Like rg, an explicitly named file is searched even when include would
+	// not match its extension.
+	res = run(t, tool, args, grepsearchtool.Input{Pattern: "needle", Path: "pkg/b.txt", Include: "*.go"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "pkg/b.txt:1: needleTxt") {
+		t.Errorf("explicit pending file should ignore include, got:\n%s", res.Content)
+	}
+}
+
+func TestPendingChangesRespectMatchLimit(t *testing.T) {
+	requireRG(t)
+	dir := t.TempDir()
+
+	// Accepted view has five matching lines; the marked-up file and its
+	// old side must not count towards the limit.
+	writeFile(t, dir, "a.txt", "needle1\n<<<<<<< old\nstale\n=======\nneedle2\n>>>>>>> Ai change\nneedle3\nneedle4\nneedle5\n")
+	args, wl := newPendingArgs(t, dir)
+	markPending(t, wl, dir, "a.txt")
+	tool := grepsearchtool.New()
+
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "needle", Limit: 2})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if got := strings.Count(res.Content, "needle"); got != 2 {
+		t.Errorf("expected 2 matched lines under limit=2, got %d in:\n%s", got, res.Content)
+	}
+	if !strings.Contains(res.Content, "matches limit reached") {
+		t.Errorf("expected limit-reached notice, got:\n%s", res.Content)
+	}
+	if strings.Contains(res.Content, "stale") {
+		t.Errorf("old-side word leaked into output:\n%s", res.Content)
 	}
 }
 

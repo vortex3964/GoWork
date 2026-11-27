@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "value=dev" >> "$GITHUB_OUTPUT"
+            echo "tag=dev" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build release archives
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          for target in \
+            linux/amd64 linux/arm64 \
+            darwin/amd64 darwin/arm64 \
+            windows/amd64 windows/arm64
+          do
+            os="${target%/*}"
+            arch="${target#*/}"
+            binary="gowork"
+            if [ "$os" = "windows" ]; then
+              binary="gowork.exe"
+            fi
+
+            echo "Building ${os}/${arch}"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build \
+              -trimpath \
+              -ldflags "-s -w -X main.appVersion=${VERSION}" \
+              -o "dist/${binary}" .
+
+            staging="$(mktemp -d)"
+            cp "dist/${binary}" "${staging}/${binary}"
+            cp -R prompts logo "${staging}/"
+            mkdir -p "${staging}/tools/Scripts"
+            cp tools/Scripts/read_pdf.py tools/Scripts/requirements.txt "${staging}/tools/Scripts/"
+            cp README.md "${staging}/README.md"
+
+            if [ "$os" = "windows" ]; then
+              (cd "$staging" && zip -qr "${GITHUB_WORKSPACE}/dist/gowork_${os}_${arch}.zip" \
+                "${binary}" prompts logo tools README.md)
+            else
+              tar -C "$staging" -czf "dist/gowork_${os}_${arch}.tar.gz" \
+                "${binary}" prompts logo tools README.md
+            fi
+
+            rm -rf "$staging" "dist/${binary}"
+          done
+
+          (cd dist && sha256sum gowork_*.tar.gz gowork_*.zip > checksums.txt)
+          cat dist/checksums.txt
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.value }}
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
+          generate_release_notes: true
+          prerelease: ${{ github.event_name == 'workflow_dispatch' }}

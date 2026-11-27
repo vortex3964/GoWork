@@ -1,186 +1,337 @@
 # GoWork
-ai agent cli tool for work
 
-![project logo](logo/logo.svg)
+![GoWork logo](logo/logo.svg)
 
-## scope
+GoWork is a terminal AI coding agent for real project work. It runs a
+streaming agent loop against cloud or local models, edits files through
+guarded tools, and keeps every change reviewable before it lands.
 
-this ai agent tool will focus on editing text files like coding agents\
-also it will edit excell and other common files mostly code  and be able to write docs for reports or read mes 
+## Features
 
-but also
+- **Streaming agent loop.** Replies stream token by token. Independent tool
+  calls run in parallel, their results go back to the model, and the loop
+  continues until the task is finished. `MAX_AGENT_STEPS` caps a request at 40
+  model turns by default, and one reply can request up to 10 tools.
+- **Project-confined tools.** File operations are rooted at the project you
+  open. Destructive file changes and web access require approval in the
+  permission box, with an optional note for the model.
+- **Reviewable changes.** Every edit is tracked as a diff. Accept or reject a
+  single change, all changes in a file from its header row, or the whole batch.
+- **Skills.** Reusable instruction sets live as `SKILL.md` files. Load the ones
+  a session needs from the Skills tab; the model receives them through the
+  `skill` tool.
+- **Stats and session history.** Token usage and session messages are stored
+  in SQLite. The Stats tab shows per-model usage, and `-S` restores a previous
+  session with its messages and loaded skills.
+- **Cloud and local models.** Google, Anthropic, Groq, OpenAI, OpenCode Go,
+  Ollama, llama.cpp, and LM Studio are supported out of the box.
+- **Terminal-first interface.** Tabs for code, skills, and stats, a todo
+  panel, provider picker, permission prompts, and automatic context
+  compaction.
+- **PDF reading.** `read_file` converts PDFs to Markdown through an optional
+  Python environment. PyMuPDF4LLM is the lightweight default; Marker is used
+  when it is installed.
 
-it will support skills and will allow the user to load skills  (dont know if he will be able to create his own the scope is a little big already ).
+## Installation
 
-basic functionality will include context manipulation (user can also do it by hand they will be able to see witch files are in the context)
+### Linux and macOS
 
-it will support multiple ai providers via api keys but the focus will be supporting local ai for free on your pc (you will have a list with the local models to select whatever you want)
+The installer downloads a release, verifies it against the published
+checksums, installs the binary with its assets, and links `gowork` into your
+bin directory.
 
-and it will be able to run commands for you (you will also be able to edit them) but only if you let it do so (accept and reject states for the tui)
-
-features will include:
-
-change history (like gits only here you will be able to go back a change even if you didnt commit the changes)\
-robust tui focused on being functional and minimal (bubble tea)\
-generating deleting files and helping with git commits\
-easter eggs will be included  do (just some fun things)\
-some basic commands like /help , /model  they will start with /\
-also a way to see token consumption (maybe a token managment tab with stats)
-
-392 by 655 is the minimum size (the goal is for it to fit in another ides sub terminal so that we dont also make a mini ide too)
-
-ai will print in a read me style text
-
-in providers list when were selecting pressing / starts filtering
-## Depedencies 
-ripgrep\
-packages : bubbletea , go-gitignore , godotenv , sahilm/fuzzy
-
-## Supported ai
-the providers we support local or paid 
-
-### Paid with api key
-gemini\
-groq\
-chat gpt\
-anthropic
-
-### local no api key needed
-lmStudio\
-ollama\
-llama.cpp
-
-## common errors we check for 
-invalid request\
-Auth err\
-Not found\
-request too large (maybe)\
-Api error\
-Out of tokens\
-rate limit\
-Overload
-
-## Harness
-
-These are the tools the agent has access to when making tool calls
-
-### File system
-read_file(path, start_line?, end_line?) - reads a file, optional line range for large files so you don't blow the context window reading a 2000 line Typst doc.\
-write_file(path, old_str, new_str) - targeted find and replace, errors if old_str matches zero or more than one place.\
-edit_file(path , newContent , linenums) - replace text with percision\
-grep_search(path, pattern) - grep across file contents, returns file path and line number for each match.\
-file_search(path, pattern) - locate files by name or path pattern, returns one relative path per line.\
-create_file(path, content?) - creates a new file, errors if it already exists.\
-move_file(srcpath , dstpath) - moves a file from one dir to another (it can also rename it)\
-delete_file(path) - deletes a file.\
-list_directory(path, recursive?) - lists files and folders, recursive flag for full project tree.\
-get_file_info(path , subpath) - get usefull info about the file 
-
-### Skills
-list_skills() - returns all available skill files so the agent can pick which ones are relevant for the current task.\
-create_skil() - create and save a new skill for the llm to use
-edit_skil() - edit an existing skill
-delete_skil() - delete an existing skill
-
-### WebSearch
-SearchWebUrl(url) - used to search the url for docs etch or things not in training data
-
-### Pdf
-ReadPdf() - used to parse a pdf for an assigment 
-
-marker , pymupdf4llm
-
-will use pymupdf4llm as default since its small but if user has marker installed it will default to it\
-(we dont force marker on everyone cause its too big)
-
-The goal is to not force a big install on anyone. Instead, we will probe at runtime and pick the best available backend.\
-this will be a python sub process the tui app will use 
-
-The install instructions would recommend the lightweight option first and go as follows in the installel:
-
-#### Install the recommended parser (Most lightweight no gpu needed):
-pip install pymupdf4llm
-
-#### For higher accuracy with OCR/tables/equations (Heaviest but better results)
-pip install marker-pdf
-
-will have to have a venv nadled to use those libs
-
-for development you should go to scripts and initialise a venv in there
-
-## Instalation
-
-COMING SOON
-
-requirements:
-make it accessible everywhere
-windows linux
-installs venv with pdf parcer
-installs app
-
-has open path command
-has -v command
-hooks up for updates (maybe)
-
-## Running GoWork
-
-ALSO COMMING SOON
-
-added a make venv with one depedency that must be runned
-(probably will be run by the installer maybe)
-
-## Resuming sessions
-Run `GoWork -S <sessionID>` to restore a previous session: its conversation is
-replayed and its loaded skills come back automatically, so they're visible to
-the model again without reloading them by hand.
-
-## run test
-
-use this to run all the tests for every tool and other tests
+```sh
+curl -fsSL https://raw.githubusercontent.com/vortex3964/GoWork/main/scripts/install.sh | bash
 ```
-make test 
+
+Update an existing installation:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/vortex3964/GoWork/main/scripts/install.sh | bash -s -- --update
 ```
+
+Remove GoWork, its launcher link, and the installer's PATH block:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/vortex3964/GoWork/main/scripts/install.sh | bash -s -- --uninstall
+```
+
+From a checkout, run the script directly:
+
+```sh
+scripts/install.sh
+scripts/install.sh --update
+scripts/install.sh --uninstall
+```
+
+Options:
+
+| Flag | Meaning |
+| --- | --- |
+| `--update` | Replace an existing installation with the latest release or `--version`. |
+| `--uninstall` | Remove the install directory, the `gowork` symlink, and the marked PATH block. |
+| `--version <tag>` | Install a specific release, for example `--version v1.2.3`. Defaults to `latest`. |
+| `--dir <path>` | Install somewhere other than the default directory. |
+| `--no-modify-path` | Do not add the launcher directory to your shell PATH. |
+| `-h`, `--help` | Show installer help. |
+
+Defaults:
+
+- Install directory: `${XDG_DATA_HOME:-$HOME/.local/share}/gowork`
+- Launcher: `${XDG_BIN_HOME:-$HOME/.local/bin}/gowork`
+- PATH: the installer adds the launcher directory to `~/.bashrc`,
+  `~/.bash_profile`, `~/.profile`, `~/.zshrc`, or the fish config, inside a
+  marked block that `--uninstall` removes.
+
+Open a new terminal after installing so the updated PATH is active.
+
+### Windows
+
+Run PowerShell 5 or newer. Download and execute the installer, or run the
+copy in a checkout:
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/vortex3964/GoWork/main/scripts/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+```powershell
+.\scripts\install.ps1 -Update
+.\scripts\install.ps1 -Uninstall
+```
+
+Options:
+
+| Parameter | Meaning |
+| --- | --- |
+| `-Update` | Replace an existing installation with the latest release or `-Version`. |
+| `-Uninstall` | Remove the install directory and the user PATH entry. |
+| `-Version <tag>` | Install a specific release, for example `-Version v1.2.3`. Defaults to `latest`. |
+| `-Dir <path>` | Install somewhere other than `%LOCALAPPDATA%\Programs\GoWork`. |
+| `-NoModifyPath` | Do not add the install directory to the user PATH. |
+| `-Help` | Show installer help. |
+
+The Windows installer verifies the downloaded ZIP against `checksums.txt` and
+adds the install directory to the **user** PATH. Open a new terminal after
+installing.
+
+## Requirements
+
+- Linux, macOS, or Windows on 64-bit x86 or ARM64.
+- Installer on Linux/macOS: `bash`, `curl` or `wget`, `tar`, and
+  `sha256sum` or `shasum`.
+- Installer on Windows: PowerShell 5 or newer.
+- Building from source: Go 1.25 or newer.
+- Runtime: `ripgrep` (`rg`) on PATH for `grep_search` and the project snapshot.
+- Optional: Python 3 and a virtual environment for PDF reading.
+
+## Quick start
+
+```sh
+cd /path/to/project
+gowork .
+```
+
+The project path is optional; without it GoWork uses the current directory.
+On first launch, choose a provider and model with `ctrl+p`. Cloud providers
+ask for an API key; local providers list the models their server exposes.
+
+```sh
+gowork /path/to/project   # open a specific project
+gowork -S 12              # resume session 12
+gowork -v                 # print the version
+gowork -h                 # print command help
+```
+
+## Providers
+
+| Provider | Notes |
+| --- | --- |
+| `google` | Gemini API. Requires `API_KEY`. |
+| `anthropic` | Claude API. Requires `API_KEY`. |
+| `groq` | Groq API. Requires `API_KEY`. |
+| `openai` | OpenAI API. Requires `API_KEY`. |
+| `opencode-go` | OpenCode Go subscription gateway. Uses the same `API_KEY` field and sends an `x-opencode-session` header to keep a conversation stable on the gateway. |
+| `ollama` | Local Ollama server. No API key. |
+| `llamaCpp` (llama.cpp) | Local llama.cpp server. No API key. |
+| `lmStudio` (LM Studio) | Local LM Studio server. No API key. |
+
+The provider picker loads the model list from the selected server, so local
+models appear as soon as the server is running. Models that do not support
+tool calling trigger a warning when selected.
+
+## Configuration
+
+GoWork reads environment variables and an optional `.env` file:
+
+- `gowork /path/to/project` loads `/path/to/project/.env` at startup.
+- `gowork` with no path loads `.env` from the current working directory.
+- The provider picker writes `PROVIDER` and `model` (and a newly entered
+  `API_KEY`) to `.env` in the **current working directory**. Launch from the
+  project root if you want those choices loaded on the next run.
+- Variables already exported in your shell take precedence over `.env`.
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `API_KEY` | API key for cloud providers and OpenCode Go. | none |
+| `PROVIDER` | `google`, `anthropic`, `groq`, `openai`, `opencode-go`, `ollama`, `llamaCpp`, or `lmStudio`. | none |
+| `model` | Model identifier passed to the provider. `MODEL` is accepted as an alias. | none |
+| `OLLAMA_HOST` | Ollama base URL. | `http://localhost:11434` |
+| `LLAMACPP_HOST` | llama.cpp base URL. | `http://localhost:8080` |
+| `LMSTUDIO_HOST` | LM Studio base URL. | `http://localhost:1234/v1` |
+| `MAX_AGENT_STEPS` | Maximum model turns per request before the agent loop stops. | `40` |
+
+`.env` is ignored by git, so keys stay out of the repository.
+
 ## Keybinds
 
-some of the basic keybinds may we will add more
+### Global
 
-cntrl i -> interupt(global)\
+| Key | Action |
+| --- | --- |
+| `ctrl+p` | Open the provider and model picker. |
+| `ctrl+i` or `tab` while a turn is running | Interrupt the current generation or tool batch. |
+| `tab` / `shift+tab` while idle | Next / previous tab. |
+| `ctrl+l` | Open or close the changes list on the code tab. |
+| `ctrl+c` | Quit. |
 
-tab -> next tab (idle)\
-shift tab -> previous tab (idle)
+### Prompt bar
 
-cntr j -> new line in prompt mode (prompt mode)
+| Key | Action |
+| --- | --- |
+| `enter` | Send the prompt. |
+| `shift+enter` or `ctrl+j` | Insert a newline. |
+| `up` on an empty prompt | Recall the previous prompt. |
+| `ctrl+a` | Copy the prompt to the clipboard. |
+| `ctrl+v` | Paste into the prompt. |
+| `ctrl+u` | Clear the prompt. |
+| `esc` | Leave prompt entry. |
 
-cntrl p -> select provider and model (any mode)
+### Changes list
 
-NOTE: accept and reject fail if the user wants to accept something as the ai is making changes
+| Key | Action |
+| --- | --- |
+| `up` / `down` | Move the selection. |
+| `ctrl+a` | Accept the selected change, or every change in a file when its header is selected. |
+| `ctrl+r` | Reject the selected change, or every change in a file when its header is selected. |
+| `ctrl+f` | Accept all changes. |
+| `ctrl+d` | Reject all changes. |
+| `?` | Toggle the keybind help. |
+| `esc`, `enter`, or `ctrl+l` | Close the changes list. |
 
-cntrl l -> enter changes mode\
-cntrl a -> accept current change (if on header accepts all changes from file)\
-cntrl r -> reject current change (if on header rejects all changes from file)\
-cntrl f -> accept all changes from the ai\
-cntrl d -> reject all changes from the ai
+### Permission box
 
-cntrl a -> copy prompt content to clipboard (prompt mode)\
-cntrl v -> paste into promptbar (prompt mode)\
-cntrl u -> clear the prompt bar (prompt mode)
+| Key | Action |
+| --- | --- |
+| `left` / `right` | Choose accept, reject, or accept all. |
+| `tab` or `down` | Focus the optional reason field. |
+| `enter` | Confirm the decision. |
+| `esc` | Reject. |
 
-## Slash commands
-/help \
-/stats \
-/skills \
-/save \
-/coffee \
-/new \
-/save \
-/key \
-/save\
-/fork\
-/compact\
-/context filename 
+### Skills tab
 
-also an autofil window pops up that lazily matches
+| Key | Action |
+| --- | --- |
+| `a`, `l`, `u` | Show all, loaded, or unloaded skills. |
+| `f` | Cycle the filter. |
+| `/` or a printable key | Search skills. |
+| `x` | Unload the selected skill. |
+| `p` | Load the selected skill. |
+| `i` or `enter` | Focus the prompt bar. |
+| `esc` | Leave the tab. |
 
-## commands to open it
-gowork <project path>
+### Stats tab
 
+| Key | Action |
+| --- | --- |
+| `/` or a printable key | Filter models. |
+| `up` / `down` | Move between models. |
+| `left` / `right` | Move the day selection on the usage chart. |
+| `enter` | Open the selected model's details. |
+| `esc` | Close a view or leave the tab. |
+
+## Tools
+
+These are the exact tool names the model can call:
+
+| Tool | Purpose |
+| --- | --- |
+| `read_file` | Read a text file by line range. PDFs are converted to Markdown; images are refused because the provider layer is text-only. |
+| `write_file` | Replace an exact, unique text snippet in an existing file. |
+| `edit_file` | Replace an inclusive, 1-indexed line range in an existing file. |
+| `create_file_tool` | Create a new file with complete, non-empty content; a path ending in `/` creates a directory. |
+| `move_file` | Move or rename a file. |
+| `delete_file` | Delete a file and remove its parent directory if that directory becomes empty. |
+| `file_search` | Find files by name or path pattern. |
+| `list_directory` | List a directory's immediate entries. |
+| `grep_search` | Search file contents with ripgrep, respecting `.gitignore` and `.agentignore`. |
+| `bash` | Run a shell command inside the project. Network, download, admin, and global-install commands are blocked. Long commands can move to the background. |
+| `todo_list` | Maintain the session's short task list. |
+| `questions_tool` | Ask up to 7 questions with up to 3 options each and pause the turn for the answer. |
+| `skill` | Load one of the session's loaded skills. |
+| `web_search` | Search the web through DuckDuckGo Lite. Requires permission. |
+| `web_fetch` | Fetch a URL, extract readable text, and summarize or cache long pages. Requires permission. |
+
+## Building and development
+
+```sh
+make build      # build out/GoWork
+make run        # go run .
+make test       # go test -v ./...
+make venv       # create tools/Scripts/venv and install PDF dependencies
+make init_db    # create and seed Db/gowork.db (requires sqlite3)
+make clean_db   # remove Db/gowork.db
+make clean      # remove out/ and the Python venv
+```
+
+The equivalent direct checks are:
+
+```sh
+go build ./...
+go vet ./...
+go test ./...
+```
+
+`make build` writes the binary to `out/GoWork`. Copy it next to the `prompts/`,
+`logo/`, and `tools/` folders, or use the installer, if you want to run it
+outside a checkout.
+
+## Data paths
+
+- **Sessions and usage:** `Db/gowork.db` inside the project you open. The file
+  is created on first run and is never removed by the installer.
+- **Skills:** `.GoWork/skills/<name>/SKILL.md` next to the installed
+  executable. Project files are not used for GoWork's own skill storage.
+- **Bundled assets:** `prompts/`, `logo/`, and `tools/Scripts/` next to the
+  executable. Source checkouts fall back to the repository root and then the
+  current directory, so `go run .` keeps working.
+- **Fetched pages:** `.agent-cache/fetch/` in the project root when a long web
+  page is saved for later reading.
+- **PDF parser:** `tools/Scripts/read_pdf.py` and its optional
+  `tools/Scripts/venv` are resolved next to the executable first, then in the
+  project, then in the current directory.
+
+### PDF support
+
+PDF parsing is optional. Install one of the backends:
+
+```sh
+# lightweight, no GPU required
+pip install pymupdf4llm
+```
+
+```sh
+# higher accuracy for OCR, tables, and equations; much larger
+pip install marker-pdf
+```
+
+For a source checkout, `make venv` creates `tools/Scripts/venv` and installs
+the lightweight backend from `tools/Scripts/requirements.txt`. For an
+installed copy, create a venv at `<install directory>/tools/Scripts/venv` or
+install the package into the system Python that GoWork finds on PATH.
+
+## Roadmap
+
+- Slash commands and an in-app command palette.
+- Spreadsheet and document editing beyond plain text.
+- Image understanding for models that support it.

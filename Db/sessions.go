@@ -30,18 +30,22 @@ func (s *Store) StartSession(model, provider string) error {
 	return nil
 }
 
-// SetSessionSkills replaces the session's buffered loaded-skill set. Called
-// whenever the user loads/unloads a skill so finalize writes the exact set.
+// SetSessionSkills replaces the session's buffered loaded-skill set, keeping
+// the names in the order given (first occurrence wins, empties dropped) so
+// finalize can write them back as they were loaded. Called whenever the user
+// loads/unloads a skill so finalize writes the exact set.
 func (s *Store) SetSessionSkills(names []string) {
-	if s.sessionSkills == nil {
-		s.sessionSkills = make(map[string]struct{}, len(names))
-	} else {
-		clear(s.sessionSkills)
-	}
+	s.sessionSkills = s.sessionSkills[:0]
+	seen := make(map[string]struct{}, len(names))
 	for _, name := range names {
-		if name != "" {
-			s.sessionSkills[name] = struct{}{}
+		if name == "" {
+			continue
 		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		s.sessionSkills = append(s.sessionSkills, name)
 	}
 }
 
@@ -100,8 +104,9 @@ func (s *Store) FinalizeSession(messages []providers.Message, totalTokens int) e
 		}
 	}
 
-	// The loaded skill names follow their session's cascade.
-	for name := range s.sessionSkills {
+	// The loaded skill names follow their session's cascade, inserted in
+	// load order so LoadSession can restore them in that order.
+	for _, name := range s.sessionSkills {
 		if _, err := tx.Exec(`
 			INSERT INTO session_skills (session_id, skill_name, loaded_at)
 			VALUES (?, ?, ?)`,

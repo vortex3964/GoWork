@@ -37,9 +37,9 @@ func (t *Tool) Description() string {
 	return `Replaces a specific range of lines in an existing file with new content, addressed by line number.
 
 Before using this tool:
-1. The file must already exist and must have been read (with a read tool) since its last on-disk change. If the file was modified since your last read (by you, the user, or anything else), you must re-read it before editing it.
+1. The file must already exist. Read it first so your line numbers match its current contents. If this file has a recorded read or write and has changed on disk since then, the edit is rejected until you re-read it with read_file (same stale-read rule as write_file).
 2. start_line and end_line are 1-indexed and inclusive, and describe the range of existing lines being replaced.
-3. new_content is the full replacement text for that range. It may contain zero, one, or many lines. To insert text without removing anything, use an empty range (end_line = start_line - 1) at the insertion point. To delete lines, pass an empty new_content.
+3. new_content is the full replacement text for that range. It may contain zero, one, or many lines. A single trailing newline is treated as the normal line ending and does not add an extra blank line; additional trailing newlines are preserved as blank lines. To insert text without removing anything, use an empty range (end_line = start_line - 1) at the insertion point. To delete lines, pass an empty new_content.
 This tool operates on line numbers, not text matching it does not verify that the lines being replaced contain any particular content, so incorrect line numbers will silently edit the wrong lines.`
 }
 
@@ -119,15 +119,21 @@ func joinLines(lines []string) []byte {
 	return []byte(b.String())
 }
  
+// replacementLines converts new_content into the lines that replace a range.
+// A single trailing newline is the normal line terminator, not an extra empty
+// line, so strip exactly one before splitting. Additional trailing newlines
+// are intentional blank lines and are preserved.
+func replacementLines(newContent string) []string {
+	if newContent == "" {
+		return nil // deleting the range / inserting nothing
+	}
+	return strings.Split(strings.TrimSuffix(newContent, "\n"), "\n")
+}
+
 // replaceLineRange replaces the 1-indexed inclusive line range
 // [startLine, endLine] with newContent's lines. 
 func replaceLineRange(lines []string, startLine, endLine int, newContent string) ([]byte, int) {
-	var replacement []string
-	if newContent == "" {
-		replacement = nil // deleting the range / inserting nothing
-	} else {
-		replacement = strings.Split(newContent, "\n")
-	}
+	replacement := replacementLines(newContent)
  
 	before := lines[:startLine-1]
 	var after []string
@@ -238,14 +244,25 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	if err != nil {
 		return tools.ToolResult{}, fmt.Errorf("edit_file: opening %s for write: %w", input.FilePath, err)
 	}
-	defer wf.Close()
  
 	if args.WatchList != nil {
 		args.WatchList.Add(input.FilePath)
 	}
 
 	if _, err := wf.Write(merged); err != nil {
+		wf.Close()
 		return tools.ToolResult{}, fmt.Errorf("edit_file: writing %s: %w", input.FilePath, err)
+	}
+	if err := wf.Close(); err != nil {
+		return tools.ToolResult{}, fmt.Errorf("edit_file: closing %s: %w", input.FilePath, err)
+	}
+
+	// Record the fresh mtime so an immediate follow-up edit in the same turn
+	// isn't mistaken for an external change. Mirrors write_file.
+	if args.ReadState != nil {
+		if fresh, err := args.Root.Stat(input.FilePath); err == nil {
+			args.ReadState.Record(args.PathKey(input.FilePath), fresh.ModTime())
+		}
 	}
  
 	return tools.Ok(fmt.Sprintf("successfully edited lines %d-%d in %s", input.StartLine, input.EndLine, input.FilePath)), nil
