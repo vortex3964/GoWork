@@ -21,11 +21,45 @@ type textDragState struct {
 	moved  bool
 	anchor textPoint
 	focus  textPoint
+
+	// baseView caches the unpainted message band for the drag's lifetime.
+	// Mouse motion only moves the highlight, so re-rendering the viewport on
+	// every MouseMotionMsg would repeat work for an unchanged frame. The
+	// viewport version/dimensions/offset invalidate the cache.
+	baseView    string
+	baseVersion uint64
+	baseWidth   int
+	baseHeight  int
+	baseOffset  int
 }
 
 var textDragStyle = lipgloss.NewStyle().
 	Background(style.Primary).
 	Foreground(style.Background)
+
+var textDragBandStyle = lipgloss.NewStyle().Margin(0, padSide)
+
+// baseValid reports whether the cached band still matches the viewport.
+func (d textDragState) baseValid(v *contentViewport) bool {
+	return d.baseView != "" &&
+		d.baseVersion == v.version &&
+		d.baseWidth == v.width &&
+		d.baseHeight == v.height &&
+		d.baseOffset == v.yOffset
+}
+
+// refreshBase re-renders the cached band only when something other than the
+// drag highlight changed.
+func (d *textDragState) refreshBase(v *contentViewport) {
+	if d.baseValid(v) {
+		return
+	}
+	d.baseView = textDragBandStyle.Render(v.View())
+	d.baseVersion = v.version
+	d.baseWidth = v.width
+	d.baseHeight = v.height
+	d.baseOffset = v.yOffset
+}
 
 // TextDragActive reports whether a mouse drag is currently tracking a
 // character selection in the message area.
@@ -44,6 +78,7 @@ func (m *Model) BeginTextDrag(x, y int) bool {
 		return false
 	}
 	m.textDrag = textDragState{active: true, anchor: p, focus: p}
+	m.textDrag.refreshBase(&m.vp)
 	return true
 }
 
@@ -67,6 +102,7 @@ func (m *Model) UpdateTextDrag(x, y int) bool {
 		m.selAnchor = -1
 		m.selFocus = -1
 	}
+	m.textDrag.refreshBase(&m.vp)
 	return true
 }
 

@@ -43,6 +43,14 @@ type Model struct {
 	// leaves normal editing and cursor behaviour unchanged.
 	textDrag promptTextDrag
 
+	// wrap cache: promptVisualRows walks the whole prompt, so rebuilding it
+	// for every MouseMotionMsg and again for the frame is wasted work. The
+	// key is the value plus textarea width.
+	wrapCache        []promptRow
+	wrapCacheValue   string
+	wrapCacheWidth   int
+	wrapComputations int
+
 	// mentions is the "@" autocomplete window for skills, MCP/LSP servers
 	// and project paths. It renders the same way but is only enabled on the
 	// code tab.

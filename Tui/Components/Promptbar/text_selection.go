@@ -140,7 +140,7 @@ func (m *Model) textPointAt(x, y int, clamp bool) (promptPoint, bool) {
 		}
 	}
 	visual := m.area.ScrollYOffset() + row
-	rows := promptVisualRows(value, width)
+	rows := m.visualRows()
 	if len(rows) == 0 {
 		return promptPoint{}, false
 	}
@@ -241,7 +241,7 @@ func (m Model) overlayTextDrag(view string) string {
 	if value == "" || width <= 0 {
 		return view
 	}
-	rows := promptVisualRows(value, width)
+	rows := m.cachedVisualRows()
 	if len(rows) == 0 {
 		return view
 	}
@@ -284,6 +284,33 @@ func (m Model) overlayTextDrag(view string) string {
 			Z(1))
 	}
 	return lipgloss.NewCompositor(layers...).Render()
+}
+
+// visualRows returns the prompt's wrapped rows, recomputing the mapping only
+// when the value or textarea width changed. Drag motion calls this once per
+// event and the frame calls it again; both hit the cache.
+func (m *Model) visualRows() []promptRow {
+	value := m.area.Value()
+	width := m.area.Width()
+	if m.wrapCache != nil && m.wrapCacheValue == value && m.wrapCacheWidth == width {
+		return m.wrapCache
+	}
+	m.wrapCache = promptVisualRows(value, width)
+	m.wrapCacheValue = value
+	m.wrapCacheWidth = width
+	m.wrapComputations++
+	return m.wrapCache
+}
+
+// cachedVisualRows is the read-only counterpart used from value-receiver
+// rendering. textPointAt refreshes the cache before the frame renders.
+func (m Model) cachedVisualRows() []promptRow {
+	value := m.area.Value()
+	width := m.area.Width()
+	if m.wrapCache != nil && m.wrapCacheValue == value && m.wrapCacheWidth == width {
+		return m.wrapCache
+	}
+	return promptVisualRows(value, width)
 }
 
 // promptVisualRows maps each logical prompt line to the soft-wrapped rows the

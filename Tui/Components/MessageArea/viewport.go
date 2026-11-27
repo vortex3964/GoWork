@@ -40,6 +40,15 @@ type contentViewport struct {
 	// and benchmarks use it to prove a streamed delta does not rescan the
 	// whole history.
 	lineMeasures int
+
+	// version changes whenever the content buffer is replaced. Views can
+	// cache rendered output keyed by it; a drag must not rebuild the
+	// viewport on every mouse motion.
+	version uint64
+
+	// viewRenders counts full viewport renders. Tests use it to keep drag
+	// motion on the cached base view.
+	viewRenders int
 }
 
 func newContentViewport(style lipgloss.Style) contentViewport {
@@ -107,6 +116,7 @@ func (v *contentViewport) ReplaceLines(start, end int, lines []string) {
 
 	v.lines = slices.Replace(v.lines, start, end, lines...)
 	v.rows = slices.Replace(v.rows, start, end, newRows...)
+	v.version++
 
 	// Row starts before `start` are untouched; every following line shifts by
 	// the same amount, so only the tail has to be re-accumulated.
@@ -315,6 +325,7 @@ func (v *contentViewport) visibleLines() []string {
 // View renders the visible window with the border/padding style, matching the
 // bubbles viewport's rendering contract.
 func (v *contentViewport) View() string {
+	v.viewRenders++
 	w, h := v.width, v.height
 	if sw := v.Style.GetWidth(); sw != 0 {
 		w = min(w, sw)

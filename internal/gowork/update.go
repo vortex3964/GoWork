@@ -167,6 +167,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		return m.handleKeyPressMsg(msg)
+	case tea.PasteMsg:
+		return m.handlePasteMsg(msg)
 	case tea.MouseClickMsg:
 		return m.handleMouseClickMsg(msg)
 	case tea.MouseWheelMsg:

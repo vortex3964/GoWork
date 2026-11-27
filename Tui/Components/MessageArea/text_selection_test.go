@@ -108,6 +108,45 @@ func TestTextDragClickWithoutMotionKeepsMessageSelection(t *testing.T) {
 	}
 }
 
+// TestDragMotionReusesCachedViewport is the regression guard for the copy
+// drag's per-motion cost: moving the pointer must only repaint the highlight,
+// never rebuild the message viewport. viewRenders stays flat across all
+// motion/frame pairs once the drag has started.
+func TestDragMotionReusesCachedViewport(t *testing.T) {
+	m := buildDragModel(t)
+	m.vp.SetYOffset(0)
+	bodyLine := m.blockStart[0] + 1
+	dragTo(&m, bodyLine, 0, bodyLine, 3)
+
+	before := m.vp.viewRenders
+	for i := 0; i < 100; i++ {
+		x, y := dragPoint(m, bodyLine, i%8)
+		if !m.UpdateTextDrag(x, y) {
+			t.Fatalf("motion %d missed the drag focus", i)
+		}
+		_ = m.View()
+	}
+	if got := m.vp.viewRenders - before; got != 0 {
+		t.Fatalf("drag motion rendered the full viewport %d times, want 0", got)
+	}
+}
+
+func BenchmarkDragMotionView(b *testing.B) {
+	m := buildStreamModel(200)
+	m.BeginTextDrag(6, 1)
+	m.UpdateTextDrag(12, 1)
+	before := m.vp.viewRenders
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		m.UpdateTextDrag(6+i%20, 1)
+		_ = m.View()
+	}
+	b.StopTimer()
+	b.ReportMetric(float64(m.vp.viewRenders-before)/float64(b.N), "viewport-render/op")
+}
+
 func TestTextDragDrawsVisibleHighlight(t *testing.T) {
 	m := buildDragModel(t)
 	m.vp.SetYOffset(0)

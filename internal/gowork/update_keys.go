@@ -61,6 +61,10 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.Mode == modeProviderSelect {
 			return m, nil
 		}
+		// Global shortcuts keep working while a message selection is
+		// active. Drop the selection first so it doesn't reappear behind
+		// the picker.
+		m.MessageArea.EndCopy()
 		// Don't let the picker open (or the provider swap while it's
 		// open) mid-agentic-loop: the in-flight turn re-reads the
 		// provider when it loops back to the model, so switching here
@@ -96,10 +100,22 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 				return m, m.loopAfterBatch()
 			}
+			// The turn is winding down asynchronously: restore the prompt
+			// now so the user can keep typing or paste while it stops.
+			m.MessageArea.EndCopy()
+			m.MessageArea.CancelTextDrag()
+			m.Prompt.CancelTextDrag()
+			focusCmd := m.focusCodeTabPrompt()
 			m.MessageArea.AppendMessage(">**INFO** Stopping…", false)
-			return m, nil
+			return m, focusCmd
 		}
 		if msg_str == "ctrl+i" {
+			// Nothing is running, but ctrl+i is still a global key: don't
+			// leave a copy selection owning the keyboard.
+			if m.MessageArea.InCopyMode() {
+				m.MessageArea.EndCopy()
+				return m, m.focusCodeTabPrompt()
+			}
 			return m, nil
 		}
 	}
@@ -148,6 +164,10 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			case "a":
 				m.MessageArea.SelectAll()
 				return m, nil
+			case "ctrl+l", "ctrl+t":
+				// Global layout shortcuts are not copy-mode keys. Leave
+				// the selection and let the normal handlers below run.
+				m.MessageArea.EndCopy()
 			default:
 				// Swallow the key so typing can't change the prompt while
 				// a selection is being made.
@@ -552,6 +572,25 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.Mode = modePrompt
 			return m, m.Prompt.Focus()
 		}
+	}
+	return m.forwardToComponents(msg)
+}
+
+// handlePasteMsg routes bracketed paste into the code tab's textarea. A paste
+// is typing intent, so it also ends any active copy selection and restores the
+// prompt focus first: paste must never be swallowed by copy mode or lost on a
+// blurred/idle prompt.
+func (m model) handlePasteMsg(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
+	if m.Tabs.Active().Name == "code" && (m.Mode == modePrompt || m.Mode == modeIdle) {
+		m.MessageArea.EndCopy()
+		m.MessageArea.CancelTextDrag()
+		m.Prompt.CancelTextDrag()
+		m.Mode = modePrompt
+		focusCmd := m.Prompt.Focus()
+		var cmd tea.Cmd
+		m.Prompt, cmd = m.Prompt.Update(msg)
+		m.syncPromptHeight()
+		return m, tea.Batch(focusCmd, cmd)
 	}
 	return m.forwardToComponents(msg)
 }

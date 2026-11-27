@@ -310,9 +310,16 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// View renders the message area, including its border and outer margin.
+// View renders the message area, including its border and outer margin. An
+// active text drag reuses the band cached when the drag began, so mouse motion
+// only repaints the highlight instead of rebuilding the viewport every event.
 func (m Model) View() string {
-	view := lipgloss.NewStyle().Margin(0, padSide).Render(m.vp.View())
+	var view string
+	if m.textDrag.baseValid(&m.vp) {
+		view = m.textDrag.baseView
+	} else {
+		view = textDragBandStyle.Render(m.vp.View())
+	}
 	view = m.overlayTextDrag(view)
 	return m.overlaySelection(view)
 }

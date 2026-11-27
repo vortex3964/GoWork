@@ -277,6 +277,26 @@ func (m model) promptTop() int {
 	return m.winHeight - statusLineHeight - m.bottomBarHeight()
 }
 
+// focusCodeTabPrompt returns the code tab to a usable prompt bar. Interactions
+// that temporarily take the keyboard away from the textarea (a mouse
+// drag-copy, an interrupted turn) call this so typed text and pasted text land
+// in the prompt immediately instead of requiring an extra Enter. Tabs with
+// their own pane, and blocking overlays, keep their keys and mode.
+func (m *model) focusCodeTabPrompt() tea.Cmd {
+	if m.Tabs.Active().Name != "code" {
+		return nil
+	}
+	switch m.Mode {
+	case modeProviderSelect, modePermission, modeQuestionnaire, modeStats, modeSkills, modeTools:
+		return nil
+	}
+	m.Mode = modePrompt
+	if m.Prompt.Focused() {
+		return nil
+	}
+	return m.Prompt.Focus()
+}
+
 // restoreModeForActiveTab leaves an overlay or auxiliary mode and returns to
 // the layout of the active tab. The provider picker overlays any tab and the
 // changes list can outlive a tab switch, so forcing modePrompt unconditionally

@@ -43,6 +43,29 @@ func TestTextDragAccountsForMentionMenuRows(t *testing.T) {
 	}
 }
 
+// TestDragMotionReusesWrappedRows keeps prompt drag motion from re-wrapping
+// the entire prompt on every mouse event and again when the frame renders.
+func TestDragMotionReusesWrappedRows(t *testing.T) {
+	m := New()
+	m.SetWidth(60)
+	m.SetValue(strings.Repeat("wrap this prompt text around the bar ", 40))
+	x, y := promptTextOrigin(m)
+
+	if !m.BeginTextDrag(x, y) {
+		t.Fatal("BeginTextDrag missed the prompt text")
+	}
+	before := m.wrapComputations
+	for i := 0; i < 100; i++ {
+		if !m.UpdateTextDrag(x+1+i%5, y) {
+			t.Fatalf("motion %d missed the drag focus", i)
+		}
+		_ = m.View()
+	}
+	if got := m.wrapComputations - before; got != 0 {
+		t.Fatalf("drag motion re-wrapped the prompt %d times, want 0", got)
+	}
+}
+
 func TestTextDragSelectsPromptSubstring(t *testing.T) {
 	m := New()
 	m.SetWidth(100)

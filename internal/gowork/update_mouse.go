@@ -212,16 +212,30 @@ func (m model) handleMouseReleaseMsg(msg tea.MouseReleaseMsg) (tea.Model, tea.Cm
 		return m, nil
 	}
 	m.panelDragActive = false
+	// A completed drag-copy is an intent to keep interacting with the
+	// prompt: restore its focus and prompt mode so the next keystroke or
+	// paste lands in the textarea without an extra Enter.
 	if m.Prompt.TextDragActive() {
 		text, ok := m.Prompt.EndTextDrag()
 		m.MessageArea.CancelTextDrag()
+		m.focusCodeTabPrompt()
 		if ok {
 			return m, copyTextCmd(text, true)
 		}
 		return m, nil
 	}
-	if text, ok := m.MessageArea.EndTextDrag(); ok {
-		return m, copyTextCmd(text, true)
+	if m.MessageArea.TextDragActive() {
+		moved := m.MessageArea.TextDragMoved()
+		text, ok := m.MessageArea.EndTextDrag()
+		if moved {
+			// Even an empty selection (whitespace-only drag) was still a
+			// copy gesture: leave the prompt ready for the next keystroke.
+			m.focusCodeTabPrompt()
+		}
+		if ok {
+			return m, copyTextCmd(text, true)
+		}
+		return m, nil
 	}
 	return m, nil
 }
