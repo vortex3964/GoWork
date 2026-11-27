@@ -7,7 +7,9 @@
 package skillstool
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -28,11 +30,13 @@ const SkillFileName = "SKILL.md"
 // separators, 1-64 characters.
 var nameRe = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
-// Skill is one discovered skill: identity + frontmatter + full body.
+// Skill is one discovered skill: identity + frontmatter. Body is only
+// populated by callers that explicitly read the full file; discovery leaves
+// it empty so the tab never pays for skill bodies it does not render.
 type Skill struct {
 	Name        string // frontmatter name (must match the dir name)
 	Description string // frontmatter description
-	Body        string // everything after the frontmatter separator
+	Body        string // full markdown body, empty in discovery snapshots
 	Path        string // absolute SKILL.md path
 }
 
@@ -105,7 +109,7 @@ func (m *Manager) scanLocked() []Skill {
 			continue
 		}
 		path := filepath.Join(m.skillsDir(), d.Name(), SkillFileName)
-		s, ok := parseSkill(path)
+		s, ok := parseSkillMetadata(path)
 		if !ok {
 			continue
 		}
@@ -268,7 +272,7 @@ func (m *Manager) Create(name, desc, body string) (Skill, error) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return Skill{}, fmt.Errorf("writing skill file: %w", err)
 	}
-	skill, _ := parseSkill(path)
+	skill, _ := parseSkillMetadata(path)
 	return skill, nil
 }
 
@@ -289,69 +293,71 @@ func buildSkillMarkdown(name, desc, body string) string {
 
 // --- frontmatter parsing -------------------------------------------------
 
-// parseSkill reads and parses a SKILL.md. Unreadable/malformed files return
+// parseSkillMetadata reads only a SKILL.md's frontmatter, stopping at the
+// closing separator instead of loading the body. Unreadable files return
 // ok=false. The frontmatter is a minimal YAML subset (only name and
 // description matter; everything else is ignored). Indented continuation
 // lines fold into the previous value, so multi-line descriptions work.
-func parseSkill(path string) (Skill, bool) {
-	data, err := os.ReadFile(path)
+//
+// The skill tool reads the full file on demand via Manager.Content, so the
+// body is deliberately left empty here: the tab only renders metadata.
+func parseSkillMetadata(path string) (Skill, bool) {
+	f, err := os.Open(path)
 	if err != nil {
 		return Skill{}, false
 	}
-	text := string(data)
-	lines := strings.Split(text, "\n")
-	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
-		// No frontmatter: the whole file is body; name stays empty and the
-		// caller decides whether a name-less skill is usable.
-		return Skill{Path: path, Body: strings.TrimSpace(text)}, true
+	defer f.Close()
+
+	r := bufio.NewReader(f)
+	first, err := r.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return Skill{}, false
+	}
+	if strings.TrimSpace(first) != "---" {
+		// No frontmatter: name/description stay empty; the caller decides
+		// whether a name-less skill is usable.
+		return Skill{Path: path}, true
 	}
 
 	name := ""
 	descParts := []string{}
 	foundName := false
 	foundDesc := false
-	closeIdx := -1
-	for i := 1; i < len(lines); i++ {
-		raw := lines[i]
-		line := strings.TrimSpace(raw)
-		if line == "---" {
-			closeIdx = i
+	for {
+		raw, readErr := r.ReadString('\n')
+		if raw == "" && readErr != nil {
 			break
 		}
-		if line == "" {
-			continue
+		line := strings.TrimSpace(raw)
+		if line == "---" {
+			break
 		}
-		key, val, ok := strings.Cut(line, ":")
-		if !ok {
-			// Continuation line (indented): fold into the active value.
-			if foundDesc {
-				descParts = append(descParts, strings.TrimSpace(line))
+		if line != "" {
+			key, val, ok := strings.Cut(line, ":")
+			if !ok {
+				// Continuation line (indented): fold into the active value.
+				if foundDesc {
+					descParts = append(descParts, strings.TrimSpace(line))
+				}
+			} else {
+				switch strings.ToLower(strings.TrimSpace(key)) {
+				case "name":
+					if !foundName {
+						name = strings.TrimSpace(val)
+						foundName = true
+					}
+				case "description":
+					if !foundDesc {
+						foundDesc = true
+						descParts = []string{strings.TrimSpace(val)}
+					}
+				}
 			}
-			continue
 		}
-		switch strings.ToLower(strings.TrimSpace(key)) {
-		case "name":
-			if !foundName {
-				name = strings.TrimSpace(val)
-				foundName = true
-			}
-		case "description":
-			if !foundDesc {
-				foundDesc = true
-				descParts = []string{strings.TrimSpace(val)}
-			}
+		if readErr != nil {
+			break
 		}
 	}
 
-	skill := Skill{Path: path, Name: name, Description: strings.Join(descParts, " ")}
-	if closeIdx < 0 {
-		// Unterminated frontmatter: treat everything as body.
-		skill.Body = strings.TrimSpace(text)
-		return skill, true
-	}
-	bodyStart := closeIdx + 1
-	if bodyStart < len(lines) {
-		skill.Body = strings.TrimSpace(strings.Join(lines[bodyStart:], "\n"))
-	}
-	return skill, true
+	return Skill{Path: path, Name: name, Description: strings.Join(descParts, " ")}, true
 }

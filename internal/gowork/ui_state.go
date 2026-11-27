@@ -154,9 +154,9 @@ func (m *model) refreshSkills() {
 		m.Skills.SetData(nil)
 		return
 	}
-	mgr.Discover()
-	entries := make([]skills.Entry, 0, len(mgr.Entries()))
-	for _, e := range mgr.Entries() {
+	discovered := mgr.Discover()
+	entries := make([]skills.Entry, 0, len(discovered))
+	for _, e := range discovered {
 		if e.Name == "" || strings.HasPrefix(e.Name, ".") {
 			continue
 		}
