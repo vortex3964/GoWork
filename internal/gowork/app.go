@@ -5,7 +5,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"charm.land/bubbles/v2/spinner"
@@ -54,11 +53,6 @@ import (
 const topBarHeight = 1
 
 const spinnerHeight = 1
-
-// defaultMaxAgentSteps is used when MAX_AGENT_STEPS isn't set (or parses to
-// zero). It guards the agentic loop against runaway tool-call chains (a model
-// stuck re-calling the same tool, etc.)
-const defaultMaxAgentSteps = 40
 
 // maxToolsPerTurn caps how many tool calls are executed from a single model
 // reply. Beyond keeping the parallel batch sane, it stops a runaway model
@@ -140,17 +134,14 @@ type model struct {
 	//tool call
 	tool_dispatcher *tools.Dispatcher
 
-	// agentic loop state: the tool calls we're still waiting on and how many
-	// tool-turns this user request has taken. Tools in the current batch run
-	// in parallel; pendingResults (one slot per call) is nil until that slot
-	// reports back, and the loop only returns to the model once every slot is
-	// filled.
+	// agentic loop state: the tool calls we're still waiting on. Tools in the
+	// current batch run in parallel; pendingResults (one slot per call) is nil
+	// until that slot reports back, and the loop only returns to the model
+	// once every slot is filled. There is no turn cap: the loop keeps going
+	// across batches until the model answers without tool calls or the user
+	// interrupts it.
 	pendingTools   []pendingTool
 	pendingResults []*tools.ToolResult
-	stepCount      int
-	// maxSteps is the per-prompt cap on tool turns before the loop forces a
-	// stop; configured via MAX_AGENT_STEPS and defaulted in initialModel.
-	maxSteps int
 
 	// streaming state: while a generation is live we pump deltas off streamCh
 	// into the last assistant message instead of waiting for the whole reply.
@@ -358,7 +349,6 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 		Context:           []providers.Message{},
 		model:             holder,
 		AiThink:           &think,
-		maxSteps:          maxAgentStepsFromEnv(),
 		status:            newStatusLine(root, providerName, modelID),
 		logoLines:         loadLogo(),
 		popUp:             popup.New(),
@@ -418,21 +408,6 @@ func (m *model) setPlanMode(on bool) {
 // togglePlanMode flips read-only plan mode.
 func (m *model) togglePlanMode() {
 	m.setPlanMode(!m.planMode)
-}
-
-// maxAgentStepsFromEnv reads MAX_AGENT_STEPS (a positive int) and falls back
-// to defaultMaxAgentSteps when unset, empty, or invalid.
-func maxAgentStepsFromEnv() int {
-	raw := strings.TrimSpace(os.Getenv("MAX_AGENT_STEPS"))
-	if raw == "" {
-		return defaultMaxAgentSteps
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 1 {
-		log.Printf("ignoring invalid MAX_AGENT_STEPS=%q, using %d", raw, defaultMaxAgentSteps)
-		return defaultMaxAgentSteps
-	}
-	return n
 }
 
 func (m model) Init() tea.Cmd {

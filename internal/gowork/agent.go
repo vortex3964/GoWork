@@ -335,7 +335,6 @@ func (m *model) endTurn() {
 		m.applyPanelSize()
 	}
 	*m.AiThink = false
-	m.stepCount = 0
 	m.pendingTools = m.pendingTools[:0]
 	m.pendingResults = m.pendingResults[:0]
 	m.liveActive = false
@@ -482,7 +481,6 @@ func (m *model) submitPrompt() []tea.Cmd {
 	m.Prompt.Reset()
 	m.syncPromptHeight()
 	m.historyIdx = 0
-	m.stepCount = 0
 	m.pendingTools = m.pendingTools[:0]
 	m.pendingResults = m.pendingResults[:0]
 

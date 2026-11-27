@@ -99,16 +99,6 @@ func RepairContext(messages []providers.Message) ([]providers.Message, bool) {
 	return repairContext(messages)
 }
 
-// SetMaxSteps overrides the agentic-loop step cap. Exposed for tests.
-func (m *model) SetMaxSteps(n int) {
-	m.maxSteps = n
-}
-
-// SetStepCount overrides the current turn's step counter. Exposed for tests.
-func (m *model) SetStepCount(n int) {
-	m.stepCount = n
-}
-
 // FlushSession runs the save-on-exit path. Exposed for tests.
 func (m *model) FlushSession() {
 	m.flushSession()

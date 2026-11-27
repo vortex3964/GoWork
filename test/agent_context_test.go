@@ -52,56 +52,6 @@ func assertValidToolContext(t *testing.T, msgs []providers.Message) {
 	}
 }
 
-// TestMaxStepsClosesToolCalls covers the max-agent-steps guardrail: the
-// assistant message with its tool calls is kept (prose and visible transcript
-// stay intact), but every call is paired with a synthetic result explaining
-// the limit, so the next request is valid instead of dangling.
-func TestMaxStepsClosesToolCalls(t *testing.T) {
-	m := newModeTestModel()
-	m.MessageArea.SetSize(80, 24)
-	m.Context = []providers.Message{{Role: "user", Content: "inspect the repo"}}
-	m.SetMaxSteps(1)
-	m.SetStepCount(1) // the next tool turn is step 2, over the cap
-	m.MessageArea.LiveAssistantStart()
-
-	calls := []providers.ToolCall{
-		{Tool_call_id: "c1", Tool_name: "read_file", Input: json.RawMessage(`{"path":"a.go"}`)},
-		{Tool_call_id: "c2", Tool_name: "grep_search", Input: json.RawMessage(`{"pattern":"TODO"}`)},
-	}
-	updated, _ := m.Update(gowork.StreamEnd(providers.GenerateResult{
-		Content:   "Let me look at both files.",
-		ToolCalls: calls,
-	}, nil))
-	got := updated.(gowork.Model)
-
-	assertValidToolContext(t, got.Context)
-
-	if len(got.Context) != 4 {
-		t.Fatalf("context has %d messages, want 4 (user, assistant, 2 tool results): %+v", len(got.Context), got.Context)
-	}
-	if got.Context[1].Role != "assistant" || got.Context[1].Content != "Let me look at both files." {
-		t.Fatalf("assistant prose was not preserved: %+v", got.Context[1])
-	}
-	if len(got.Context[1].ToolCalls) != 2 {
-		t.Fatalf("assistant tool calls = %d, want 2", len(got.Context[1].ToolCalls))
-	}
-	for i, wantID := range []string{"c1", "c2"} {
-		res := got.Context[2+i]
-		if res.Role != "tool" || res.ToolCallID != wantID {
-			t.Fatalf("result %d = %+v, want tool result for %q", i, res, wantID)
-		}
-		if !strings.Contains(res.Content, "maximum") || !strings.Contains(res.Content, "agent steps") {
-			t.Fatalf("result %d does not explain the step limit: %q", i, res.Content)
-		}
-	}
-
-	// The repaired context is already valid, so the safety net before the
-	// next request must have nothing left to do.
-	if _, changed := gowork.RepairContext(got.Context); changed {
-		t.Fatal("max-steps context still needed repair before the next request")
-	}
-}
-
 // TestEndTurnRepairsAbandonedToolBatch covers a batch abandoned while it was
 // held up (for example a permission prompt the turn never got a decision for):
 // ending the turn must repair the dangling call, not just reset loop state.

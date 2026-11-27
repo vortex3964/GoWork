@@ -305,10 +305,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if len(toolCalls) > 0 {
 			// The assistant asked for tools: run them, feed the results
-			// back into context, then call the model again. aiThink stays
-			// true so the spinner keeps running and submitPrompt won't
-			// launch a concurrent generation; the prompt bar itself stays
-			// focused and usable.
+			// back into context, then call the model again. There is no
+			// turn cap - the loop repeats for as long as the model keeps
+			// requesting tools. aiThink stays true so the spinner keeps
+			// running and submitPrompt won't launch a concurrent
+			// generation; the prompt bar itself stays focused and usable,
+			// and ctrl+i interrupts the turn at any point.
 
 			// Cap the batch. A runaway model that keeps re-emitting the same
 			// calls must not spin forever: only the first maxToolsPerTurn
@@ -326,37 +328,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Context = append(m.Context, providers.Message{
 				Role: "assistant", Content: content, ToolCalls: toolCalls,
 			})
-
-			// Max-steps guardrail so a model stuck re-calling tools can't loop
-			// forever. The assistant tool-call message is already in context,
-			// so close every requested call with a synthetic result that
-			// explains the limit: dropping the message would lose the
-			// assistant's prose, and leaving the calls unanswered makes the
-			// next request invalid for OpenAI/Anthropic. The matching error
-			// rows are rendered too, so the visible transcript mirrors the
-			// saved context.
-			m.stepCount++
-			if m.stepCount > m.maxSteps {
-				notice := fmt.Sprintf(
-					"Tool not executed: this turn reached its maximum of %d agent steps before the call ran. Ask the user to continue if the remaining work is still needed.",
-					m.maxSteps,
-				)
-				for _, tc := range toolCalls {
-					m.Context = append(m.Context, providers.Message{
-						Role:       "tool",
-						ToolCallID: tc.Tool_call_id,
-						Content:    notice,
-					})
-					idx := m.MessageArea.AppendTool(tc.Tool_name, messagearea.SummarizeToolInput(tc.Input))
-					m.MessageArea.UpdateToolMessage(idx, messagearea.ToolError, notice)
-				}
-				m.endTurn()
-				m.MessageArea.AppendMessage(
-					">**ERROR** Reached the maximum number of agent turns. If you want, ask me to continue with the remaining steps.",
-					false,
-				)
-				return m, nil
-			}
 
 			// Render each requested call as a "running" row, then execute
 			// the whole batch in parallel - the update loop collects

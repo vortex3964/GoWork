@@ -10,8 +10,9 @@ guarded tools, and keeps every change reviewable before it lands.
 
 - **Streaming agent loop.** Replies stream token by token. Independent tool
   calls run in parallel, their results go back to the model, and the loop
-  continues until the task is finished. `MAX_AGENT_STEPS` caps a request at 40
-  model turns by default, and one reply can request up to 10 tools.
+  continues across tool batches until the model finishes the task - there is
+  no turn cap. Press ctrl+i at any point to interrupt a running turn, and one
+  reply can request up to 10 tools.
 - **Project-confined tools.** File operations are rooted at the project you
   open. `bash`, `edit_file`, `write_file`, `create_file_tool`, `move_file`,
   `delete_file`, `web_fetch`, `web_search`, and the install/remove tools require
@@ -247,7 +248,9 @@ GoWork reads environment variables and an optional `.env` file:
 | `LOCAL_SERVER_START_TIMEOUT` | How long the launch control waits for a local server to become ready (`3m`, `45s`, or seconds). | `2m` |
 | `GOWORK_CONFIG_DIR` | Override the durable per-user config directory that holds skills, `.mcp.json`, and `.lsp.json`. | platform config directory + `GoWork` |
 | `GOWORK_ALLOW_PROJECT_PDF_SCRIPTS` | Trust the PDF parser script and venv inside the project being read. Off by default because that is project-controlled code. | off |
-| `MAX_AGENT_STEPS` | Maximum model turns per request before the agent loop stops. | `40` |
+
+The agent loop is uncapped: it keeps running tool batches for as long as the
+model requests them, and ctrl+i interrupts a running turn (ctrl+c quits).
 
 `.env` is ignored by git, so keys stay out of the repository.
 

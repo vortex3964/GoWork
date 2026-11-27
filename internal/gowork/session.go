@@ -23,8 +23,8 @@ const interruptedToolResult = "Tool call interrupted: the turn ended before this
 // repairContext makes a history safe to send to a provider. It pairs every
 // assistant tool call with exactly one tool result in call order:
 //   - a tool call whose result is missing gets a synthetic interrupted result
-//     inserted directly after the call (so trailing calls on quit/max-steps
-//     cannot leave an invalid conversation);
+//     inserted directly after the call (so trailing calls on quit cannot
+//     leave an invalid conversation);
 //   - a tool result with no preceding call to answer (or a duplicate result)
 //     is dropped, because providers reject orphan tool messages too.
 //
