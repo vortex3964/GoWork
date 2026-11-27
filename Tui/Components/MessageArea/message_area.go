@@ -131,6 +131,13 @@ type Model struct {
 	// sure streaming doesn't re-render the growing answer on every delta.
 	renderCount int
 
+	// Copy selection state: selAnchor and selFocus are inclusive message
+	// indexes. selAnchor < 0 means nothing is selected. copyMode is set
+	// while the message area owns the keyboard for range selection.
+	selAnchor int
+	selFocus  int
+	copyMode  bool
+
 	// mdRenderer is the glamour renderer used for AI messages, cached
 	// and only rebuilt when the width it was built for (mdWidth) no
 	// longer matches what we need, since constructing one isn't free.
@@ -150,9 +157,10 @@ func New() Model {
 	vp.SoftWrap = true
 
 	return Model{
-		vp:       vp,
-		messages: []message{},
-		liveIdx:  -1,
+		vp:        vp,
+		messages:  []message{},
+		liveIdx:   -1,
+		selAnchor: -1,
 	}
 }
 
@@ -291,7 +299,8 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 // View renders the message area, including its border and outer margin.
 func (m Model) View() string {
-	return lipgloss.NewStyle().Margin(0, padSide).Render(m.vp.View())
+	view := lipgloss.NewStyle().Margin(0, padSide).Render(m.vp.View())
+	return m.overlaySelection(view)
 }
 
 func (m *Model) SetSize(outerWidth int, outerHeight int) {

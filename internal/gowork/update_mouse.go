@@ -20,13 +20,6 @@ func (m model) handleMouseClickMsg(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 			m.Skills.HandleMouseClick(msg.X, msg.Y-m.panelTop())
 			return m, nil
 		}
-		// The tab strip renders taller than one line (its border adds top
-		// and bottom rows), so let clicks anywhere on it switch tabs. The
-		// prompt bar sits pinned just above the statusline at the bottom
-		// of the screen, so it owns exactly m.Prompt.Height() rows starting
-		// at promptTop() - anything below that is the statusline, which
-		// isn't clickable. On the code and skills tabs, whose layouts
-		// pin the prompt bar, clicking it focuses it.
 		// The todo panel toggle arrow, drawn at the middle of the
 		// message band. Clicking it flips the sidebar open/closed.
 		if m.Tabs.Active().Name == "code" && msg.Y == m.arrowRow() && msg.X == m.arrowCol() {
@@ -44,6 +37,34 @@ func (m model) handleMouseClickMsg(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 			m.panelDragWidth = m.panelWidth()
 			return m, nil
 		}
+		// Copy interactions in the message band on the code tab: left click
+		// selects a message (shift-click extends), right click copies it.
+		// Wheel events go through handleMouseWheelMsg, so viewport scrolling
+		// is unaffected.
+		if m.Tabs.Active().Name == "code" && m.Mode != modeChangeHandling &&
+			msg.Y > m.panelTop() && msg.Y < m.promptTop() && msg.X < m.msgAreaWidth() {
+			switch msg.Button {
+			case tea.MouseRight:
+				if m.MessageArea.HandleClick(msg.X, msg.Y-m.panelTop(), false) {
+					text, ok := m.MessageArea.SelectedText()
+					m.MessageArea.EndCopy()
+					return m, copyTextCmd(text, ok)
+				}
+				return m, nil
+			case tea.MouseLeft:
+				extend := msg.Mod.Contains(tea.ModShift)
+				if m.MessageArea.HandleClick(msg.X, msg.Y-m.panelTop(), extend) {
+					return m, showPopupCmd(copyModeHint)
+				}
+			}
+		}
+		// The tab strip renders taller than one line (its border adds top
+		// and bottom rows), so let clicks anywhere on it switch tabs. The
+		// prompt bar sits pinned just above the statusline at the bottom
+		// of the screen, so it owns exactly m.Prompt.Height() rows starting
+		// at promptTop() - anything below that is the statusline, which
+		// isn't clickable. On the code and skills tabs, whose layouts
+		// pin the prompt bar, clicking it focuses it.
 		switch {
 		case msg.Y < m.Tabs.Height():
 			m.Tabs.HandleClick(msg.X)

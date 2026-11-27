@@ -207,6 +207,19 @@ GoWork reads environment variables and an optional `.env` file:
 | `ctrl+u` | Clear the prompt. |
 | `esc` | Leave prompt entry. |
 
+### Message area
+
+| Key | Action |
+| --- | --- |
+| `ctrl+y` | Enter copy mode (starts on the newest message). |
+| `up` / `down` (copy mode) | Move the message selection. |
+| `shift+up` / `shift+down` (copy mode) | Extend or shrink the selected range. |
+| `a` (copy mode) | Select every message. |
+| `enter` or `ctrl+y` (copy mode) | Copy the selection to the clipboard. |
+| `esc` (copy mode) | Cancel the selection. |
+| left click | Select the clicked message; shift-click extends the range. |
+| right click | Copy the clicked message immediately. |
+
 ### Changes list
 
 | Key | Action |

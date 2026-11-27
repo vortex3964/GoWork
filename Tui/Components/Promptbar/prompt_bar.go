@@ -56,8 +56,8 @@ func baseStyles() textarea.Styles {
 
 func New() Model {
 	ta := textarea.New()
-	ta.Placeholder = "enter a prompt ..."
-	ta.Prompt = "" 
+	ta.Placeholder = "enter a prompt ... · ctrl+a copy · ctrl+y select messages"
+	ta.Prompt = ""
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
 	ta.EndOfBufferCharacter = ' '
@@ -70,8 +70,8 @@ func New() Model {
 	ta.MaxHeight = maxVisibleLines
 	ta.MaxContentHeight = maxContentLines
 	ta.SetHeight(visibleLines)
-	ta.SetWidth(20) 
-	ta.Blur()        
+	ta.SetWidth(20)
+	ta.Blur()
 	return Model{area: ta, lastHeight: visibleLines}
 }
 

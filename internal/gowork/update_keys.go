@@ -88,6 +88,50 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// Message copy mode owns the keyboard while it is active: arrows move
+	// the selection, shift+arrows extend it, enter/ctrl+y copies the
+	// selected range, esc cancels. ctrl+y enters the mode from the code
+	// tab. This runs before prompt handling so those keys don't type into
+	// (or move the cursor of) the textarea.
+	if m.Tabs.Active().Name == "code" && (m.Mode == modePrompt || m.Mode == modeIdle) {
+		if m.MessageArea.InCopyMode() {
+			switch msg_str {
+			case "esc":
+				m.MessageArea.EndCopy()
+				return m, nil
+			case "enter", "ctrl+y":
+				text, ok := m.MessageArea.SelectedText()
+				m.MessageArea.EndCopy()
+				return m, copyTextCmd(text, ok)
+			case "up", "k":
+				m.MessageArea.MoveSelection(-1, false)
+				return m, nil
+			case "down", "j":
+				m.MessageArea.MoveSelection(1, false)
+				return m, nil
+			case "shift+up", "K":
+				m.MessageArea.MoveSelection(-1, true)
+				return m, nil
+			case "shift+down", "J":
+				m.MessageArea.MoveSelection(1, true)
+				return m, nil
+			case "a":
+				m.MessageArea.SelectAll()
+				return m, nil
+			default:
+				// Swallow the key so typing can't change the prompt while
+				// a selection is being made.
+				return m, nil
+			}
+		}
+		if msg_str == "ctrl+y" {
+			if m.MessageArea.BeginCopy() {
+				return m, showPopupCmd(copyModeHint)
+			}
+			return m, showPopupCmd("Nothing to copy yet")
+		}
+	}
+
 	if msg_str == "ctrl+l" {
 		if m.Mode == modeChangeHandling {
 			m.ChangesList.Close()
@@ -354,4 +398,26 @@ func popupCopyMessage(val string) string {
 		return "Copied to clipboard"
 	}
 	return "Copied: " + oneLine
+}
+
+// copyModeHint is shown when copy mode opens so the selection keys and the
+// prompt bar's existing copy shortcut are discoverable.
+const copyModeHint = "Copy: ↑↓ select · shift+↑↓ range · a all · enter copy · esc cancel"
+
+func showPopupCmd(message string) tea.Cmd {
+	return func() tea.Msg { return popup.ShowMsg{Message: message} }
+}
+
+// copyTextCmd writes text to the system clipboard and reports the result as
+// the existing popup toast.
+func copyTextCmd(text string, ok bool) tea.Cmd {
+	if !ok || strings.TrimSpace(text) == "" {
+		return showPopupCmd("Nothing selected to copy")
+	}
+	return func() tea.Msg {
+		if err := clipboard.WriteAll(text); err != nil {
+			return popup.ShowMsg{Message: "Copy failed: " + err.Error()}
+		}
+		return popup.ShowMsg{Message: popupCopyMessage(text)}
+	}
 }
