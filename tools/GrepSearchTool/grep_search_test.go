@@ -560,21 +560,67 @@ func TestAgentignoreRespected(t *testing.T) {
 	}
 }
 
-func TestHiddenFilesSearched(t *testing.T) {
+func TestHiddenSecretsSkippedByDefault(t *testing.T) {
 	requireRG(t)
 	dir := t.TempDir()
-	// Tool passes --hidden, so dotfiles not covered by an ignore file
-	// should still be searched.
-	writeFile(t, dir, ".env", "needle\n")
+	// Hidden files and directories commonly hold credentials; a default
+	// search must not read them.
+	writeFile(t, dir, ".env", "SECRET_API_KEY=supersecret\n")
+	writeFile(t, dir, ".git/config", "[remote \"origin\"]\n\turl = https://user:SECRET_GIT_TOKEN@example.com/repo.git\n")
+	writeFile(t, dir, "visible.go", "package main\n\n// SECRET_VISIBLE_MARKER\n")
 	args := newDispatchArgs(t, dir)
 	tool := grepsearchtool.New()
 
-	res := run(t, tool, args, grepsearchtool.Input{Pattern: "needle"})
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "SECRET"})
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content)
 	}
-	if !strings.Contains(res.Content, ".env:1: needle") {
-		t.Errorf("expected hidden file to be searched, got:\n%s", res.Content)
+	if !strings.Contains(res.Content, "visible.go:3: // SECRET_VISIBLE_MARKER") {
+		t.Errorf("expected visible file match, got:\n%s", res.Content)
+	}
+	for _, stale := range []string{"SECRET_API_KEY", "supersecret", "SECRET_GIT_TOKEN", ".env", ".git/config"} {
+		if strings.Contains(res.Content, stale) {
+			t.Errorf("default search leaked hidden content %q:\n%s", stale, res.Content)
+		}
+	}
+
+	// Targeted secret values must not match either.
+	for _, pattern := range []string{"supersecret", "SECRET_GIT_TOKEN"} {
+		res = run(t, tool, args, grepsearchtool.Input{Pattern: pattern})
+		if res.IsError {
+			t.Fatalf("unexpected error: %s", res.Content)
+		}
+		if res.Content != "No matches found" {
+			t.Errorf("expected no match for hidden secret %q, got:\n%s", pattern, res.Content)
+		}
+	}
+}
+
+func TestPendingHiddenChangeSkippedByDefault(t *testing.T) {
+	requireRG(t)
+	dir := t.TempDir()
+	writeFile(t, dir, ".env", "VISIBLE=1\n<<<<<<< old\noldsecret\n=======\nSECRET_API_KEY=pendingsecret\n>>>>>>> Ai change\n")
+	args, wl := newPendingArgs(t, dir)
+	markPending(t, wl, dir, ".env")
+	tool := grepsearchtool.New()
+
+	// A watched hidden file with pending changes must not bypass the
+	// default hidden-file exclusion during a directory scan.
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "SECRET"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if res.Content != "No matches found" {
+		t.Errorf("expected pending hidden file to be skipped, got:\n%s", res.Content)
+	}
+
+	// An explicitly named hidden file is still searched, like rg does.
+	res = run(t, tool, args, grepsearchtool.Input{Pattern: "SECRET", Path: ".env"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, ".env:2: SECRET_API_KEY=pendingsecret") {
+		t.Errorf("expected explicit hidden file to use accepted view, got:\n%s", res.Content)
 	}
 }
 

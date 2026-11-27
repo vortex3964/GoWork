@@ -39,7 +39,7 @@ func New() tools.AgentTool { return &Tool{} }
 func (t *Tool) Name() string { return "file_search" }
 
 func (t *Tool) Description() string {
-	return fmt.Sprintf(`Quickly locates files by NAME or path pattern using ripgrep. Respects .gitignore and .agentignore.
+	return fmt.Sprintf(`Quickly locates files by NAME or path pattern using ripgrep. Respects .gitignore and .agentignore, and skips hidden files and directories (dotfiles such as .env and .git) by default.
 
 Returns one project-relative path per line. Use this to find where a file lives (pattern "todoList" returns "Tui/todoList.go"), to confirm a file exists before creating anything, or to glob for files by name.
 Output is capped at %d matches or %d bytes, whichever is hit first. If you hit the match cap, raise limit or narrow pattern/include.
@@ -161,7 +161,7 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	// .gitignore/.agentignore still apply; we then filter the relative
 	// paths against the pattern in Go (matching against the path rg
 	// itself printed would include the root prefix and platform quirks).
-	rgArgs := []string{"--files", "--hidden", "--color=never"}
+	rgArgs := []string{"--files", "--color=never"}
 	if input.Include != "" {
 		rgArgs = append(rgArgs, "--glob", input.Include)
 	}

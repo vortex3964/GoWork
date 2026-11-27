@@ -47,7 +47,7 @@ func New() tools.AgentTool { return &Tool{} }
 func (t *Tool) Name() string { return "grep_search" }
 
 func (t *Tool) Description() string {
-	return fmt.Sprintf(`Search file CONTENTS for a regex pattern using ripgrep. Respects .gitignore and .agentignore.
+	return fmt.Sprintf(`Search file CONTENTS for a regex pattern using ripgrep. Respects .gitignore and .agentignore, and skips hidden files and directories (dotfiles such as .env and .git) by default.
 
 Returns matching lines as "path:line: text", the same format ripgrep prints to a terminal. Context lines (if requested via context_lines) are shown as "path-line- text" instead, so match lines always stand out.
 Output is capped at %d matches or %d bytes, whichever is hit first. If you hit the match cap, raise limit or narrow pattern/include. If you hit the byte cap, narrow the search instead - raising limit won't help.
@@ -163,7 +163,7 @@ func fileExists(p string) bool {
 // They are shared by the on-disk scan and the stdin scans done for files with
 // pending changes, so both search with identical semantics.
 func searchFlags(input Input) []string {
-	flags := []string{"--json", "--line-number", "--color=never", "--hidden"}
+	flags := []string{"--json", "--line-number", "--color=never"}
 	if input.IgnoreCase {
 		flags = append(flags, "--ignore-case")
 	}
@@ -192,10 +192,21 @@ func pendingIgnores(root string) []*ignore.GitIgnore {
 	return ignores
 }
 
+// isHiddenPath reports whether rel has a dot-prefixed component, matching
+// what ripgrep treats as hidden when --hidden is not passed.
+func isHiddenPath(rel string) bool {
+	for _, part := range strings.Split(rel, "/") {
+		if len(part) > 1 && part[0] == '.' {
+			return true
+		}
+	}
+	return false
+}
+
 // pendingFiles returns the root-relative, slash-separated paths of watched
 // files that have pending changes and fall inside the search. scopeIsDir
-// distinguishes a directory search (where include and ignore rules apply)
-// from an explicitly named file, which rg searches regardless of those rules.
+// distinguishes a directory search (where include, hidden and ignore rules
+// apply) from an explicitly named file, which rg searches regardless of them.
 func pendingFiles(wl *cl.WatchList, root, scopeRel string, scopeIsDir bool, include string) []string {
 	if wl == nil {
 		return nil
@@ -233,6 +244,16 @@ func pendingFiles(wl *cl.WatchList, root, scopeRel string, scopeIsDir bool, incl
 			}
 		}
 		if scopeIsDir {
+			// rg applies its hidden filter below an explicitly named
+			// directory, not to the directory itself, so strip the scope
+			// before checking for a dot-prefixed component.
+			hiddenRel := rel
+			if !scopeRoot && strings.HasPrefix(rel, scopeRel+"/") {
+				hiddenRel = strings.TrimPrefix(rel, scopeRel+"/")
+			}
+			if isHiddenPath(hiddenRel) {
+				continue
+			}
 			if includeMatch != nil && !includeMatch(rel) {
 				continue
 			}

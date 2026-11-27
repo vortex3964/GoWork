@@ -432,19 +432,39 @@ func TestAgentignoreRespected(t *testing.T) {
 	}
 }
 
-func TestHiddenFilesSearchable(t *testing.T) {
+func TestHiddenSecretsSkippedByDefault(t *testing.T) {
 	requireRG(t)
 	dir := t.TempDir()
-	writeFile(t, dir, ".env", "SECRET=1\n")
+	writeFile(t, dir, ".env", "SECRET_API_KEY=supersecret\n")
+	writeFile(t, dir, ".git/config", "[remote \"origin\"]\n\turl = https://user:SECRET_GIT_TOKEN@example.com/repo.git\n")
+	writeFile(t, dir, "visible.go", "package main\n")
 	args := newDispatchArgs(t, dir)
 	tool := filesearchtool.New()
 
-	res := run(t, tool, args, filesearchtool.Input{Pattern: `.env`})
+	// "." matches every path, so this lists everything the tool is willing
+	// to search: hidden files/directories must not be in the result.
+	res := run(t, tool, args, filesearchtool.Input{Pattern: "."})
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content)
 	}
-	if !strings.Contains(res.Content, ".env") {
-		t.Errorf("expected hidden file to be findable by name, got:\n%s", res.Content)
+	if !strings.Contains(res.Content, "visible.go") {
+		t.Errorf("expected visible file in results, got:\n%s", res.Content)
+	}
+	for _, stale := range []string{".env", ".git/config"} {
+		if strings.Contains(res.Content, stale) {
+			t.Errorf("default search leaked hidden path %q:\n%s", stale, res.Content)
+		}
+	}
+
+	// Targeted hidden paths must not be findable by name either.
+	for _, pattern := range []string{".env", ".git/config"} {
+		res = run(t, tool, args, filesearchtool.Input{Pattern: pattern, Literal: true})
+		if res.IsError {
+			t.Fatalf("unexpected error: %s", res.Content)
+		}
+		if !strings.Contains(res.Content, "No files found") {
+			t.Errorf("expected hidden path %q to be skipped, got:\n%s", pattern, res.Content)
+		}
 	}
 }
 
