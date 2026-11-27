@@ -1222,6 +1222,27 @@ func popupCopyMessage(val string) string {
 	return "Copied: " + oneLine
 }
 
+// restoreModeForActiveTab leaves an overlay or auxiliary mode and returns to
+// the layout of the active tab. The provider picker overlays any tab and the
+// changes list can outlive a tab switch, so forcing modePrompt unconditionally
+// would leave stats/skills showing a PROMPT statusline while their pane still
+// owns the keys.
+func (m *model) restoreModeForActiveTab() tea.Cmd {
+	m.mode = modePrompt
+	m.syncModeToTab()
+	if m.mode == modePrompt {
+		return m.prompt.Focus()
+	}
+	return nil
+}
+
+// canOpenChangesList reports whether ctrl+l may enter changes mode. The
+// changes list only renders on the code tab, and an open questionnaire must
+// keep every key so its batch slot can still be answered.
+func canOpenChangesList(mode uiMode, tabName string) bool {
+	return mode != modeQuestionnaire && tabName == "code"
+}
+
 func (m *model) openProviderSelect() tea.Cmd {
 	m.mode = modeProviderSelect
 	m.prompt.Blur()
@@ -1283,8 +1304,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case providerselect.SelectedMsg:
-		m.mode = modePrompt
-		m.prompt.Focus()
+		m.restoreModeForActiveTab()
 		// The picker may have been open while a turn was running (it only
 		// blocks ctrl+p, not the picker's Enter). Double-check aiThink so
 		// we never swap providers under an in-flight agentic loop.
@@ -1329,8 +1349,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(fetchModelInfoCmd(p, m.status.modelID), warnCmd)
 
 	case providerselect.CancelledMsg:
-		m.mode = modePrompt
-		m.prompt.Focus()
+		m.restoreModeForActiveTab()
 		return m, nil
 
 	case skills.SkillToggleMsg:
@@ -1452,8 +1471,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg_str == "ctrl+l" {
 			if m.mode == modeChangeHandling {
 				m.changesList.Close()
-				m.mode = modePrompt
-				return m, m.prompt.Focus()
+				return m, m.restoreModeForActiveTab()
+			}
+			if !canOpenChangesList(m.mode, m.tabs.Active().Name) {
+				return m, nil
 			}
 			m.prompt.Blur()
 			m.mode = modeChangeHandling
