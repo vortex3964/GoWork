@@ -281,6 +281,12 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.skillForm, cmd = m.skillForm.Update(msg)
 			return m, cmd
 		}
+		// ctrl+n is the explicit new-skill keybind: it opens the same form
+		// as Enter, but works whether or not the prompt bar is focused.
+		if msg_str == "ctrl+n" {
+			m.skillForm.Open()
+			return m, nil
+		}
 		if m.Prompt.Focused() {
 			switch msg_str {
 			case "esc":
@@ -291,6 +297,14 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.syncPromptHeight()
 				return m, nil
 			case "enter":
+				// A slash command is a command, not skill body text: route
+				// it through the runner before the form can claim Enter.
+				if val := m.Prompt.Value(); strings.HasPrefix(strings.TrimSpace(val), "/") {
+					m.Prompt.Reset()
+					m.syncPromptHeight()
+					m.historyIdx = 0
+					return m, m.runSlashCommand(val)
+				}
 				m.skillForm.Open()
 				return m, nil
 			}

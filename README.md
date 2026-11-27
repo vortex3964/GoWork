@@ -419,7 +419,10 @@ working, so the model can investigate and present a plan. Toggle it with
 | `/` or a printable key | Search skills. |
 | `x` | Unload the selected skill. |
 | `p` | Load the selected skill. |
-| `i` or `enter` | Focus the prompt bar. |
+| `i` or `enter` (list) | Focus the prompt bar. |
+| `enter` (prompt, normal text) | Open the new-skill form; the prompt text becomes the skill body. |
+| `enter` (prompt, starts with `/`) | Run the slash command instead of opening the form. |
+| `ctrl+n` | Open the new-skill form, even when the prompt is not focused. |
 | `esc` | Leave the tab. |
 
 ### Tools tab
@@ -468,6 +471,7 @@ and never sent to the model.
 | `/model` | Open the provider/model picker. |
 | `/stats` | Switch to the usage dashboard. |
 | `/skills` | Switch to the skills tab. |
+| `/newskill [body]` | Open the new-skill form; optional arguments seed the skill body. |
 | `/tools` | Switch to the tools tab (skills, MCP, LSP). |
 | `/save` | Save the current session to the local database immediately. |
 | `/new` | Clear the conversation context and start a new session record. |

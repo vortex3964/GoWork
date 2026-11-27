@@ -81,6 +81,7 @@ var slashCommandSpecs = []commandpalette.Command{
 	{Name: "model", Usage: "/model", Description: "Pick the provider and model"},
 	{Name: "stats", Usage: "/stats", Description: "Open the usage dashboard"},
 	{Name: "skills", Usage: "/skills", Description: "Open the skills tab"},
+	{Name: "newskill", Usage: "/newskill [body]", Description: "Create a new skill from the prompt bar"},
 	{Name: "tools", Usage: "/tools", Description: "Open the tools tab (skills, MCP, LSP)"},
 	{Name: "save", Usage: "/save", Description: "Save the current session now"},
 	{Name: "new", Usage: "/new", Description: "Clear context and start a new session"},
@@ -205,6 +206,22 @@ func (m *model) runSlashCommand(input string) tea.Cmd {
 		return m.selectTabCmd("stats")
 	case "skills":
 		return m.selectTabCmd("skills")
+	case "newskill":
+		// The form edits name and description while the body stays in the
+		// prompt bar. Arguments after /newskill seed that body; invoked with
+		// no arguments, keep any body the prompt already holds unless it is
+		// just the command text itself.
+		if body := strings.Join(args, " "); body != "" {
+			m.Prompt.SetValue(body)
+			m.syncPromptHeight()
+		} else if strings.HasPrefix(strings.TrimSpace(m.Prompt.Value()), "/") {
+			m.Prompt.Reset()
+			m.syncPromptHeight()
+		}
+		m.selectTabCmd("skills")
+		m.skillForm.Open()
+		m.Prompt.Blur()
+		return nil
 	case "tools":
 		return m.selectTabCmd("tools")
 	case "save":
@@ -502,6 +519,7 @@ Keys
   ctrl+y                   select/copy messages
   ctrl+u                   clear prompt
   ctrl+p                   provider/model picker
+  ctrl+n                   new skill (skills tab)
   ctrl+t                   tools tab (skills, MCP, LSP)
   ctrl+l                   changes list
   ctrl+shift+p             toggle plan (read-only) mode
