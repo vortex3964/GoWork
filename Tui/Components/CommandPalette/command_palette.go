@@ -11,9 +11,11 @@ import (
 	"GoWork/Tui/Style"
 )
 
-// MaxRows caps how many matches the palette shows at once. The list never
-// covers more than this many rows above the prompt.
-const MaxRows = 8
+// MaxRows caps how many matches the palette shows at once. It is large enough
+// for the built-in registry so a bare "/" shows every command; longer
+// registries scroll around the selection instead of pushing the prompt off
+// screen.
+const MaxRows = 12
 
 // Command is one palette entry.
 type Command struct {

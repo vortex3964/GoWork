@@ -1,6 +1,7 @@
 package commandpalette
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -122,6 +123,68 @@ func TestCloseStaysClosedUntilEdit(t *testing.T) {
 	m.Sync("/sta")
 	if !m.Visible() {
 		t.Fatal("edited query did not reopen the palette")
+	}
+}
+
+func TestBareSlashShowsNameUsageAndDescription(t *testing.T) {
+	cmds := testCommands()
+	m := New(cmds...)
+	m.SetWidth(80)
+	m.Sync("/")
+
+	if got := len(m.Matches()); got != len(cmds) {
+		t.Fatalf("bare slash matched %d commands, want %d", got, len(cmds))
+	}
+	if got := m.Height(); got != len(cmds) {
+		t.Fatalf("bare slash height = %d, want %d", got, len(cmds))
+	}
+	view := m.View()
+	for _, c := range cmds {
+		usage := c.Usage
+		if usage == "" {
+			usage = "/" + c.Name
+		}
+		if !strings.Contains(view, c.Name) {
+			t.Fatalf("view missing command name %q:\n%s", c.Name, view)
+		}
+		if !strings.Contains(view, usage) {
+			t.Fatalf("view missing usage %q:\n%s", usage, view)
+		}
+		if !strings.Contains(view, c.Description) {
+			t.Fatalf("view missing description %q:\n%s", c.Description, view)
+		}
+	}
+}
+
+func TestViewScrollsToKeepSelectionVisible(t *testing.T) {
+	cmds := make([]Command, MaxRows+3)
+	for i := range cmds {
+		name := fmt.Sprintf("cmd%02d", i)
+		cmds[i] = Command{Name: name, Usage: "/" + name, Description: "command " + name}
+	}
+	m := New(cmds...)
+	m.SetWidth(60)
+	m.Sync("/")
+	if got := m.Height(); got != MaxRows {
+		t.Fatalf("height with %d commands = %d, want %d", len(cmds), got, MaxRows)
+	}
+	if view := m.View(); !strings.Contains(view, "/cmd00") {
+		t.Fatalf("initial view should start at the top:\n%s", view)
+	}
+
+	for m.cursor < len(cmds)-1 {
+		m.Move(1)
+	}
+	sel, ok := m.Selected()
+	if !ok || sel.Name != cmds[len(cmds)-1].Name {
+		t.Fatalf("selection at end = %v (ok=%v), want %s", sel, ok, cmds[len(cmds)-1].Name)
+	}
+	view := m.View()
+	if !strings.Contains(view, "/"+sel.Name) {
+		t.Fatalf("scrolled view does not show the selected command %s:\n%s", sel.Name, view)
+	}
+	if strings.Contains(view, "/cmd00") {
+		t.Fatalf("scrolled view still starts at the top:\n%s", view)
 	}
 }
 

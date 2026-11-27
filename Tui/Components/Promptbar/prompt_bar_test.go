@@ -3,6 +3,8 @@ package promptbar_test
 import (
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+
 	"GoWork/Tui/Components/CommandPalette"
 	"GoWork/Tui/Components/Promptbar"
 )
@@ -44,6 +46,56 @@ func TestPaletteOpensForSlashAndAcceptsSelection(t *testing.T) {
 	}
 	if m.Height() != baseHeight {
 		t.Fatalf("palette height not released: base=%d now=%d", baseHeight, m.Height())
+	}
+}
+
+func TestTypingSlashOpensPalette(t *testing.T) {
+	m := promptbar.New()
+	m.SetWidth(100)
+	m.SetCommands(testCommands())
+	m.Focus()
+
+	var cmd tea.Cmd
+	m, cmd = m.Update(tea.KeyPressMsg{Code: '/', Text: "/"})
+	_ = cmd
+
+	if got := m.Value(); got != "/" {
+		t.Fatalf("prompt value after typing slash = %q, want %q", got, "/")
+	}
+	if !m.PaletteVisible() {
+		t.Fatal("typing slash did not open the palette")
+	}
+	if sel, ok := m.PaletteSelected(); !ok || sel.Name != "help" {
+		t.Fatalf("initial selection = %v (ok=%v), want help", sel, ok)
+	}
+	if got := m.Height(); got <= m.CurrentContentRows() {
+		t.Fatalf("palette did not add height: total=%d content=%d", got, m.CurrentContentRows())
+	}
+}
+
+func TestPaletteEscKeepsPromptText(t *testing.T) {
+	m := promptbar.New()
+	m.SetWidth(100)
+	m.SetCommands(testCommands())
+	m.Focus()
+	m.SetValue("/stats")
+	if !m.PaletteVisible() {
+		t.Fatal("palette did not open for /stats")
+	}
+	before := m.Height()
+
+	m.ClosePalette()
+	if m.PaletteVisible() {
+		t.Fatal("ClosePalette did not hide the palette")
+	}
+	if got := m.Value(); got != "/stats" {
+		t.Fatalf("prompt after closing the palette = %q, want /stats", got)
+	}
+	if got := m.Height(); got >= before {
+		t.Fatalf("palette height not released: before=%d after=%d", before, got)
+	}
+	if !m.Focused() {
+		t.Fatal("closing the palette moved focus away from the prompt")
 	}
 }
 

@@ -171,6 +171,9 @@ func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "esc":
 			m.Prompt.ClosePalette()
+			// Closing the palette shrinks the bottom bar; re-layout now so
+			// the message band immediately reclaims the freed rows.
+			m.syncPromptHeight()
 			return m, nil
 		}
 	}
