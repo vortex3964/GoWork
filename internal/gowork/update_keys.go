@@ -14,6 +14,15 @@ import (
 func (m model) handleKeyPressMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	msg_str := msg.String()
 
+	// The coffee animation is an interruptible overlay: it consumes every
+	// key while visible so esc/ctrl+c close it instead of quitting the app
+	// or leaking the key into the prompt.
+	if m.Coffee.IsVisible() {
+		var cmd tea.Cmd
+		m.Coffee, cmd = m.Coffee.Update(msg)
+		return m, cmd
+	}
+
 	if msg_str == "ctrl+c" {
 		if m.Mode == modeProviderSelect {
 			var cmd tea.Cmd

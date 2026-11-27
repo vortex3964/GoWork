@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	changeslist "GoWork/Tui/Components/ChangesList"
+	coffee "GoWork/Tui/Components/Coffee"
 	dialog "GoWork/Tui/Components/Dialog"
 	"GoWork/Tui/Components/MessageArea"
 	permisionbox "GoWork/Tui/Components/PermisionBox"
@@ -99,6 +100,7 @@ type model struct {
 	Tabs        tabs.Model
 	Stats       stats.Model
 	Skills      skills.Model
+	Coffee      coffee.Model
 	Prompt      promptbar.Model
 	MessageArea messagearea.Model
 	spinner     spinner.Model
@@ -326,6 +328,7 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 		promptHeight:      p.Height(),
 		Skills:            skills.New(),
 		Stats:             stats.New(),
+		Coffee:            coffee.New(),
 		skillForm:         skillform.New(),
 	}
 }

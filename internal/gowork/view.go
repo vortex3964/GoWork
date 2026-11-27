@@ -129,6 +129,10 @@ func (m model) View() tea.View {
 		content = m.modal.Overlay(content)
 	}
 
+	if m.Coffee.IsVisible() {
+		content = m.Coffee.Overlay(content)
+	}
+
 	v := tea.NewView(content)
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion // required in v2 for any mouse msg to arrive at all

@@ -68,6 +68,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ChangesList.SetSize(m.winWidth, msgAreaHeight)
 		m.popUp.SetSize(m.winWidth, m.winHeight)
 		m.modal.SetSize(m.winWidth, m.winHeight)
+		m.Coffee.SetSize(m.winWidth, m.winHeight)
 		m.questionnaire.SetWidth(m.winWidth)
 		m.permissionBox.SetSize(m.winWidth, m.winHeight)
 		if m.Mode == modeProviderSelect {
@@ -489,5 +490,9 @@ func (m model) forwardToComponents(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.Tabs.Active().Name == "stats" {
 		m.Stats, statsCmd = m.Stats.Update(msg)
 	}
-	return m, tea.Batch(tabsCmd, promptCmd, msgAreaCmd, popUpCmd, statsCmd)
+	// Coffee's animation tick is an opaque message; forward everything left
+	// over so the overlay advances even when other modes ignore it.
+	var coffeeCmd tea.Cmd
+	m.Coffee, coffeeCmd = m.Coffee.Update(msg)
+	return m, tea.Batch(tabsCmd, promptCmd, msgAreaCmd, popUpCmd, statsCmd, coffeeCmd)
 }
