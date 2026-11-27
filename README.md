@@ -217,7 +217,7 @@ GoWork reads environment variables and an optional `.env` file:
 | `ctrl+f` | Accept all changes. |
 | `ctrl+d` | Reject all changes. |
 | `?` | Toggle the keybind help. |
-| `esc`, `tab`, or `enter` | Close the changes list. |
+| `esc`, `enter`, or `ctrl+l` | Close the changes list. |
 
 ### Permission box
 
