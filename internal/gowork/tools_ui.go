@@ -175,7 +175,7 @@ func (m *model) afterToolChange() {
 func (m *model) rebuildToolRegistry() error {
 	base := m.baseTools
 	if base == nil {
-		base = initTools()
+		base = initTools(m.toolRuntime)
 		m.baseTools = base
 	}
 	all := make([]tools.AgentTool, 0, len(base)+16)
@@ -184,14 +184,7 @@ func (m *model) rebuildToolRegistry() error {
 		all = append(all, m.toolRuntime.Tools()...)
 	}
 
-	defs := make([]providers.ToolDef, len(all))
-	for i, tool := range all {
-		defs[i] = providers.ToolDef{
-			Name:        tool.Name(),
-			Description: tool.Description(),
-			InputSchema: tool.InputSchema(),
-		}
-	}
+	defs := toolDefsFor(all)
 
 	getProvider := func() providers.Provider { return nil }
 	if m.model != nil {
@@ -203,6 +196,9 @@ func (m *model) rebuildToolRegistry() error {
 	}
 	dispatcher.SetPlanMode(m.planMode)
 	m.tool_dispatcher = dispatcher
+	if m.toolRuntime != nil {
+		m.toolRuntime.SetDispatcher(dispatcher)
+	}
 
 	providers.InitToolsDef(defs)
 	// InitToolsDef resets the skill tool's dynamic description; put the

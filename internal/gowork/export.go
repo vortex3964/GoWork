@@ -4,6 +4,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"GoWork/providers"
+	"GoWork/tools"
+	mcptool "GoWork/tools/MCPTool"
 )
 
 // Model is the application model exposed for tests in package test.
@@ -50,9 +52,21 @@ func (m model) StatusLineText() string {
 	return renderStatusLine(m)
 }
 
-// AppDataRoot is where GoWork keeps its own data (the executable's folder).
+// AppDataRoot resolves the executable's folder, the fallback location used
+// when the durable user config directory is unavailable.
 func AppDataRoot(projectRoot string) string {
 	return appDataRoot(projectRoot)
+}
+
+// BuiltInTools exposes the built-in tool set for integration tests. Pass nil
+// to omit the MCP management tools.
+func BuiltInTools(mcpRuntime mcptool.Runtime) []tools.AgentTool {
+	return initTools(mcpRuntime)
+}
+
+// BuiltInToolDefs exposes the provider definitions for the built-in tool set.
+func BuiltInToolDefs(mcpRuntime mcptool.Runtime) []providers.ToolDef {
+	return toolDefsFor(initTools(mcpRuntime))
 }
 
 // SystemPromptPath is the repository-relative path of the system prompt.

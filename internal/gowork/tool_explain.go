@@ -12,6 +12,8 @@ import (
 	"charm.land/lipgloss/v2"
 
 	permisionbox "GoWork/Tui/Components/PermisionBox"
+	"GoWork/internal/mcp"
+	"GoWork/internal/netfetch"
 )
 
 const (
@@ -53,6 +55,16 @@ func explainToolImpact(toolName string, rawInput json.RawMessage, root string) p
 		return explainFileSearchImpact(rawInput)
 	case "read_file", "list_directory", "skill", "todo_list", "questions_tool":
 		return explainReadOnlyImpact(toolName, rawInput)
+	case "skill_install":
+		return explainSkillInstallImpact(rawInput)
+	case "skill_load":
+		return explainSkillLoadImpact(rawInput)
+	case "mcp_install":
+		return explainMCPInstallImpact(rawInput)
+	case "mcp_list":
+		return permisionbox.Impact{Summary: "Lists configured MCP servers with transport, enabled/connected state, scope, trust, and tool counts. Read-only; environment and header values are never shown."}
+	case "mcp_remove":
+		return explainMCPRemoveImpact(rawInput)
 	default:
 		return permisionbox.Impact{
 			Summary: fmt.Sprintf("%s will run with the arguments shown below.", toolName),
@@ -495,6 +507,196 @@ func explainReadOnlyImpact(toolName string, raw json.RawMessage) permisionbox.Im
 		}
 	}
 	return permisionbox.Impact{Summary: fmt.Sprintf("%s does not modify files. Read-only.", toolName)}
+}
+
+// --- install / MCP tools -------------------------------------------------
+
+// explainSkillInstallImpact previews a skill install without downloading or
+// writing anything. Source URLs are stripped of credentials and query values;
+// the skill body never appears in the permission box.
+func explainSkillInstallImpact(raw json.RawMessage) permisionbox.Impact {
+	var in struct {
+		Source    string `json:"source"`
+		Path      string `json:"path"`
+		Ref       string `json:"ref"`
+		Name      string `json:"name"`
+		Overwrite bool   `json:"overwrite"`
+		Load      bool   `json:"load"`
+		DryRun    bool   `json:"dry_run"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return impactInputError("skill_install")
+	}
+	source := redactInstallText(in.Source)
+	summary := "Installs a skill into the durable user skills directory."
+	if source != "" {
+		summary = fmt.Sprintf("Installs a skill from %s into the durable user skills directory.", source)
+	}
+	switch {
+	case in.DryRun:
+		summary += " Dry run: validates and fetches the source, then reports what would be installed; nothing is written."
+	case in.Overwrite:
+		summary += " An existing skill with the same name may be replaced."
+	default:
+		summary += " An existing skill with the same name is kept."
+	}
+	if in.Load {
+		summary += " The skill is loaded into this session immediately."
+	}
+
+	var lines []string
+	if source != "" {
+		lines = append(lines, impactPreviewLine("source: "+source))
+	}
+	if path := strings.TrimSpace(in.Path); path != "" {
+		lines = append(lines, impactPreviewLine("path: "+path))
+	}
+	if ref := strings.TrimSpace(in.Ref); ref != "" {
+		lines = append(lines, impactPreviewLine("ref: "+ref))
+	}
+	if name := strings.TrimSpace(in.Name); name != "" {
+		lines = append(lines, impactPreviewLine("name: "+name))
+	}
+	return permisionbox.Impact{Summary: summary, Preview: strings.Join(lines, "\n")}
+}
+
+// explainSkillLoadImpact describes the session-only skill set change.
+func explainSkillLoadImpact(raw json.RawMessage) permisionbox.Impact {
+	var in struct {
+		Action string `json:"action"`
+		Name   string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return impactInputError("skill_load")
+	}
+	action := strings.ToLower(strings.TrimSpace(in.Action))
+	name := strings.TrimSpace(in.Name)
+	switch action {
+	case "load":
+		if name != "" {
+			return permisionbox.Impact{Summary: fmt.Sprintf("Loads skill %q into this session. Read-only; no files or configuration change.", name)}
+		}
+	case "unload":
+		if name != "" {
+			return permisionbox.Impact{Summary: fmt.Sprintf("Unloads skill %q from this session. Read-only; the installed file stays on disk.", name)}
+		}
+	case "list", "":
+		return permisionbox.Impact{Summary: "Lists installed and loaded skills. Read-only."}
+	}
+	return permisionbox.Impact{Summary: "Lists, loads, or unloads skills for this session only. Read-only; nothing is downloaded or written."}
+}
+
+// explainMCPInstallImpact previews an MCP install. Inline configs may carry
+// credentials in env/header values, so only server names and transports are
+// shown; values are never read back into the summary.
+func explainMCPInstallImpact(raw json.RawMessage) permisionbox.Impact {
+	var in struct {
+		Source    string          `json:"source"`
+		Config    json.RawMessage `json:"config"`
+		Path      string          `json:"path"`
+		Ref       string          `json:"ref"`
+		Scope     string          `json:"scope"`
+		Servers   []string        `json:"servers"`
+		Overwrite bool            `json:"overwrite"`
+		Start     bool            `json:"start"`
+		DryRun    bool            `json:"dry_run"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return impactInputError("mcp_install")
+	}
+
+	scope := strings.ToLower(strings.TrimSpace(in.Scope))
+	if scope == "" {
+		scope = "user"
+	}
+	source := redactInstallText(in.Source)
+	inline := len(bytes.TrimSpace(in.Config)) > 0
+
+	// Describe inline servers without exposing env/header values.
+	var servers []string
+	if inline {
+		if data, err := unwrapInlineMCPConfig(in.Config); err == nil {
+			if cfg, err := mcp.ParseConfig(data); err == nil && cfg != nil {
+				for _, server := range cfg.ListServers() {
+					servers = append(servers, fmt.Sprintf("%s (%s)", server.Name, mcpTransportLabel(server)))
+				}
+			}
+		}
+	}
+
+	summary := "Installs MCP server configuration into the " + scope + " scope."
+	if source != "" {
+		summary = fmt.Sprintf("Installs MCP server configuration from %s into the %s scope.", source, scope)
+	} else if inline {
+		summary = fmt.Sprintf("Installs %d inline MCP server(s) into the %s scope.", len(servers), scope)
+	}
+	switch {
+	case in.DryRun:
+		summary += " Dry run: validates and reports only; nothing is written and no server is started."
+	case in.Start:
+		summary += " New or updated servers are written to the config and started immediately."
+	default:
+		summary += " The config is written atomically; servers start on the next launch unless start is requested."
+	}
+	if in.Overwrite {
+		summary += " Existing servers with the same names may be replaced."
+	}
+	if scope == "project" {
+		summary += " Project-scope servers are untrusted and never receive automatic tool approval."
+	}
+
+	var lines []string
+	if source != "" {
+		lines = append(lines, impactPreviewLine("source: "+source))
+	}
+	if path := strings.TrimSpace(in.Path); path != "" {
+		lines = append(lines, impactPreviewLine("path: "+path))
+	}
+	if ref := strings.TrimSpace(in.Ref); ref != "" {
+		lines = append(lines, impactPreviewLine("ref: "+ref))
+	}
+	if len(in.Servers) > 0 {
+		lines = append(lines, impactPreviewLine("selected: "+strings.Join(in.Servers, ", ")))
+	}
+	if len(servers) > 0 {
+		lines = append(lines, impactPreviewLine("servers: "+strings.Join(servers, ", ")))
+	}
+	if inline && len(servers) == 0 {
+		lines = append(lines, "config: inline MCP JSON (values hidden)")
+	}
+	return permisionbox.Impact{Summary: summary, Preview: strings.Join(lines, "\n")}
+}
+
+func explainMCPRemoveImpact(raw json.RawMessage) permisionbox.Impact {
+	var in struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return impactInputError("mcp_remove")
+	}
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		return permisionbox.Impact{Summary: "mcp_remove has no name, so it will fail without removing anything."}
+	}
+	return permisionbox.Impact{
+		Summary: fmt.Sprintf("Removes MCP server %q from its configuration scope and stops its tools.", name),
+	}
+}
+
+// redactInstallText keeps install previews from echoing credentials embedded
+// in a source URL. It never needs the parsed config, so a malformed input is
+// still safe to display.
+func redactInstallText(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if token := strings.TrimSpace(netfetch.GitHubTokenFromEnv()); token != "" {
+		value = strings.ReplaceAll(value, token, "[redacted]")
+	}
+	value = mcpUserInfoInErrorRE.ReplaceAllString(value, "://[redacted]@")
+	value = mcpQueryValueInErrorRE.ReplaceAllString(value, "${1}[redacted]")
+	return value
 }
 
 // --- helpers -------------------------------------------------------------

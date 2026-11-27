@@ -273,6 +273,7 @@ func (m *model) saveSessionSnapshot() error {
 	if m.Db == nil {
 		return fmt.Errorf("database unavailable")
 	}
+	m.persistLoadedSkills()
 	messages, _ := repairContext(m.Context)
 	return m.Db.FlushSession(messages, m.status.sessionTokens)
 }
@@ -284,6 +285,7 @@ func (m *model) snapshotSession() error {
 	if m.Db == nil {
 		return fmt.Errorf("database unavailable")
 	}
+	m.persistLoadedSkills()
 	if err := m.Db.FinalizeSession(m.Context, m.status.sessionTokens); err != nil {
 		return err
 	}

@@ -165,11 +165,24 @@ func (m *model) resumeSession(id int64) {
 	)
 }
 
+// persistLoadedSkills snapshots the manager's loaded set into the session
+// buffer. Tools can load or unload skills mid-turn without touching the UI, so
+// every save path refreshes it before writing the session.
+func (m model) persistLoadedSkills() {
+	if m.Db == nil {
+		return
+	}
+	if mgr := skillstool.GetManager(); mgr != nil {
+		m.Db.SetSessionSkills(mgr.LoadedNames())
+	}
+}
+
 // flushSession is the save-on-exit path: it finalizes the current session
 // (writes usage + messages), closes the database, and stops every MCP client
 // and language-server process the runtime owns. Fired from the program's quit
 // filter when a QuitMsg arrives.
 func (m model) flushSession() {
+	m.persistLoadedSkills()
 	m.closeToolClients()
 	if m.Db == nil {
 		return

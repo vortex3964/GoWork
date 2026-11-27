@@ -14,6 +14,9 @@ func TestPlanModeAllowsSkillLoadButBlocksMutations(t *testing.T) {
 	if PlanModeAllows("skill_install", json.RawMessage(`{}`)) {
 		t.Fatal("PlanModeAllows(skill_install) = true, want false")
 	}
+	if !PlanModeAllows("mcp_list", json.RawMessage(`{}`)) {
+		t.Fatal("PlanModeAllows(mcp_list) = false, want true")
+	}
 
 	// Every workspace/boundary-mutating tool remains default-denied.
 	for _, name := range []string{

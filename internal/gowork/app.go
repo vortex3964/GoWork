@@ -27,6 +27,7 @@ import (
 	toolstab "GoWork/Tui/Components/ToolsTab"
 
 	db "GoWork/Db"
+	"GoWork/internal/appdir"
 
 	//import all the tool packages
 	"GoWork/tools"
@@ -37,6 +38,7 @@ import (
 	"GoWork/tools/FileSearchTool"
 	"GoWork/tools/FilesInfoTool"
 	"GoWork/tools/GrepSearchTool"
+	mcptool "GoWork/tools/MCPTool"
 	"GoWork/tools/MoveFileTool"
 	"GoWork/tools/QuestionnaireTool"
 	"GoWork/tools/ReadFileTool"
@@ -246,9 +248,11 @@ func get_supported_providers_local() []string {
 	return []string{"ollama", "llamaCpp", "lmStudio"}
 }
 
-// call new on all of our tools
-func initTools() []tools.AgentTool {
-	return []tools.AgentTool{
+// initTools constructs every built-in tool. The install/load tools are bound
+// to the app's single MCP runtime; passing nil leaves the MCP management tools
+// out instead of creating a second client pool.
+func initTools(mcpRuntime mcptool.Runtime) []tools.AgentTool {
+	base := []tools.AgentTool{
 		bashtool.New(),
 		createfiletool.New(),
 		deletefiletool.New(),
@@ -265,6 +269,7 @@ func initTools() []tools.AgentTool {
 		websearchtool.New(),
 		writefiletool.New(),
 	}
+	return append(base, installTools(mcpRuntime)...)
 }
 
 func initialModel(root string, provider providers.Provider, modelID string, providerName string) model {
@@ -275,9 +280,10 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 
 	// The skills manager is a singleton the skill tool and the skills tab
 	// both read, so wire it before the tools compute their descriptions.
-	// Skills live in the app's own data folder (next to the executable),
-	// NOT in the project the user is working in.
-	skillstool.SetManager(skillstool.NewManager(appDataRoot(root)))
+	// Skills live in the durable per-user config directory, NOT next to the
+	// executable or in the project the user is working in. setupSkillManager
+	// migrates the old layout and seeds the bundled bootstrap skill once.
+	skillstool.SetManager(setupSkillManager())
 
 	wl, err := changeslist.NewWatchList(&think)
 	if err != nil {
@@ -296,27 +302,31 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 
 	// Start the runtime extensions before computing the tool registry so MCP
 	// tools and the LSP bridge are available to the model from the first
-	// turn. Unavailable servers are recorded for the Tools tab, not fatal.
-	rt := newToolRuntime(appDataRoot(root), root)
+	// turn. Configuration lives in the durable user config directory, not
+	// next to the executable. Unavailable servers are recorded for the Tools
+	// tab, not fatal.
+	appData, err := appdir.ConfigDir()
+	if err != nil {
+		log.Printf("user config directory unavailable, using the executable directory: %v", err)
+		appData = appDataRoot(root)
+	}
+	rt := newToolRuntime(appData, root)
 	rt.Load()
 
-	baseTools := initTools()
+	baseTools := initTools(rt)
 	t := make([]tools.AgentTool, 0, len(baseTools)+16)
 	t = append(t, baseTools...)
 	t = append(t, rt.Tools()...)
 
-	arr := make([]providers.ToolDef, len(t))
-
-	for i, tool := range t {
-		arr[i] = providers.ToolDef{Name: tool.Name(), Description: tool.Description(), InputSchema: tool.InputSchema()}
-	}
-
-	providers.InitToolsDef(arr)
+	providers.InitToolsDef(toolDefsFor(t))
 
 	dispatcher, err := tools.InitDispacher(root, wl, holder.Get, t...)
 	if err != nil {
 		log.Printf("failed to init dispatcher: %v", err)
 	}
+	// The runtime registers MCP bridges as servers connect; point it at the
+	// live dispatcher so an install made during a turn is immediately usable.
+	rt.SetDispatcher(dispatcher)
 
 	p := promptbar.New()
 	p.SetCommands(slashCommands())

@@ -69,17 +69,17 @@ jobs:
 
             staging="$(mktemp -d)"
             cp "dist/${binary}" "${staging}/${binary}"
-            cp -R prompts logo "${staging}/"
+            cp -R prompts logo skills "${staging}/"
             mkdir -p "${staging}/tools/Scripts"
             cp tools/Scripts/read_pdf.py tools/Scripts/requirements.txt "${staging}/tools/Scripts/"
             cp README.md "${staging}/README.md"
 
             if [ "$os" = "windows" ]; then
               (cd "$staging" && zip -qr "${GITHUB_WORKSPACE}/dist/gowork_${os}_${arch}.zip" \
-                "${binary}" prompts logo tools README.md)
+                "${binary}" prompts logo skills tools README.md)
             else
               tar -C "$staging" -czf "dist/gowork_${os}_${arch}.tar.gz" \
-                "${binary}" prompts logo tools README.md
+                "${binary}" prompts logo skills tools README.md
             fi
 
             rm -rf "$staging" "dist/${binary}"

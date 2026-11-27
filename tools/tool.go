@@ -212,6 +212,8 @@ var planModeReadOnlyTools = map[string]struct{}{
 	// skill_load manages the session's loaded-skill set (list/load/unload)
 	// without touching the workspace, so it stays available for planning.
 	"skill_load": {},
+	// mcp_list only reads the sanitized server configuration.
+	"mcp_list": {},
 	// web_search only queries the web; it does not touch the workspace.
 	"web_search": {},
 }

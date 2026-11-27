@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	toolstab "GoWork/Tui/Components/ToolsTab"
@@ -19,8 +20,9 @@ import (
 	"GoWork/tools"
 )
 
-// Config files live in the app's own data directory (next to the executable),
-// never in the project the user is working on.
+// User config files live in the durable app config directory (appdir), never
+// next to the executable or in the project the user is working on. A project
+// may still provide its own .mcp.json, which is merged in as untrusted scope.
 const (
 	mcpConfigFileName = mcp.DefaultConfigPath
 	lspConfigFileName = ".lsp.json"
@@ -49,15 +51,33 @@ type toolRuntime struct {
 	appData string
 	root    string
 
-	mcpPath string
-	lspPath string
+	mcpPath        string
+	projectMCPPath string
+	lspPath        string
 
-	mcpCfg     *mcp.Config
-	mcpClients map[string]mcpClient
-	mcpTools   map[string][]tools.AgentTool
-	mcpDefs    map[string][]providers.ToolDef
-	mcpErrors  map[string]string
-	mcpErr     string
+	// mu serializes MCP config mutations from the model-facing install tools.
+	// The Tools tab runs on the update loop and is already serialized with a
+	// running turn, but a model can issue parallel mcp_* calls.
+	mu sync.Mutex
+
+	// mcpCfg is the merged user+project view; mcpUserCfg and mcpProjectCfg
+	// keep the two scopes separate so a save only rewrites the scope it came
+	// from. Project entries always win name collisions.
+	mcpCfg        *mcp.Config
+	mcpUserCfg    *mcp.Config
+	mcpProjectCfg *mcp.Config
+	mcpScopes     map[string]string
+	mcpClients    map[string]mcpClient
+	mcpTools      map[string][]tools.AgentTool
+	mcpDefs       map[string][]providers.ToolDef
+	mcpErrors     map[string]string
+	mcpErr        string
+
+	// dispatcher receives MCP bridge tools as servers connect, so an install
+	// made during a turn is immediately dispatchable. It is nil until the app
+	// creates the tool registry.
+	dispatcherMu sync.RWMutex
+	dispatcher   *tools.Dispatcher
 
 	lspCfg          *lsp.Config
 	lspBridge       *tools.LSPBridge
@@ -76,12 +96,20 @@ func newToolRuntime(appData, root string) *toolRuntime {
 	if strings.TrimSpace(appData) == "" {
 		appData = "."
 	}
+	projectMCPPath := ""
+	if strings.TrimSpace(root) != "" {
+		projectMCPPath = filepath.Join(root, mcpConfigFileName)
+	}
 	return &toolRuntime{
 		appData:         appData,
 		root:            root,
 		mcpPath:         filepath.Join(appData, mcpConfigFileName),
+		projectMCPPath:  projectMCPPath,
 		lspPath:         filepath.Join(appData, lspConfigFileName),
 		mcpCfg:          &mcp.Config{Servers: map[string]mcp.ServerConfig{}},
+		mcpUserCfg:      &mcp.Config{Servers: map[string]mcp.ServerConfig{}},
+		mcpProjectCfg:   &mcp.Config{Servers: map[string]mcp.ServerConfig{}},
+		mcpScopes:       map[string]string{},
 		mcpClients:      map[string]mcpClient{},
 		mcpTools:        map[string][]tools.AgentTool{},
 		mcpDefs:         map[string][]providers.ToolDef{},
@@ -89,6 +117,18 @@ func newToolRuntime(appData, root string) *toolRuntime {
 		lspCfg:          lsp.NewConfig(),
 		lspServerErrors: map[string]string{},
 	}
+}
+
+// SetDispatcher wires the tool registry used for dynamic MCP tool
+// registration. It is called after the app builds its dispatcher and after
+// every registry rebuild.
+func (r *toolRuntime) SetDispatcher(d *tools.Dispatcher) {
+	if r == nil {
+		return
+	}
+	r.dispatcherMu.Lock()
+	r.dispatcher = d
+	r.dispatcherMu.Unlock()
 }
 
 // Load reads both configuration files, starts every enabled MCP server, and
@@ -108,22 +148,76 @@ func (r *toolRuntime) Load() {
 }
 
 func (r *toolRuntime) loadMCPConfig() {
-	data, err := os.ReadFile(r.mcpPath)
+	userCfg, userErr := loadMCPConfigFile(r.mcpPath)
+	projectPath := r.projectMCPPath
+	if projectPath != "" && filepath.Clean(projectPath) == filepath.Clean(r.mcpPath) {
+		// Portable layouts can put the executable in the project. Never load
+		// the same file twice and demote a user-scope config to untrusted.
+		projectPath = ""
+	}
+	projectCfg, projectErr := loadMCPConfigFile(projectPath)
+	r.mcpUserCfg = userCfg
+	r.mcpProjectCfg = projectCfg
+	r.rebuildMCPConfigLocked()
+
+	var errs []string
+	if userErr != nil {
+		errs = append(errs, userErr.Error())
+	}
+	if projectErr != nil {
+		errs = append(errs, projectErr.Error())
+	}
+	r.mcpErr = strings.Join(errs, "; ")
+}
+
+// loadMCPConfigFile reads one scope. A missing file is an empty config; an
+// unreadable or malformed file is reported but never prevents the other scope
+// from loading.
+func loadMCPConfigFile(path string) (*mcp.Config, error) {
+	empty := &mcp.Config{Servers: map[string]mcp.ServerConfig{}}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return empty, nil
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			r.mcpErr = fmt.Sprintf("could not read %s: %v", r.mcpPath, err)
+		if os.IsNotExist(err) {
+			return empty, nil
 		}
-		return
+		return empty, fmt.Errorf("could not read %s: %w", path, err)
 	}
 	cfg, err := mcp.ParseConfig(data)
 	if err != nil {
-		r.mcpErr = err.Error()
-		return
+		return empty, fmt.Errorf("%s: %w", path, err)
 	}
 	if cfg == nil {
-		return
+		return empty, nil
 	}
-	r.mcpCfg = cfg
+	return cfg, nil
+}
+
+// rebuildMCPConfigLocked merges the two scopes. Project entries win name
+// collisions and are always recorded as project scope so they cannot inherit
+// a trusted flag.
+func (r *toolRuntime) rebuildMCPConfigLocked() {
+	merged := &mcp.Config{Servers: map[string]mcp.ServerConfig{}}
+	scopes := map[string]string{}
+	if r.mcpUserCfg != nil {
+		for _, name := range r.mcpUserCfg.Names() {
+			server, _ := r.mcpUserCfg.Server(name)
+			merged.Servers[name] = server
+			scopes[name] = tools.MCPScopeUser
+		}
+	}
+	if r.mcpProjectCfg != nil {
+		for _, name := range r.mcpProjectCfg.Names() {
+			server, _ := r.mcpProjectCfg.Server(name)
+			merged.Servers[name] = server
+			scopes[name] = tools.MCPScopeProject
+		}
+	}
+	r.mcpCfg = merged
+	r.mcpScopes = scopes
 }
 
 func (r *toolRuntime) loadLSPConfig() {
@@ -166,6 +260,7 @@ func (r *toolRuntime) connectMCP(server mcp.ServerConfig) error {
 	}
 	client, err := newClient(server)
 	if err != nil {
+		err = errors.New(redactMCPServerSecrets(err.Error(), server))
 		r.mcpErrors[name] = err.Error()
 		return err
 	}
@@ -182,6 +277,7 @@ func (r *toolRuntime) connectMCP(server mcp.ServerConfig) error {
 	cancel()
 	if err != nil {
 		_ = client.Close()
+		err = errors.New(redactMCPServerSecrets(err.Error(), server))
 		r.mcpErrors[name] = err.Error()
 		return err
 	}
@@ -198,13 +294,21 @@ func (r *toolRuntime) connectMCP(server mcp.ServerConfig) error {
 	cancel()
 	if err != nil {
 		_ = client.Close()
+		err = errors.New(redactMCPServerSecrets(err.Error(), server))
 		r.mcpErrors[name] = err.Error()
 		return err
 	}
 
-	agentTools, providerDefs, err := tools.MCPTools(name, client, definitions)
+	// Project-scope servers and untrusted user servers always require a
+	// permission prompt; only a user-scope server may opt into auto-approval.
+	kind := tools.KindNotAllowed
+	if r.mcpScopes[name] == tools.MCPScopeUser && server.AutoApproved() {
+		kind = tools.KindAllowed
+	}
+	agentTools, providerDefs, err := tools.MCPTools(name, client, definitions, tools.WithMCPToolKind(kind))
 	if err != nil {
 		_ = client.Close()
+		err = errors.New(redactMCPServerSecrets(err.Error(), server))
 		r.mcpErrors[name] = err.Error()
 		return err
 	}
@@ -213,7 +317,41 @@ func (r *toolRuntime) connectMCP(server mcp.ServerConfig) error {
 	r.mcpTools[name] = agentTools
 	r.mcpDefs[name] = providerDefs
 	delete(r.mcpErrors, name)
+	r.registerMCPTools(agentTools, providerDefs)
 	return nil
+}
+
+// registerMCPTools makes freshly discovered bridges dispatchable immediately.
+// Provider definitions are always added; startup registration is harmless
+// because InitToolsDef later installs the complete set.
+func (r *toolRuntime) registerMCPTools(agentTools []tools.AgentTool, defs []providers.ToolDef) {
+	r.dispatcherMu.RLock()
+	dispatcher := r.dispatcher
+	r.dispatcherMu.RUnlock()
+	if dispatcher != nil {
+		for _, tool := range agentTools {
+			_ = dispatcher.Register(tool)
+		}
+	}
+	for _, def := range defs {
+		providers.AddToolDef(def)
+	}
+}
+
+// unregisterMCPTools removes bridges that belonged to a server that was
+// disabled, removed, or replaced.
+func (r *toolRuntime) unregisterMCPTools(agentTools []tools.AgentTool, defs []providers.ToolDef) {
+	r.dispatcherMu.RLock()
+	dispatcher := r.dispatcher
+	r.dispatcherMu.RUnlock()
+	if dispatcher != nil {
+		for _, tool := range agentTools {
+			dispatcher.Unregister(tool.Name())
+		}
+	}
+	for _, def := range defs {
+		providers.RemoveToolDef(def.Name)
+	}
 }
 
 // restartLSPBridge closes the old bridge (stopping every cached language
@@ -261,6 +399,8 @@ func (r *toolRuntime) Tools() []tools.AgentTool {
 	if r == nil {
 		return nil
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	names := make([]string, 0, len(r.mcpTools))
 	for name := range r.mcpTools {
 		names = append(names, name)
@@ -281,6 +421,8 @@ func (r *toolRuntime) ToolDefs() []providers.ToolDef {
 	if r == nil {
 		return nil
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	names := make([]string, 0, len(r.mcpDefs))
 	for name := range r.mcpDefs {
 		names = append(names, name)
@@ -304,7 +446,12 @@ func (r *toolRuntime) ToolDefs() []providers.ToolDef {
 
 // MCPServers returns the Tools-tab snapshot of configured MCP servers.
 func (r *toolRuntime) MCPServers() []toolstab.MCPServer {
-	if r == nil || r.mcpCfg == nil {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.mcpCfg == nil {
 		return nil
 	}
 	names := r.mcpCfg.Names()
@@ -364,36 +511,61 @@ func (r *toolRuntime) Errors() (mcpErr, lspErr string) {
 	return r.mcpErr, r.lspErr
 }
 
-// SetMCPEnabled enables/disables a server, persists the change, and starts or
-// stops its client accordingly.
+// SetMCPEnabled enables/disables a server, persists the change to the scope
+// that owns it, and starts or stops its client accordingly.
 func (r *toolRuntime) SetMCPEnabled(name string, enabled bool) error {
-	if r == nil || r.mcpCfg == nil {
+	if r == nil {
 		return errors.New("MCP configuration is unavailable")
 	}
-	server, ok := r.mcpCfg.Server(name)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	scope, ok := r.mcpScopes[name]
 	if !ok {
 		return fmt.Errorf("%w: %q", mcp.ErrServerNotFound, name)
 	}
-	if err := r.mcpCfg.SetServerEnabled(name, enabled); err != nil {
+	cfg, _, err := r.scopeMCPConfigLocked(scope)
+	if err != nil {
 		return err
 	}
-	if err := r.saveMCPConfig(); err != nil {
-		r.mcpCfg.Servers[name] = server
+	server, _ := cfg.Server(name)
+	if err := cfg.SetServerEnabled(name, enabled); err != nil {
 		return err
 	}
+	if err := r.saveMCPConfigScopeLocked(scope); err != nil {
+		if enabled {
+			_ = cfg.SetServerEnabled(name, false)
+		} else {
+			_ = cfg.SetServerEnabled(name, true)
+		}
+		return err
+	}
+	r.rebuildMCPConfigLocked()
 	if !enabled {
 		r.closeMCPClient(name)
 		delete(r.mcpErrors, name)
 		return nil
 	}
-	server, _ = r.mcpCfg.Server(name)
-	return r.connectMCP(server)
+	server, _ = cfg.Server(name)
+	if err := r.connectMCP(server); err != nil {
+		return err
+	}
+	return nil
 }
 
-// AddMCP validates, persists, and starts a new MCP server.
+// AddMCP validates, persists, and starts a new user-scope MCP server. The
+// Tools tab always writes the durable user config; project scope is reserved
+// for explicit installs.
 func (r *toolRuntime) AddMCP(msg toolstab.AddMCPMsg) error {
-	if r == nil || r.mcpCfg == nil {
+	if r == nil {
 		return errors.New("MCP configuration is unavailable")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	cfg, _, err := r.scopeMCPConfigLocked(tools.MCPScopeUser)
+	if err != nil {
+		return err
 	}
 	server := mcp.ServerConfig{
 		Name:    strings.TrimSpace(msg.Name),
@@ -401,38 +573,48 @@ func (r *toolRuntime) AddMCP(msg toolstab.AddMCPMsg) error {
 		Args:    append([]string(nil), msg.Args...),
 		URL:     strings.TrimSpace(msg.URL),
 	}
-	if err := r.mcpCfg.AddServer(server); err != nil {
+	if err := cfg.AddServer(server); err != nil {
 		r.mcpErr = err.Error()
 		return err
 	}
-	if err := r.saveMCPConfig(); err != nil {
-		_ = r.mcpCfg.RemoveServer(server.Name)
+	if err := r.saveMCPConfigScopeLocked(tools.MCPScopeUser); err != nil {
+		_ = cfg.RemoveServer(server.Name)
 		return err
 	}
-	server, _ = r.mcpCfg.Server(server.Name)
+	r.rebuildMCPConfigLocked()
+	server, _ = cfg.Server(server.Name)
 	if err := r.connectMCP(server); err != nil {
 		return fmt.Errorf("server %q was added but could not start: %w", server.Name, err)
 	}
 	return nil
 }
 
-// RemoveMCP deletes a server after stopping its client, and persists the
-// change.
+// RemoveMCP deletes a server from the scope that provides it, stops its client,
+// and persists the change.
 func (r *toolRuntime) RemoveMCP(name string) error {
-	if r == nil || r.mcpCfg == nil {
+	if r == nil {
 		return fmt.Errorf("%w: %q", mcp.ErrServerNotFound, name)
 	}
-	server, ok := r.mcpCfg.Server(name)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	scope, ok := r.mcpScopes[name]
 	if !ok {
 		return fmt.Errorf("%w: %q", mcp.ErrServerNotFound, name)
 	}
-	if err := r.mcpCfg.RemoveServer(name); err != nil {
+	cfg, _, err := r.scopeMCPConfigLocked(scope)
+	if err != nil {
 		return err
 	}
-	if err := r.saveMCPConfig(); err != nil {
-		r.mcpCfg.Servers[name] = server
+	server, _ := cfg.Server(name)
+	if err := cfg.RemoveServer(name); err != nil {
 		return err
 	}
+	if err := r.saveMCPConfigScopeLocked(scope); err != nil {
+		cfg.Servers[name] = server
+		return err
+	}
+	r.rebuildMCPConfigLocked()
 	r.closeMCPClient(name)
 	delete(r.mcpErrors, name)
 	return nil
@@ -503,11 +685,12 @@ func (r *toolRuntime) RemoveLSP(name string) error {
 	return nil
 }
 
-func (r *toolRuntime) saveMCPConfig() error {
-	if r == nil || r.mcpCfg == nil {
-		return errors.New("MCP configuration is unavailable")
+func (r *toolRuntime) saveMCPConfigScopeLocked(scope string) error {
+	cfg, path, err := r.scopeMCPConfigLocked(scope)
+	if err != nil {
+		return err
 	}
-	if err := r.mcpCfg.Save(r.mcpPath); err != nil {
+	if err := cfg.Save(path); err != nil {
 		r.mcpErr = err.Error()
 		return err
 	}
@@ -584,12 +767,15 @@ func (r *toolRuntime) closeMCPClient(name string) {
 	if r == nil {
 		return
 	}
+	agentTools := r.mcpTools[name]
+	defs := r.mcpDefs[name]
 	if client := r.mcpClients[name]; client != nil {
 		_ = client.Close()
 	}
 	delete(r.mcpClients, name)
 	delete(r.mcpTools, name)
 	delete(r.mcpDefs, name)
+	r.unregisterMCPTools(agentTools, defs)
 }
 
 // Servers implements the app's LSPManager seam for /lsp.
@@ -671,6 +857,7 @@ func (r *toolRuntime) Close() error {
 	r.closed = true
 	var errs []error
 	for name, client := range r.mcpClients {
+		r.unregisterMCPTools(r.mcpTools[name], r.mcpDefs[name])
 		if err := client.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("stop MCP server %q: %w", name, err))
 		}

@@ -17,9 +17,13 @@ guarded tools, and keeps every change reviewable before it lands.
   approval in the permission box, with an optional note for the model.
 - **Reviewable changes.** Every edit is tracked as a diff. Accept or reject a
   single change, all changes in a file from its header row, or the whole batch.
-- **Skills.** Reusable instruction sets live as `SKILL.md` files. Load the ones
-  a session needs from the Skills tab; the model receives them through the
-  `skill` tool.
+- **Skills.** Reusable instruction sets live as `SKILL.md` files in the durable
+  per-user config directory. Load the ones a session needs from the Skills tab
+  or with `skill_load`; the model receives them through the `skill` tool.
+  `skill_install` adds a skill from GitHub, a URL, or a local path.
+- **Bootstrap skill.** `skills/gowork-bootstrap/SKILL.md` ships with GoWork and
+  is seeded on first run, but not auto-loaded. It teaches the model the install
+  workflow, verification steps, and security rules.
 - **Tools tab.** Skills, MCP servers, and language servers in one place. See
   what is active, add or remove MCP/LSP servers, and inspect connection,
   tool-count, and error status. MCP tools and LSP diagnostics/symbol tools are
@@ -199,16 +203,74 @@ GoWork reads environment variables and an optional `.env` file:
 | `LMSTUDIO_COMMAND` | LM Studio `lms` executable used by the picker's `s` launch control. | detected on `PATH` |
 | `LMSTUDIO_ARGS` | Arguments for `lms`; JSON array or whitespace-separated. | `server start` |
 | `LOCAL_SERVER_START_TIMEOUT` | How long the launch control waits for a local server to become ready (`3m`, `45s`, or seconds). | `2m` |
+| `GOWORK_CONFIG_DIR` | Override the durable per-user config directory that holds skills, `.mcp.json`, and `.lsp.json`. | platform config directory + `GoWork` |
 | `GOWORK_ALLOW_PROJECT_PDF_SCRIPTS` | Trust the PDF parser script and venv inside the project being read. Off by default because that is project-controlled code. | off |
 | `MAX_AGENT_STEPS` | Maximum model turns per request before the agent loop stops. | `40` |
 
 `.env` is ignored by git, so keys stay out of the repository.
 
+### Installing skills and MCP servers
+
+GoWork can install both from GitHub, a raw HTTPS URL, or a local path without
+leaving the app. The model exposes this through five tools:
+
+| Tool | Effect |
+| --- | --- |
+| `skill_install` | Validate and install a `SKILL.md` into the user skills directory. Supports `path`, `ref`, `name`, `overwrite`, `load`, and `dry_run`. |
+| `skill_load` | List installed skills and load or unload one in the current session. |
+| `mcp_install` | Validate and merge an MCP JSON config into the user or project scope. Supports `source` or inline `config`, `path`, `ref`, `servers`, `overwrite`, `start`, and `dry_run`. |
+| `mcp_list` | Show configured servers with scope, trust, connection state, tool count, and sanitized errors. |
+| `mcp_remove` | Remove a configured server and stop its tools. |
+
+Examples (the model emits these tool calls after you approve the permission
+preview):
+
+```json
+{"source":"owner/repo","path":"skills/example/SKILL.md","ref":"<commit-sha>","load":true}
+```
+
+```json
+{"source":"owner/repo","path":".mcp.json","ref":"<commit-sha>","start":true}
+```
+
+```json
+{"config":{"mcpServers":{"files":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]}}},"start":true}
+```
+
+The bundled `gowork-bootstrap` skill is installed automatically on first run
+into `$GOWORK_CONFIG_DIR/skills/gowork-bootstrap/SKILL.md` (default platform
+config directory, for example `~/.config/GoWork/skills/...`). It is never
+loaded automatically, and an existing copy is never overwritten, so local
+edits survive upgrades. Load it with `skill_load`, or ask the model to install
+a skill or MCP server and it will load the bootstrap skill first.
+
+Security notes:
+
+- Pin remote sources to a full commit SHA. Branches and tags can move.
+- Downloaded skills and MCP configs are untrusted. `mcp_install` can start a
+  server command or contact a remote host, so review the permission preview
+  and the source before approving.
+- Never put tokens, passwords, or `.env` contents in a source URL or MCP
+  config. The tools redact URL credentials/query values, and `mcp_list` never
+  shows env or header values.
+- Project-scope MCP servers live in `<project>/.mcp.json`, are always
+  untrusted, and never receive automatic tool approval. User-scope servers may
+  opt into `trusted`/`autoApprove`; enable that only for a server you trust.
+- The install tools are blocked in plan (read-only) mode. `skill_load` and
+  `mcp_list` remain available for inspection.
+- `dry_run` validates and reports without writing. Installs are atomic and
+  private; existing skills/servers are kept unless `overwrite` is true.
+
 ### MCP servers and language servers
 
-MCP and LSP configurations live in the app's data directory next to the
-installed executable (a source checkout falls back to the working directory).
-Both files are created the first time you add an entry from the Tools tab.
+MCP configuration lives in the per-user config directory:
+`$GOWORK_CONFIG_DIR/.mcp.json`, defaulting to the platform config directory
+(for example `~/.config/GoWork/.mcp.json`). A `<project>/.mcp.json` is also
+loaded when present, with project entries overriding user entries of the same
+name and always requiring approval. LSP configuration lives beside the user
+MCP file as `.lsp.json`. Files are created the first time you add an entry from
+the Tools tab or with `mcp_install`. The legacy executable-adjacent
+`.GoWork/skills` layout is migrated into the user config directory on startup.
 
 `.mcp.json` uses the familiar `mcpServers` object:
 
@@ -418,6 +480,11 @@ These are the exact tool names the model can call:
 | `todo_list` | Maintain the session's short task list. |
 | `questions_tool` | Ask up to 7 questions with up to 3 options each and pause the turn for the answer. |
 | `skill` | Load one of the session's loaded skills. |
+| `skill_install` | Install a `SKILL.md` from GitHub, a raw URL, or a project-relative local path. Requires approval; supports `dry_run`. |
+| `skill_load` | List installed skills and load or unload one for the session. Read-only on disk. |
+| `mcp_install` | Install MCP servers from a remote/local config or inline JSON. Requires approval; supports `dry_run` and optional immediate start. |
+| `mcp_list` | List configured MCP servers with sanitized status. Read-only and allowed in plan mode. |
+| `mcp_remove` | Remove a configured MCP server and stop its tools. Requires approval. |
 | `mcp_<server>_<tool>_<hash>` | Any tool exposed by a connected MCP server. The original tool name is used for the actual MCP request. |
 | `lsp_diagnostics` | Return errors and warnings for a project file from the configured language server. |
 | `lsp_symbols` | List symbols in a project file. |
@@ -446,21 +513,29 @@ go test ./...
 ```
 
 `make build` writes the binary to `out/GoWork`. Copy it next to the `prompts/`,
-`logo/`, and `tools/` folders, or use the installer, if you want to run it
-outside a checkout.
+`logo/`, `skills/`, and `tools/` folders, or use the installer, if you want to
+run it outside a checkout.
 
 ## Data paths
 
 - **Sessions and usage:** `Db/gowork.db` inside the project you open. The file
   is created on first run and is never removed by the installer.
-- **Skills:** `.GoWork/skills/<name>/SKILL.md` next to the installed
-  executable. Project files are not used for GoWork's own skill storage.
-- **MCP and LSP configuration:** `.mcp.json` and `.lsp.json` in the app data
-  directory next to the executable. The Tools tab and `/lsp` write them
-  atomically with private permissions.
-- **Bundled assets:** `prompts/`, `logo/`, and `tools/Scripts/` next to the
-  executable. Source checkouts fall back to the repository root and then the
-  current directory, so `go run .` keeps working.
+- **Skills:** `$GOWORK_CONFIG_DIR/skills/<name>/SKILL.md`. The default config
+  directory is the platform user-config directory plus `GoWork` (for example
+  `~/.config/GoWork` on Linux). Each installed skill also gets a
+  `provenance.json` recording the sanitized source, ref, and content hash.
+  Existing user-modified copies are never overwritten. The old
+  `<exe>/.GoWork/skills` layout is copied into this directory on startup when
+  files are missing.
+- **MCP and LSP configuration:** `$GOWORK_CONFIG_DIR/.mcp.json` and
+  `$GOWORK_CONFIG_DIR/.lsp.json` (for example `~/.config/GoWork/.mcp.json`).
+  A project-scope `<project>/.mcp.json` is merged in when present; project
+  entries override user entries and are never auto-approved. The Tools tab,
+  `/lsp`, and the install tools write configuration atomically with private
+  permissions.
+- **Bundled assets:** `prompts/`, `logo/`, `skills/`, and `tools/Scripts/` next
+  to the executable. Source checkouts fall back to the repository root and
+  then the current directory, so `go run .` keeps working.
 - **Fetched pages:** `.agent-cache/fetch/` in the project root when a long web
   page is saved for later reading.
 - **PDF parser:** `tools/Scripts/read_pdf.py` and its optional
