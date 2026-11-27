@@ -774,6 +774,9 @@ func (m *model) endTurn() {
 	m.pendingResults = m.pendingResults[:0]
 	m.liveActive = false
 	m.stopRequested = false
+	// "Accept All" applies to the batch it was chosen for, not the rest of
+	// the session: every new turn starts with permission prompts active.
+	m.autoAcceptTools = false
 	if m.cancel != nil {
 		m.cancel()
 		m.cancel = nil
