@@ -87,24 +87,13 @@ func toOllamaMessages(ctx context.Context, messages []Message) []map[string]inte
 	return out
 }
 
-// toOllamaTools wraps each ToolDef into ollama's openai-style tools array.
+// toOllamaTools returns ollama's openai-style tools array. The representation
+// is built once per tool-definition version and cached.
 func toOllamaTools(ctx context.Context) []map[string]interface{} {
 	if omitSystem(ctx) {
 		return nil
 	}
-	defs := toolDefs()
-	tools := make([]map[string]interface{}, 0, len(defs))
-	for _, td := range defs {
-		tools = append(tools, map[string]interface{}{
-			"type": "function",
-			"function": map[string]interface{}{
-				"name":        td.Name,
-				"description": td.Description,
-				"parameters":  toolSchemaForProto(td.InputSchema),
-			},
-		})
-	}
-	return tools
+	return copyToolList(toolRepresentationsForCurrentVersion().ollama)
 }
 
 // implementations of the Provider interface

@@ -35,6 +35,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -161,13 +162,20 @@ type ToolDef struct {
 // this will be used by every provider in the generate method. The slice is
 // read on streaming goroutines, so every access goes through the lock: the
 // skills tab swaps one entry (the skill tool) at runtime via UpdateToolDef.
-var toolsMu sync.RWMutex
-var tools_def []ToolDef
+var (
+	toolsMu   sync.RWMutex
+	tools_def []ToolDef
+	// toolsVersion changes whenever the registry changes. Provider-ready tool
+	// arrays are memoized against it so schemas are only built once per
+	// definition set instead of on every request.
+	toolsVersion atomic.Uint64
+)
 
 func InitToolsDef(t []ToolDef) {
 	toolsMu.Lock()
 	tools_def = t
 	toolsMu.Unlock()
+	toolsVersion.Add(1)
 	invalidateOverheadCache()
 }
 
@@ -181,6 +189,7 @@ func UpdateToolDef(name string, td ToolDef) bool {
 	for i := range tools_def {
 		if tools_def[i].Name == name {
 			tools_def[i] = td
+			toolsVersion.Add(1)
 			invalidateOverheadCache()
 			return true
 		}
@@ -364,15 +373,62 @@ func openAICompatMessages(ctx context.Context, messages []Message) []map[string]
 	return out
 }
 
-// openAICompatTools wraps each ToolDef into OpenAI's tools array shape.
-func openAICompatTools(ctx context.Context) []map[string]interface{} {
-	if omitSystem(ctx) {
-		return nil
+// toolRepresentations is an immutable provider-ready view of one version of
+// the tool registry. Once published it is only ever read, which is what makes
+// sharing every tool map across concurrent requests safe.
+type toolRepresentations struct {
+	version   uint64
+	openAI    []map[string]interface{}
+	gemini    []map[string]interface{}
+	anthropic []map[string]interface{}
+	ollama    []map[string]interface{}
+}
+
+var (
+	toolRepresentationsMu     sync.Mutex
+	cachedToolRepresentations *toolRepresentations
+)
+
+// toolRepresentationsForCurrentVersion returns the bundle matching the
+// registered tools, rebuilding it only when InitToolsDef/UpdateToolDef bumped
+// the version. Builds happen outside the lock; a racing update can at worst
+// publish an older-version bundle, and the next request notices the version
+// mismatch and rebuilds.
+func toolRepresentationsForCurrentVersion() *toolRepresentations {
+	version := toolsVersion.Load()
+
+	toolRepresentationsMu.Lock()
+	cached := cachedToolRepresentations
+	toolRepresentationsMu.Unlock()
+	if cached != nil && cached.version == version {
+		return cached
 	}
-	defs := toolDefs()
-	tools := make([]map[string]interface{}, 0, len(defs))
+
+	built := buildToolRepresentations(version, toolDefs())
+
+	toolRepresentationsMu.Lock()
+	if cachedToolRepresentations == nil || cachedToolRepresentations.version <= version {
+		cachedToolRepresentations = built
+	}
+	toolRepresentationsMu.Unlock()
+	return built
+}
+
+// buildToolRepresentations lowers the registry into every provider dialect in
+// one pass. Each input schema is sanitized exactly once and shared by the
+// protobuf-style providers (gemini/anthropic/ollama), which reject JSON-Schema
+// keywords such as additionalProperties with a 400.
+func buildToolRepresentations(version uint64, defs []ToolDef) *toolRepresentations {
+	out := &toolRepresentations{
+		version:   version,
+		openAI:    make([]map[string]interface{}, 0, len(defs)),
+		anthropic: make([]map[string]interface{}, 0, len(defs)),
+		ollama:    make([]map[string]interface{}, 0, len(defs)),
+	}
+	decls := make([]map[string]interface{}, 0, len(defs))
 	for _, td := range defs {
-		tools = append(tools, map[string]interface{}{
+		schema := toolSchemaForProto(td.InputSchema)
+		out.openAI = append(out.openAI, map[string]interface{}{
 			"type": "function",
 			"function": map[string]interface{}{
 				"name":        td.Name,
@@ -380,8 +436,44 @@ func openAICompatTools(ctx context.Context) []map[string]interface{} {
 				"parameters":  td.InputSchema,
 			},
 		})
+		decls = append(decls, map[string]interface{}{
+			"name":        td.Name,
+			"description": td.Description,
+			"parameters":  schema,
+		})
+		out.anthropic = append(out.anthropic, map[string]interface{}{
+			"name":         td.Name,
+			"description":  td.Description,
+			"input_schema": schema,
+		})
+		out.ollama = append(out.ollama, map[string]interface{}{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":        td.Name,
+				"description": td.Description,
+				"parameters":  schema,
+			},
+		})
 	}
-	return tools
+	out.gemini = []map[string]interface{}{{"functionDeclarations": decls}}
+	return out
+}
+
+// copyToolList returns a fresh slice header around the cached, read-only tool
+// maps. Requests can append to or reorder their copy without touching the
+// cache, while the nested maps stay shared and immutable.
+func copyToolList(in []map[string]interface{}) []map[string]interface{} {
+	out := make([]map[string]interface{}, len(in))
+	copy(out, in)
+	return out
+}
+
+// openAICompatTools wraps each ToolDef into OpenAI's tools array shape.
+func openAICompatTools(ctx context.Context) []map[string]interface{} {
+	if omitSystem(ctx) {
+		return nil
+	}
+	return copyToolList(toolRepresentationsForCurrentVersion().openAI)
 }
 
 // NOTE: since ai is stateless and we send all the context everytime then

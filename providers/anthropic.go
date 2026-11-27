@@ -88,19 +88,11 @@ func toAnthropicMessages(messages []Message) []map[string]interface{} {
 	return out
 }
 
-// toAnthropicTools maps ToolDefs into anthropic's flat {name, description,
-// input_schema} tools array (no "type"/"function" wrapper).
+// toAnthropicTools returns anthropic's flat {name, description, input_schema}
+// tools array (no "type"/"function" wrapper). The representation is built
+// once per tool-definition version and cached.
 func toAnthropicTools() []map[string]interface{} {
-	defs := toolDefs()
-	tools := make([]map[string]interface{}, 0, len(defs))
-	for _, td := range defs {
-		tools = append(tools, map[string]interface{}{
-			"name":         td.Name,
-			"description":  td.Description,
-			"input_schema": toolSchemaForProto(td.InputSchema),
-		})
-	}
-	return tools
+	return copyToolList(toolRepresentationsForCurrentVersion().anthropic)
 }
 
 // implementations of the Provider interface

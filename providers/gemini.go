@@ -94,19 +94,11 @@ func toContents(messages []Message) []map[string]interface{} {
 	return contents
 }
 
-// toGeminiTools wraps each ToolDef into gemini's {functionDeclarations:[...]}
-// shape, each declaration's parameters being a JSON schema.
+// toGeminiTools returns gemini's {functionDeclarations:[...]} shape, each
+// declaration's parameters being a sanitized JSON schema. The representation
+// is built once per tool-definition version and cached.
 func toGeminiTools() []map[string]interface{} {
-	defs := toolDefs()
-	decls := make([]map[string]interface{}, 0, len(defs))
-	for _, td := range defs {
-		decls = append(decls, map[string]interface{}{
-			"name":        td.Name,
-			"description": td.Description,
-			"parameters":  toolSchemaForProto(td.InputSchema),
-		})
-	}
-	return []map[string]interface{}{{"functionDeclarations": decls}}
+	return copyToolList(toolRepresentationsForCurrentVersion().gemini)
 }
 
 // implementations of the Provider interface
