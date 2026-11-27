@@ -77,9 +77,13 @@ func (t *Tool) InputSchema() json.RawMessage {
 
 func (t *Tool) Kind() tools.Kind { return tools.KindAllowed }
 
-// readRange reads relPath from the sandboxed root into memory, applies any
-// pending changes from the WatchList in memory and scans forward through the
-// buffer to return the requested line range.
+// readRange returns the requested line range from relPath.
+//
+// When the file has no pending WatchList changes, src is streamed through a
+// scanner that stops after the requested page (or the byte cap), so the rest
+// of the file is never read. Pending changes are stored as byte offsets into
+// the on-disk marker file, so that path still has to materialise the whole
+// file before applying them.
 func readRange(root *os.Root, wl *cl.WatchList, relPath string, start, offset int) (content string, truncated bool, ok bool, lastLine int, err error) {
 	//Open the original source file via the sandboxed root
 	src, err := root.Open(relPath)
@@ -87,25 +91,34 @@ func readRange(root *os.Root, wl *cl.WatchList, relPath string, start, offset in
 		return "", false, false, 0, fmt.Errorf("opening source %s: %w", relPath, err)
 	}
 
-	//Read the whole file into memory; src is always closed right after,
-	//whether the read succeeded or not
-	data, readErr := io.ReadAll(src)
-	src.Close()
-	if readErr != nil {
-		return "", false, false, 0, fmt.Errorf("reading source %s: %w", relPath, readErr)
-	}
-
-	//Apply any pending changes in memory. Only bother if there are any -
-	//this keeps the common case (no pending edits) a single read with
-	//no extra allocation/copy pass over the file.
+	var changes []cl.Change
 	if wl != nil {
-		if changes := wl.GetChanges(relPath); len(changes) > 0 {
-			data = cl.AcceptAllChangesBytes(data, changes)
+		changes = wl.GetChanges(relPath)
+	}
+	if len(changes) > 0 {
+		// Pending changes refer to offsets in the on-disk file, so the whole
+		// file is needed to resolve them; apply them in memory as before.
+		data, readErr := io.ReadAll(src)
+		src.Close()
+		if readErr != nil {
+			return "", false, false, 0, fmt.Errorf("reading source %s: %w", relPath, readErr)
 		}
+		data = cl.AcceptAllChangesBytes(data, changes)
+		return scanLineRange(bytes.NewReader(data), relPath, start, offset)
 	}
 
-	//Scan the requested line range from the in-memory buffer
-	scanner := bufio.NewScanner(bytes.NewReader(data))
+	// Common case: no pending edits. Stream the file and stop as soon as the
+	// requested range ends instead of slurping the whole file.
+	defer src.Close()
+	return scanLineRange(src, relPath, start, offset)
+}
+
+// scanLineRange scans r until the 1-indexed [start, start+offset-1] line
+// range has been produced, the byte cap is reached, or the input ends. It
+// never reads past the line after the requested page, so callers can pass a
+// stream backed by a large file.
+func scanLineRange(r io.Reader, relPath string, start, offset int) (content string, truncated bool, ok bool, lastLine int, err error) {
+	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024) // Allow up to 10MB per line
 
 	end := start + offset - 1
