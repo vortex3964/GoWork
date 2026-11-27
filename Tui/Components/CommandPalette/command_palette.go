@@ -15,7 +15,7 @@ import (
 // for the built-in registry so a bare "/" shows every command; longer
 // registries scroll around the selection instead of pushing the prompt off
 // screen.
-const MaxRows = 12
+const MaxRows = 16
 
 // Command is one palette entry.
 type Command struct {
