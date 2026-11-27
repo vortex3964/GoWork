@@ -1,6 +1,7 @@
 package gowork
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -12,6 +13,14 @@ import (
 	"GoWork/providers"
 	"GoWork/tools"
 )
+
+// localServerProbeMsg refreshes a picker status from a background health
+// probe. It is separate from ServerStatusMsg so opening the picker does not
+// spam the message area.
+type localServerProbeMsg struct {
+	Provider string
+	Status   string
+}
 
 // authFailureDetail prefers the provider's response body, which carries
 // entitlement messages such as "OpenCode Go subscription required", and falls
@@ -39,8 +48,72 @@ func (m *model) openProviderSelect() tea.Cmd {
 		get_supported_providers_local(),
 		os.Getenv("API_KEY"),
 	)
+	// Seed the picker with what we already know (binary present, managed
+	// process running), then refresh external-running status in the
+	// background. Opening the picker never probes synchronously and never
+	// launches anything.
+	cmds := []tea.Cmd{m.providerSelect.Init()}
+	if m.localServers != nil {
+		mgr := m.localServers
+		for _, name := range get_supported_providers_local() {
+			if label, ok := mgr.StatusLabel(name); ok {
+				m.providerSelect.SetLocalServerStatus(name, label)
+			} else {
+				continue
+			}
+			name := name
+			cmds = append(cmds, func() tea.Msg {
+				return localServerProbeMsg{
+					Provider: name,
+					Status:   mgr.Probe(context.Background(), name).Label(),
+				}
+			})
+		}
+	}
 	m.providerSelect.SetSize(m.winWidth, m.winHeight)
-	return m.providerSelect.Init()
+	return tea.Batch(cmds...)
+}
+
+// handleLocalServerToggle starts or stops the highlighted local server. The
+// work runs in a tea.Cmd so the picker keeps painting while the server loads;
+// the manager bounds startup and cleans the child up on timeout/cancel.
+func (m model) handleLocalServerToggle(msg providerselect.ServerToggleMsg) (tea.Model, tea.Cmd) {
+	if m.localServers == nil {
+		m.providerSelect.SetLocalServerStatus(msg.Provider, "launch controls unavailable")
+		return m, nil
+	}
+
+	status := m.localServers.Status(msg.Provider)
+	if status.Busy != "" {
+		m.providerSelect.SetLocalServerStatus(msg.Provider, status.Label())
+		return m, nil
+	}
+
+	provider := msg.Provider
+	mgr := m.localServers
+	if status.Running && status.Managed {
+		m.providerSelect.SetLocalServerStatus(provider, "stopping…")
+		return m, func() tea.Msg {
+			st, err := mgr.Stop(context.Background(), provider)
+			return providerselect.ServerStatusMsg{
+				Provider: provider,
+				Status:   st.Label(),
+				Err:      err,
+			}
+		}
+	}
+
+	// Start also covers an externally running server: it probes first and
+	// reports "already running" instead of spawning a second process.
+	m.providerSelect.SetLocalServerStatus(provider, "starting…")
+	return m, func() tea.Msg {
+		st, err := mgr.Start(context.Background(), provider)
+		return providerselect.ServerStatusMsg{
+			Provider: provider,
+			Status:   st.Label(),
+			Err:      err,
+		}
+	}
 }
 
 // handleProviderSelected applies a completed provider/model pick: it

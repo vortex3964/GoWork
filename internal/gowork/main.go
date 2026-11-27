@@ -98,6 +98,11 @@ func Main() {
 	}
 
 	m := initialModel(root, provider, modelName, providerName)
+	// Local servers started from the picker are children of this process:
+	// never leave one orphaned if the TUI exits (including error paths).
+	if m.localServers != nil {
+		defer m.localServers.StopAll()
+	}
 
 	if sessionID > 0 {
 		m.resumeSession(sessionID)
@@ -109,6 +114,9 @@ func Main() {
 		if _, ok := msg.(tea.QuitMsg); ok {
 			if app, ok := mdl.(model); ok {
 				app.flushSession()
+				if app.localServers != nil {
+					app.localServers.StopAll()
+				}
 			}
 		}
 		return msg

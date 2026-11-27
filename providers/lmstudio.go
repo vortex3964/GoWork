@@ -21,6 +21,28 @@ func lmStudioBaseURL() string {
 	return "http://localhost:1234/v1"
 }
 
+// LMStudioLaunchSpec describes the in-app start/stop controls for LM Studio.
+// The documented CLI is `lms server start`: it hands the server to a
+// background daemon and exits, so the manager probes the model endpoint
+// afterwards and stops the service with `lms server stop`. Set
+// LMSTUDIO_COMMAND when the CLI is not on PATH (LM Studio installs it under
+// ~/.lmstudio/bin).
+func LMStudioLaunchSpec() LocalServerSpec {
+	return LocalServerSpec{
+		Provider:     "lmstudio",
+		DisplayName:  "LM Studio",
+		CommandNames: []string{"lms", "lm-studio", "lmstudio"},
+		CommandEnv:   "LMSTUDIO_COMMAND",
+		ArgsEnv:      "LMSTUDIO_ARGS",
+		DefaultArgs:  []string{"server", "start"},
+		BaseURL:      lmStudioBaseURL(),
+		HealthPaths:  []string{"models"},
+		ServiceCLI:   true,
+		StopArgs:     []string{"server", "stop"},
+		StartTimeout: LocalServerStartTimeout(),
+	}
+}
+
 type lmStudioProvider struct {
 	model   string
 	baseURL string

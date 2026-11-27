@@ -85,6 +85,40 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.restoreModeForActiveTab()
 		return m, nil
 
+	case providerselect.ServerToggleMsg:
+		return m.handleLocalServerToggle(msg)
+
+	case localServerProbeMsg:
+		// Don't let a slow open-time probe overwrite a start/stop that the
+		// user kicked off in the meantime.
+		if m.localServers != nil {
+			st := m.localServers.Status(msg.Provider)
+			if st.Busy != "" || (st.Running && st.Managed) {
+				return m, nil
+			}
+		}
+		m.providerSelect.SetLocalServerStatus(msg.Provider, msg.Status)
+		return m, nil
+
+	case providerselect.ServerStatusMsg:
+		status := msg.Status
+		if status == "" {
+			status = "start/stop failed"
+		}
+		m.providerSelect.SetLocalServerStatus(msg.Provider, status)
+		if msg.Err != nil {
+			m.MessageArea.AppendMessage(
+				fmt.Sprintf(">**ERROR** %s local server: %s", msg.Provider, msg.Err.Error()),
+				false,
+			)
+		} else {
+			m.MessageArea.AppendMessage(
+				fmt.Sprintf(">**INFO** %s local server: %s", msg.Provider, status),
+				false,
+			)
+		}
+		return m, nil
+
 	case skills.SkillToggleMsg:
 		mgr := skillstool.GetManager()
 		if mgr == nil {

@@ -160,6 +160,17 @@ The provider picker loads the model list from the selected server, so local
 models appear as soon as the server is running. Models that do not support
 tool calling trigger a warning when selected.
 
+For `llamaCpp` and `lmStudio`, the local-provider step also has a launch
+control: highlight the provider and press `s` to start or stop its server.
+GoWork looks for `llama-server` on `PATH` and for LM Studio's `lms` CLI, waits
+for the health/model endpoint (bounded by `LOCAL_SERVER_START_TIMEOUT`), and
+shows progress or errors on the picker's status line. Servers GoWork starts are
+stopped when it exits; a server you launched yourself is detected and left
+alone. Nothing is started automatically. Pass a model to llama.cpp with
+`LLAMACPP_ARGS` (for example `-m /models/qwen.gguf`), and set
+`LLAMACPP_COMMAND`/`LMSTUDIO_COMMAND` when the binary is not on `PATH` (LM
+Studio installs its CLI under `~/.lmstudio/bin`).
+
 ## Configuration
 
 GoWork reads environment variables and an optional `.env` file:
@@ -179,6 +190,11 @@ GoWork reads environment variables and an optional `.env` file:
 | `OLLAMA_HOST` | Ollama base URL. | `http://localhost:11434` |
 | `LLAMACPP_HOST` | llama.cpp base URL. | `http://localhost:8080` |
 | `LMSTUDIO_HOST` | LM Studio base URL. | `http://localhost:1234/v1` |
+| `LLAMACPP_COMMAND` | `llama-server` executable used by the picker's `s` launch control. | detected on `PATH` |
+| `LLAMACPP_ARGS` | Arguments for `llama-server`; JSON array or whitespace-separated. Include `-m <model.gguf>`. | none |
+| `LMSTUDIO_COMMAND` | LM Studio `lms` executable used by the picker's `s` launch control. | detected on `PATH` |
+| `LMSTUDIO_ARGS` | Arguments for `lms`; JSON array or whitespace-separated. | `server start` |
+| `LOCAL_SERVER_START_TIMEOUT` | How long the launch control waits for a local server to become ready (`3m`, `45s`, or seconds). | `2m` |
 | `MAX_AGENT_STEPS` | Maximum model turns per request before the agent loop stops. | `40` |
 
 `.env` is ignored by git, so keys stay out of the repository.
@@ -194,6 +210,15 @@ GoWork reads environment variables and an optional `.env` file:
 | `tab` / `shift+tab` while idle | Next / previous tab. |
 | `ctrl+l` | Open or close the changes list on the code tab. |
 | `ctrl+c` | Quit. |
+
+### Provider picker
+
+| Key | Action |
+| --- | --- |
+| `enter` | Choose the highlighted provider or model. |
+| `s` (local-provider step) | Start or stop the highlighted llama.cpp / LM Studio server. |
+| `/` | Filter the list. |
+| `esc` | Go back one step. |
 
 ### Prompt bar
 

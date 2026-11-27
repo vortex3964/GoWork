@@ -164,6 +164,10 @@ type model struct {
 	// provider/model picker (ctrl+p)
 	providerSelect providerselect.Model
 
+	// localServers owns the llama.cpp / LM Studio processes started from the
+	// picker. It is killed on app exit.
+	localServers *localServerManager
+
 	// track the message were on for recall mode
 	historyIdx int
 
@@ -336,6 +340,7 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 		Stats:             stats.New(),
 		Coffee:            coffee.New(),
 		skillForm:         skillform.New(),
+		localServers:      newLocalServerManager(),
 	}
 }
 
