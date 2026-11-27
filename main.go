@@ -781,6 +781,13 @@ func (m *model) endTurn() {
 	m.prompt.Focus()
 }
 
+// isTurnInterrupt reports whether a keypress should stop the in-flight turn.
+// A terminal sends ctrl+i as tab (0x09), so while a turn is running both
+// spellings interrupt; when idle, tab must keep switching tabs.
+func isTurnInterrupt(key string, turnRunning bool) bool {
+	return turnRunning && (key == "ctrl+i" || key == "tab")
+}
+
 // answerQuestionnaire delivers the user's answers into the held batch slot,
 // clears the questionnaire, and returns the app to the prompt layout.
 func (m *model) answerQuestionnaire(content string) {
@@ -1403,27 +1410,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// ctrl+i interrupts the current turn - the streamed generation and/or
 		// the tool batch. A terminal delivers ctrl+i as the same byte as tab
-		// (0x09), but plain tab must stay free for tab switching, so only the
-		// explicit ctrl+i spelling interrupts. With nothing running this is a
-		// no-op.
-		if msg_str == "ctrl+i" {
-			if !*m.aiThink || m.cancel == nil {
+		// (0x09), so while a turn is running both spellings interrupt. When
+		// idle, plain tab stays free for tab switching and ctrl+i is a no-op.
+		if msg_str == "ctrl+i" || msg_str == "tab" {
+			turnRunning := *m.aiThink && m.cancel != nil
+			if isTurnInterrupt(msg_str, turnRunning) {
+				m.stopRequested = true
+				m.cancel()
+				if m.mode == modeQuestionnaire {
+					// Abort the open questionnaire so the batch can wind down.
+					m.answerQuestionnaire(questionnairetool.FormatCancelled())
+					for _, r := range m.pendingResults {
+						if r == nil {
+							return m, nil
+						}
+					}
+					return m, m.loopAfterBatch()
+				}
+				m.message_area.AppendMessage(">**INFO** Stopping…", false)
 				return m, nil
 			}
-			m.stopRequested = true
-			m.cancel()
-			if m.mode == modeQuestionnaire {
-				// Abort the open questionnaire so the batch can wind down.
-				m.answerQuestionnaire(questionnairetool.FormatCancelled())
-				for _, r := range m.pendingResults {
-					if r == nil {
-						return m, nil
-					}
-				}
-				return m, m.loopAfterBatch()
+			if msg_str == "ctrl+i" {
+				return m, nil
 			}
-			m.message_area.AppendMessage(">**INFO** Stopping…", false)
-			return m, nil
 		}
 
 		// A visible modal swallows all keys so the user has to dismiss it

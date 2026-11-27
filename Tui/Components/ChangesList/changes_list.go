@@ -735,7 +735,7 @@ func (m Model) helpView() string {
 		{"esc / tab / enter", "close changes list"},
 		{"ctrl+l", "toggle changes list"},
 		{"ctrl+p", "pick provider / model"},
-		{"ctrl+i / tab", "interrupt the AI"},
+		{"ctrl+i / tab (while running)", "interrupt the AI"},
 		{"up (empty prompt)", "recall last prompt"},
 		{"ctrl+a (prompt)", "copy prompt"},
 		{"ctrl+v", "paste into prompt"},
