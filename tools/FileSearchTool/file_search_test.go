@@ -547,3 +547,137 @@ func tail(s string, n int) string {
 	}
 	return "..." + s[len(s)-n:]
 }
+
+// forceFallback empties PATH so exec.LookPath("rg") fails and file_search has
+// to use its in-process walker.
+func forceFallback(t *testing.T) {
+	t.Helper()
+	t.Setenv("PATH", t.TempDir())
+}
+
+func TestFallbackFindFileByName(t *testing.T) {
+	forceFallback(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "Tui/todoList.go", "package tui\n")
+	writeFile(t, dir, "other.go", "package other\n")
+	if err := os.MkdirAll(filepath.Join(dir, "empty"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	args := newDispatchArgs(t, dir)
+	tool := filesearchtool.New()
+
+	res := run(t, tool, args, filesearchtool.Input{Pattern: "todoList"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "Tui/todoList.go") {
+		t.Errorf("expected Tui/todoList.go in fallback results, got:\n%s", res.Content)
+	}
+	if strings.Contains(res.Content, "other.go") {
+		t.Errorf("did not expect other.go in results, got:\n%s", res.Content)
+	}
+
+	res = run(t, tool, args, filesearchtool.Input{Pattern: "empty"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "No files found") {
+		t.Errorf("did not expect empty directory to be listed, got:\n%s", res.Content)
+	}
+}
+
+func TestFallbackIgnoreHiddenIncludeAndRegex(t *testing.T) {
+	forceFallback(t)
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	writeFile(t, dir, ".gitignore", "ignored.go\n")
+	writeFile(t, dir, ".agentignore", "secret.go\n")
+	writeFile(t, dir, ".env", "SECRET=1\n")
+	writeFile(t, dir, "ignored.go", "x\n")
+	writeFile(t, dir, "secret.go", "x\n")
+	writeFile(t, dir, "visible.go", "x\n")
+	writeFile(t, dir, "notes.txt", "x\n")
+	args := newDispatchArgs(t, dir)
+	tool := filesearchtool.New()
+
+	// "." matches every path, so this lists everything the tool will accept.
+	res := run(t, tool, args, filesearchtool.Input{Pattern: "."})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	for _, want := range []string{"visible.go", "notes.txt"} {
+		if !strings.Contains(res.Content, want) {
+			t.Errorf("expected %q in fallback results, got:\n%s", want, res.Content)
+		}
+	}
+	for _, stale := range []string{".env", "ignored.go", "secret.go", ".git"} {
+		if strings.Contains(res.Content, stale) {
+			t.Errorf("fallback leaked excluded path %q:\n%s", stale, res.Content)
+		}
+	}
+
+	res = run(t, tool, args, filesearchtool.Input{Pattern: "go", Include: "*.go"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "visible.go") || strings.Contains(res.Content, "notes.txt") {
+		t.Errorf("include filter not applied by fallback, got:\n%s", res.Content)
+	}
+
+	res = run(t, tool, args, filesearchtool.Input{Pattern: `\.go$`})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "visible.go") || strings.Contains(res.Content, "notes.txt") {
+		t.Errorf("regex filter not applied by fallback, got:\n%s", res.Content)
+	}
+
+	res = run(t, tool, args, filesearchtool.Input{Pattern: "VISIBLE", IgnoreCase: true})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "visible.go") {
+		t.Errorf("ignore_case not applied by fallback, got:\n%s", res.Content)
+	}
+
+	res = run(t, tool, args, filesearchtool.Input{Pattern: "visible.go", Literal: true})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "visible.go") {
+		t.Errorf("literal matching not applied by fallback, got:\n%s", res.Content)
+	}
+}
+
+func TestFallbackLimitAndSingleFileScope(t *testing.T) {
+	forceFallback(t)
+	dir := t.TempDir()
+	for i := 1; i <= 5; i++ {
+		writeFile(t, dir, "a"+string(rune('0'+i))+".txt", "x\n")
+	}
+	writeFile(t, dir, ".env", "SECRET=1\n")
+	args := newDispatchArgs(t, dir)
+	tool := filesearchtool.New()
+
+	res := run(t, tool, args, filesearchtool.Input{Pattern: "a", Limit: 2})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if got := strings.Count(res.Content, ".txt"); got != 2 {
+		t.Errorf("expected 2 paths under limit=2, got %d in:\n%s", got, res.Content)
+	}
+	if !strings.Contains(res.Content, "matches limit reached") {
+		t.Errorf("expected limit-reached notice, got:\n%s", res.Content)
+	}
+
+	// An explicitly named hidden file is returned as-is, like rg --files.
+	res = run(t, tool, args, filesearchtool.Input{Pattern: "env", Path: ".env"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, ".env") {
+		t.Errorf("expected explicit hidden file in results, got:\n%s", res.Content)
+	}
+}

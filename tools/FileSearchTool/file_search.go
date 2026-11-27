@@ -1,5 +1,5 @@
 //DESC: file_search locates files by NAME or path pattern by shelling out to
-// ripgrep (rg --files) and matching the pattern against the relative paths.
+// ripgrep (rg --files) when available, with a portable Go walker fallback.
 package filesearchtool
 
 import (
@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,8 @@ import (
 	"strings"
 
 	"GoWork/tools"
+
+	ignore "github.com/sabhiram/go-gitignore"
 )
 
 const (
@@ -39,7 +42,7 @@ func New() tools.AgentTool { return &Tool{} }
 func (t *Tool) Name() string { return "file_search" }
 
 func (t *Tool) Description() string {
-	return fmt.Sprintf(`Quickly locates files by NAME or path pattern using ripgrep. Respects .gitignore and .agentignore, and skips hidden files and directories (dotfiles such as .env and .git) by default.
+	return fmt.Sprintf(`Quickly locates files by NAME or path pattern. Uses ripgrep (rg) when it is available and a built-in fallback otherwise. Respects .gitignore and .agentignore, and skips hidden files and directories (dotfiles such as .env and .git) by default.
 
 Returns one project-relative path per line. Use this to find where a file lives (pattern "todoList" returns "Tui/todoList.go"), to confirm a file exists before creating anything, or to glob for files by name.
 Output is capped at %d matches or %d bytes, whichever is hit first. If you hit the match cap, raise limit or narrow pattern/include.
@@ -117,6 +120,152 @@ func fileExists(p string) bool {
 	return err == nil
 }
 
+// runRGFileList lists every file under searchPath with ripgrep. rg applies
+// .gitignore/.agentignore itself; the caller filters the resulting relative
+// paths against the pattern in Go.
+func runRGFileList(ctx context.Context, rgPath, root, searchPath, include string) ([]string, error) {
+	rgArgs := []string{"--files", "--color=never"}
+	if include != "" {
+		rgArgs = append(rgArgs, "--glob", include)
+	}
+	if agentIgnore := filepath.Join(root, ".agentignore"); fileExists(agentIgnore) {
+		rgArgs = append(rgArgs, "--ignore-file", agentIgnore)
+	}
+	rgArgs = append(rgArgs, "--", searchPath)
+
+	cmd := exec.CommandContext(ctx, rgPath, rgArgs...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("starting ripgrep: %w", err)
+	}
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("starting ripgrep: %w", err)
+	}
+
+	var paths []string
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	for scanner.Scan() {
+		paths = append(paths, scanner.Text())
+	}
+	scanErr := scanner.Err()
+
+	// The child only reads, so even if we stopped early it exits on its own;
+	// still wait to reap it and to surface real failures.
+	waitErr := cmd.Wait()
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if scanErr != nil {
+		return nil, fmt.Errorf("reading ripgrep output: %w", scanErr)
+	}
+	var exitErr *exec.ExitError
+	if waitErr != nil && !errors.As(waitErr, &exitErr) {
+		return nil, fmt.Errorf("running ripgrep: %w", waitErr)
+	}
+	if exitErr != nil && exitErr.ExitCode() != 1 {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = fmt.Sprintf("ripgrep exited with code %d", exitErr.ExitCode())
+		}
+		return nil, errors.New(msg)
+	}
+	return paths, nil
+}
+
+// fallbackIgnores loads the ignore files a directory scan would honor.
+// .gitignore only applies inside a git repository (rg's default behavior), so
+// it is skipped otherwise; .agentignore always applies.
+func fallbackIgnores(root string) []*ignore.GitIgnore {
+	var ignores []*ignore.GitIgnore
+	if _, err := os.Stat(filepath.Join(root, ".git")); err == nil {
+		if gi, err := ignore.CompileIgnoreFile(filepath.Join(root, ".gitignore")); err == nil {
+			ignores = append(ignores, gi)
+		}
+	}
+	if ai, err := ignore.CompileIgnoreFile(filepath.Join(root, ".agentignore")); err == nil {
+		ignores = append(ignores, ai)
+	}
+	return ignores
+}
+
+func isIgnoredPath(ignores []*ignore.GitIgnore, rel string) bool {
+	return tools.IsIgnored(ignores, rel) || tools.IsIgnored(ignores, rel+"/")
+}
+
+func isHiddenName(name string) bool {
+	return len(name) > 1 && name[0] == '.'
+}
+
+// fallbackFileList walks the search scope in Go when ripgrep is unavailable.
+// It returns absolute paths, matching rg --files, after applying the same
+// hidden-file, ignore and include filters.
+func fallbackFileList(ctx context.Context, root, searchPath string, scopeIsDir bool, include string) ([]string, error) {
+	if !scopeIsDir {
+		// An explicitly named file is returned as-is, just like rg --files.
+		return []string{searchPath}, nil
+	}
+
+	var includeMatch func(string) bool
+	if include != "" {
+		includeMatch = ignore.CompileIgnoreLines(include).MatchesPath
+	}
+	ignores := fallbackIgnores(root)
+
+	var paths []string
+	err := filepath.WalkDir(searchPath, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if d == nil {
+				return walkErr // the scope itself is unreadable/missing
+			}
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if path == searchPath {
+			return nil // an explicitly named scope is searched as-is
+		}
+
+		name := d.Name()
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+
+		if d.IsDir() {
+			if isHiddenName(name) || isIgnoredPath(ignores, rel) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		if isHiddenName(name) || isIgnoredPath(ignores, rel) {
+			return nil
+		}
+		if includeMatch != nil && !includeMatch(rel) {
+			return nil
+		}
+		paths = append(paths, path)
+		return nil
+	})
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if err != nil {
+		return nil, err
+	}
+	return paths, nil
+}
+
 func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.RawMessage) (tools.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
 		return tools.ToolResult{}, err
@@ -135,8 +284,9 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		return tools.Errf("%s", err.Error()), nil
 	}
 
-	// Same existence check read_file does 
-	if _, err := args.Root.Stat(relPath); errors.Is(err, os.ErrNotExist) {
+	// Same existence check read_file does
+	info, err := args.Root.Stat(relPath)
+	if errors.Is(err, os.ErrNotExist) {
 		return tools.Errf("path %v does not exist", input.Path), nil
 	} else if err != nil {
 		return tools.Errf("checking %v: %v", input.Path, err), nil
@@ -152,62 +302,22 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		return tools.Errf("invalid pattern: %v", err), nil
 	}
 
-	rgPath, err := exec.LookPath("rg")
-	if err != nil {
-		return tools.Errf("ripgrep (rg) is not installed or not on PATH"), nil
-	}
-
-	// rg --files lists every file under the search path, so
-	// .gitignore/.agentignore still apply; we then filter the relative
-	// paths against the pattern in Go (matching against the path rg
-	// itself printed would include the root prefix and platform quirks).
-	rgArgs := []string{"--files", "--color=never"}
-	if input.Include != "" {
-		rgArgs = append(rgArgs, "--glob", input.Include)
-	}
-	if agentIgnore := filepath.Join(*args.RootPath, ".agentignore"); fileExists(agentIgnore) {
-		rgArgs = append(rgArgs, "--ignore-file", agentIgnore)
-	}
-	rgArgs = append(rgArgs, "--", filepath.Join(*args.RootPath, relPath))
-
-	cmd := exec.CommandContext(ctx, rgPath, rgArgs...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return tools.Errf("starting ripgrep: %v", err), nil
-	}
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		return tools.Errf("starting ripgrep: %v", err), nil
-	}
+	// Prefer ripgrep. When it is missing, the portable Go walker below lists
+	// the same files while applying the same hidden/ignore/include filters.
+	rgPath, _ := exec.LookPath("rg")
+	searchPath := filepath.Join(*args.RootPath, relPath)
 
 	var paths []string
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
-	for scanner.Scan() {
-		paths = append(paths, scanner.Text())
+	if rgPath != "" {
+		paths, err = runRGFileList(ctx, rgPath, *args.RootPath, searchPath, input.Include)
+	} else {
+		paths, err = fallbackFileList(ctx, *args.RootPath, searchPath, info.IsDir(), input.Include)
 	}
-	scanErr := scanner.Err()
-
-	// The child only reads, so even if we stopped early it exits on its own;
-	// still wait to reap it and to surface real failures.
-	waitErr := cmd.Wait()
-	if ctx.Err() != nil {
-		return tools.ToolResult{}, ctx.Err()
-	}
-	if scanErr != nil {
-		return tools.Errf("reading ripgrep output: %v", scanErr), nil
-	}
-	var exitErr *exec.ExitError
-	if waitErr != nil && !errors.As(waitErr, &exitErr) {
-		return tools.Errf("running ripgrep: %v", waitErr), nil
-	}
-	if exitErr != nil && exitErr.ExitCode() != 1 {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = fmt.Sprintf("ripgrep exited with code %d", exitErr.ExitCode())
+	if err != nil {
+		if ctx.Err() != nil {
+			return tools.ToolResult{}, ctx.Err()
 		}
-		return tools.Errf("%s", msg), nil
+		return tools.Errf("%v", err), nil
 	}
 
 	var out strings.Builder

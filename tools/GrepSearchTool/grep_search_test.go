@@ -903,3 +903,173 @@ func tail(s string, n int) string {
 	}
 	return "..." + s[len(s)-n:]
 }
+
+// forceFallback empties PATH so exec.LookPath("rg") fails and the tools must
+// use their in-process walkers instead of spawning ripgrep.
+func forceFallback(t *testing.T) {
+	t.Helper()
+	t.Setenv("PATH", t.TempDir())
+}
+
+func TestFallbackBasicMatch(t *testing.T) {
+	forceFallback(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "main.go", "package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n")
+	writeFile(t, dir, "binary.go", "needle\x00binary payload\n")
+	args := newDispatchArgs(t, dir)
+	tool := grepsearchtool.New()
+
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "func main"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "main.go:3: func main() {") {
+		t.Errorf("expected match line from fallback scan, got:\n%s", res.Content)
+	}
+	if strings.Contains(res.Content, "binary.go") {
+		t.Errorf("expected binary file to be skipped, got:\n%s", res.Content)
+	}
+
+	res = run(t, tool, args, grepsearchtool.Input{Pattern: "nonexistentPattern12345"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if res.Content != "No matches found" {
+		t.Errorf("Content = %q, want %q", res.Content, "No matches found")
+	}
+}
+
+func TestFallbackIgnoreHiddenIncludeAndCase(t *testing.T) {
+	forceFallback(t)
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	writeFile(t, dir, ".gitignore", "ignored.go\n")
+	writeFile(t, dir, ".agentignore", "secret.go\n")
+	writeFile(t, dir, ".env", "SECRET_API_KEY=needle\n")
+	writeFile(t, dir, "ignored.go", "needle\n")
+	writeFile(t, dir, "secret.go", "needle\n")
+	writeFile(t, dir, "main.go", "NEEDLE in go\n")
+	writeFile(t, dir, "main.txt", "needle in txt\n")
+	args := newDispatchArgs(t, dir)
+	tool := grepsearchtool.New()
+
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "needle", Include: "*.go", IgnoreCase: true})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "main.go:1: NEEDLE in go") {
+		t.Errorf("expected case-insensitive include-filtered match, got:\n%s", res.Content)
+	}
+	for _, stale := range []string{"ignored.go", "secret.go", ".env", "main.txt"} {
+		if strings.Contains(res.Content, stale) {
+			t.Errorf("fallback searched excluded path %q:\n%s", stale, res.Content)
+		}
+	}
+
+	// An explicitly named hidden file is searched, like rg does.
+	res = run(t, tool, args, grepsearchtool.Input{Pattern: "SECRET", Path: ".env"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, ".env:1: SECRET_API_KEY=needle") {
+		t.Errorf("expected explicitly named hidden file to be searched, got:\n%s", res.Content)
+	}
+}
+
+func TestFallbackContextLinesAndLimit(t *testing.T) {
+	forceFallback(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "main.go", "line1\nline2\nMATCHME\nline4\nline5\n")
+	args := newDispatchArgs(t, dir)
+	tool := grepsearchtool.New()
+
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "MATCHME", ContextLines: 1})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	for _, want := range []string{
+		"main.go:3: MATCHME",
+		"main.go-2- line2",
+		"main.go-4- line4",
+	} {
+		if !strings.Contains(res.Content, want) {
+			t.Errorf("expected %q in fallback context output, got:\n%s", want, res.Content)
+		}
+	}
+	if strings.Contains(res.Content, "-5- line5") {
+		t.Errorf("did not expect context beyond context_lines, got:\n%s", res.Content)
+	}
+
+	var sb strings.Builder
+	for i := 0; i < 10; i++ {
+		sb.WriteString("needle\n")
+	}
+	writeFile(t, dir, "many.txt", sb.String())
+	res = run(t, tool, args, grepsearchtool.Input{Pattern: "needle", Limit: 3})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if got := strings.Count(res.Content, "needle"); got != 3 {
+		t.Errorf("expected 3 matched lines under limit=3, got %d in:\n%s", got, res.Content)
+	}
+	if !strings.Contains(res.Content, "matches limit reached") {
+		t.Errorf("expected limit-reached notice, got:\n%s", res.Content)
+	}
+}
+
+func TestFallbackLiteralAndRegex(t *testing.T) {
+	forceFallback(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "main.go", "if x == 1 {\n\tdoStuff()\n}\nvar a1 int\nvar cc int\n")
+	args := newDispatchArgs(t, dir)
+	tool := grepsearchtool.New()
+
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "doStuff(", Literal: true})
+	if res.IsError {
+		t.Fatalf("unexpected error for literal search: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "doStuff()") {
+		t.Errorf("expected literal match, got:\n%s", res.Content)
+	}
+
+	res = run(t, tool, args, grepsearchtool.Input{Pattern: `var [a-z]\d`})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "a1 int") || strings.Contains(res.Content, "cc int") {
+		t.Errorf("expected regex \\d to match a1 but not cc, got:\n%s", res.Content)
+	}
+
+	res = run(t, tool, args, grepsearchtool.Input{Pattern: "("})
+	if !res.IsError {
+		t.Fatalf("expected IsError for invalid regex, got: %s", res.Content)
+	}
+}
+
+func TestFallbackPendingChangesUseAcceptedView(t *testing.T) {
+	forceFallback(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "a.txt", "keep1\n<<<<<<< old\nold1\n=======\nnew1\n>>>>>>> Ai change\nkeep2\n")
+	args, wl := newPendingArgs(t, dir)
+	markPending(t, wl, dir, "a.txt")
+	tool := grepsearchtool.New()
+
+	res := run(t, tool, args, grepsearchtool.Input{Pattern: "new1", ContextLines: 1})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	for _, want := range []string{"a.txt:2: new1", "a.txt-1- keep1", "a.txt-3- keep2"} {
+		if !strings.Contains(res.Content, want) {
+			t.Errorf("expected accepted-view %q, got:\n%s", want, res.Content)
+		}
+	}
+	res = run(t, tool, args, grepsearchtool.Input{Pattern: "old1"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if res.Content != "No matches found" {
+		t.Errorf("expected old-side content not to match, got:\n%s", res.Content)
+	}
+}

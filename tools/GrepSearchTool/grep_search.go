@@ -1,5 +1,6 @@
 //DESC: grep_search searches file contents for a pattern by shelling out to
-// ripgrep (rg) instead of reimplementing search in Go.
+// ripgrep (rg) when available. If rg is missing, an in-process walker provides
+// the same output format, caps, ignore rules and matching semantics.
 package grepsearchtool
 
 import (
@@ -10,9 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -47,7 +50,7 @@ func New() tools.AgentTool { return &Tool{} }
 func (t *Tool) Name() string { return "grep_search" }
 
 func (t *Tool) Description() string {
-	return fmt.Sprintf(`Search file CONTENTS for a regex pattern using ripgrep. Respects .gitignore and .agentignore, and skips hidden files and directories (dotfiles such as .env and .git) by default.
+	return fmt.Sprintf(`Search file CONTENTS for a regex pattern. Uses ripgrep (rg) when it is available and a built-in fallback otherwise. Respects .gitignore and .agentignore, and skips hidden files and directories (dotfiles such as .env and .git) by default.
 
 Returns matching lines as "path:line: text", the same format ripgrep prints to a terminal. Context lines (if requested via context_lines) are shown as "path-line- text" instead, so match lines always stand out.
 Output is capped at %d matches or %d bytes, whichever is hit first. If you hit the match cap, raise limit or narrow pattern/include. If you hit the byte cap, narrow the search instead - raising limit won't help.
@@ -407,6 +410,295 @@ func runRGOnAccepted(ctx context.Context, rgPath string, rgArgs []string, conten
 	return stopped, nil
 }
 
+// runRGScan performs the on-disk ripgrep scan and feeds matching/context
+// events into sink. Files in pendingSet are skipped because their accepted
+// views are searched separately.
+func runRGScan(ctx context.Context, rgPath, root, searchPath string, input Input, pendingSet map[string]struct{}, sink *resultSink) error {
+	rgArgs := searchFlags(input)
+	if input.Include != "" {
+		rgArgs = append(rgArgs, "--glob", input.Include)
+	}
+
+	if agentIgnore := filepath.Join(root, ".agentignore"); fileExists(agentIgnore) {
+		rgArgs = append(rgArgs, "--ignore-file", agentIgnore)
+	}
+	// NOTE: no --follow, deliberately - keeps rg from walking symlinks
+	// out of the project root.
+	rgArgs = append(rgArgs, "--", input.Pattern, searchPath)
+
+	// CommandContext ties the child's lifetime to ctx: if the caller
+	// cancels, the process is killed for us with no manual signal wiring.
+	cmd := exec.CommandContext(ctx, rgPath, rgArgs...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("starting ripgrep: %w", err)
+	}
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("starting ripgrep: %w", err)
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	// default token (line) size is 64KB; bump it so a single huge rg JSON
+	// line (e.g. from a minified source file) doesn't trip ErrTooLong
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+
+	for scanner.Scan() {
+		var evt rgEvent
+		if err := json.Unmarshal(scanner.Bytes(), &evt); err != nil {
+			continue // not a JSON line we understand, skip it
+		}
+		if evt.Type != "match" && evt.Type != "context" {
+			continue // ignore begin/end/summary events
+		}
+
+		relFile := relativizeToRoot(root, evt.Data.Path.Text)
+		if _, ok := pendingSet[relFile]; ok {
+			continue // pending files are searched via their accepted view below
+		}
+		if sink.add(relFile, evt) {
+			break
+		}
+	}
+	scanErr := scanner.Err()
+
+	// Stop rg immediately once we've got enough (or hit a read error) -
+	// otherwise it's still busy walking the tree. Killing first is safe:
+	// SIGKILL unblocks any pending write, so Wait() below won't deadlock
+	// even though we stopped reading before EOF.
+	if sink.matchLimitReached || sink.bytesTruncated || scanErr != nil {
+		_ = cmd.Process.Kill()
+	}
+
+	waitErr := cmd.Wait()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if scanErr != nil {
+		return fmt.Errorf("reading ripgrep output: %w", scanErr)
+	}
+
+	var exitErr *exec.ExitError
+	if waitErr != nil && !errors.As(waitErr, &exitErr) {
+		return fmt.Errorf("running ripgrep: %w", waitErr)
+	}
+	// Exit code 1 means "ran fine, found nothing" for rg - not a failure.
+	// Any other non-zero code only counts as a real failure if we didn't
+	// kill the process ourselves.
+	if exitErr != nil && exitErr.ExitCode() != 1 && !sink.matchLimitReached && !sink.bytesTruncated {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = fmt.Sprintf("ripgrep exited with code %d", exitErr.ExitCode())
+		}
+		return errors.New(msg)
+	}
+	return nil
+}
+
+// compileFallbackPattern applies the same literal/case-insensitive semantics
+// as the ripgrep flags, using Go's RE2-compatible regexp engine.
+func compileFallbackPattern(input Input) (*regexp.Regexp, error) {
+	pattern := input.Pattern
+	if input.Literal {
+		pattern = regexp.QuoteMeta(pattern)
+	}
+	if input.IgnoreCase {
+		pattern = "(?i)" + pattern
+	}
+	return regexp.Compile(pattern)
+}
+
+// ignoredByMatchers reports whether rel is excluded, checking the
+// directory-suffixed form too so patterns such as "build/" prune directories.
+func ignoredByMatchers(ignores []*ignore.GitIgnore, rel string) bool {
+	return tools.IsIgnored(ignores, rel) || tools.IsIgnored(ignores, rel+"/")
+}
+
+// runFallbackScan is the portable replacement for the on-disk ripgrep scan.
+// It walks the search scope in Go, applies the same hidden-file and ignore
+// rules, and feeds matches through the shared resultSink so output format,
+// context lines and caps stay identical.
+//
+// NOTE: content matching happens in-process rather than by shelling out to
+// grep. Go's regexp engine is RE2-compatible like ripgrep's, so literal,
+// regex, case-insensitive and context-line semantics stay much closer to the
+// preferred rg path than platform-specific grep variants (and it also works
+// on systems that have no grep binary at all).
+func runFallbackScan(ctx context.Context, root, searchPath string, scopeIsDir bool, input Input, re *regexp.Regexp, pendingSet map[string]struct{}, sink *resultSink) error {
+	if !scopeIsDir {
+		rel := relativizeToRoot(root, searchPath)
+		if _, ok := pendingSet[rel]; ok {
+			return nil // searched through its accepted view below
+		}
+		return scanFileFallback(ctx, root, searchPath, re, input.ContextLines, sink)
+	}
+
+	var includeMatch func(string) bool
+	if input.Include != "" {
+		includeMatch = ignore.CompileIgnoreLines(input.Include).MatchesPath
+	}
+	ignores := pendingIgnores(root)
+
+	err := filepath.WalkDir(searchPath, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if d == nil {
+				return walkErr // the scope itself is unreadable/missing
+			}
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil // unreadable entries are skipped, like rg with --no-messages
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if path == searchPath {
+			return nil // an explicitly named scope is searched as-is
+		}
+
+		name := d.Name()
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+
+		if d.IsDir() {
+			if isHiddenPath(name) || ignoredByMatchers(ignores, rel) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		if isHiddenPath(name) || ignoredByMatchers(ignores, rel) {
+			return nil
+		}
+		if includeMatch != nil && !includeMatch(rel) {
+			return nil
+		}
+		if _, ok := pendingSet[rel]; ok {
+			return nil // searched through its accepted view below
+		}
+
+		_ = scanFileFallback(ctx, root, path, re, input.ContextLines, sink)
+		if ctx.Err() != nil || sink.matchLimitReached || sink.bytesTruncated {
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
+}
+
+// scanFileFallback streams one file through the fallback matcher. Binary
+// files (NUL in the first block) are skipped the way ripgrep skips them.
+func scanFileFallback(ctx context.Context, root, path string, re *regexp.Regexp, contextLines int, sink *resultSink) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	br := bufio.NewReaderSize(f, 64*1024)
+	head, _ := br.Peek(8192)
+	if bytes.IndexByte(head, 0) >= 0 {
+		return nil
+	}
+
+	rel := relativizeToRoot(root, path)
+	scanReaderFallback(ctx, br, rel, re, contextLines, sink)
+	return nil
+}
+
+// scanReaderFallback searches a single stream line by line, emitting context
+// windows around matches into sink. It reuses resultSink so match limits, byte
+// caps, line truncation and the "path-line- text" context format are shared
+// with the ripgrep path.
+func scanReaderFallback(ctx context.Context, br *bufio.Reader, rel string, re *regexp.Regexp, contextLines int, sink *resultSink) {
+	if contextLines < 0 {
+		contextLines = 0
+	}
+
+	lastEmitted := 0
+	var ring []string
+	var ringLines []int
+	remainingAfter := 0
+	lineNumber := 0
+
+	emit := func(num int, text, kind string) bool {
+		if num <= lastEmitted {
+			return false
+		}
+		evt := rgEvent{Type: kind}
+		evt.Data.LineNumber = num
+		evt.Data.Lines.Text = text + "\n"
+		if sink.add(rel, evt) {
+			return true
+		}
+		lastEmitted = num
+		return false
+	}
+
+	for {
+		line, readErr := br.ReadString('\n')
+		if len(line) == 0 && readErr != nil {
+			break
+		}
+		lineNumber++
+		line = strings.TrimSuffix(line, "\n")
+		line = strings.TrimSuffix(line, "\r")
+
+		if lineNumber%512 == 0 && ctx.Err() != nil {
+			return
+		}
+
+		if re.MatchString(line) {
+			for i, ctxLine := range ringLines {
+				if emit(ctxLine, ring[i], "context") {
+					return
+				}
+			}
+			if emit(lineNumber, line, "match") {
+				return
+			}
+			remainingAfter = contextLines
+		} else if remainingAfter > 0 {
+			if emit(lineNumber, line, "context") {
+				return
+			}
+			remainingAfter--
+		}
+
+		if contextLines > 0 {
+			ring = append(ring, line)
+			ringLines = append(ringLines, lineNumber)
+			if len(ring) > contextLines {
+				ring = ring[1:]
+				ringLines = ringLines[1:]
+			}
+		}
+
+		if readErr != nil {
+			break
+		}
+	}
+}
+
+// searchAcceptedFallback searches the accepted view of a pending file using
+// the same matcher and sink as the rest of the fallback scan.
+func searchAcceptedFallback(ctx context.Context, content []byte, relFile string, re *regexp.Regexp, contextLines int, sink *resultSink) {
+	if bytes.IndexByte(content, 0) >= 0 {
+		return // binary, same as an on-disk ripgrep scan
+	}
+	scanReaderFallback(ctx, bufio.NewReader(bytes.NewReader(content)), relFile, re, contextLines, sink)
+}
+
 func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.RawMessage) (tools.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
 		return tools.ToolResult{}, err
@@ -438,9 +730,15 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		limit = DEFAULT_LIMIT
 	}
 
-	rgPath, err := exec.LookPath("rg")
-	if err != nil {
-		return tools.Errf("ripgrep (rg) is not installed or not on PATH"), nil
+	// Prefer ripgrep. If it is missing, the portable in-process scanner below
+	// keeps grep_search working with the same output format and caps.
+	rgPath, _ := exec.LookPath("rg")
+	var fallbackRe *regexp.Regexp
+	if rgPath == "" {
+		fallbackRe, err = compileFallbackPattern(input)
+		if err != nil {
+			return tools.Errf("invalid pattern: %v", err), nil
+		}
 	}
 
 	// Files with pending changes are marked up on disk, so rg would report
@@ -453,94 +751,30 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	}
 
 	searchPath := filepath.Join(*args.RootPath, relPath)
-
-	rgArgs := searchFlags(input)
-	if input.Include != "" {
-		rgArgs = append(rgArgs, "--glob", input.Include)
-	}
-
-	if agentIgnore := filepath.Join(*args.RootPath, ".agentignore"); fileExists(agentIgnore) {
-		rgArgs = append(rgArgs, "--ignore-file", agentIgnore)
-	}
-	// NOTE: no --follow, deliberately - keeps rg from walking symlinks
-	// out of the project root.
-	rgArgs = append(rgArgs, "--", input.Pattern, searchPath)
-
-	// CommandContext ties the child's lifetime to ctx: if the caller
-	// cancels, the process is killed for us with no manual signal wiring.
-	cmd := exec.CommandContext(ctx, rgPath, rgArgs...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return tools.Errf("starting ripgrep: %v", err), nil
-	}
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-
-	if err := cmd.Start(); err != nil {
-		return tools.Errf("starting ripgrep: %v", err), nil
-	}
-
 	sink := &resultSink{limit: limit}
 
-	scanner := bufio.NewScanner(stdout)
-	// default token (line) size is 64KB; bump it so a single huge rg JSON
-	// line (e.g. from a minified source file) doesn't trip ErrTooLong
-	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
-
-	for scanner.Scan() {
-		var evt rgEvent
-		if err := json.Unmarshal(scanner.Bytes(), &evt); err != nil {
-			continue // not a JSON line we understand, skip it
+	if rgPath != "" {
+		if err := runRGScan(ctx, rgPath, *args.RootPath, searchPath, input, pendingSet, sink); err != nil {
+			if ctx.Err() != nil {
+				return tools.ToolResult{}, ctx.Err()
+			}
+			return tools.Errf("%v", err), nil
 		}
-		if evt.Type != "match" && evt.Type != "context" {
-			continue // ignore begin/end/summary events
+	} else if err := runFallbackScan(ctx, *args.RootPath, searchPath, info.IsDir(), input, fallbackRe, pendingSet, sink); err != nil {
+		if ctx.Err() != nil {
+			return tools.ToolResult{}, ctx.Err()
 		}
-
-		relFile := relativizeToRoot(*args.RootPath, evt.Data.Path.Text)
-		if _, ok := pendingSet[relFile]; ok {
-			continue // pending files are searched via their accepted view below
-		}
-		if sink.add(relFile, evt) {
-			break
-		}
-	}
-	scanErr := scanner.Err()
-
-	// Stop rg immediately once we've got enough (or hit a read error) -
-	// otherwise it's still busy walking the tree. Killing first is safe:
-	// SIGKILL unblocks any pending write, so Wait() below won't deadlock
-	// even though we stopped reading before EOF.
-	if sink.matchLimitReached || sink.bytesTruncated || scanErr != nil {
-		_ = cmd.Process.Kill()
+		return tools.Errf("%v", err), nil
 	}
 
-	waitErr := cmd.Wait()
-	if ctx.Err() != nil {
-		return tools.ToolResult{}, ctx.Err()
+	// Search the accepted view of every pending file. With rg each file goes
+	// through rg on stdin; without it the in-process matcher is used. Either
+	// way matching, context and line numbers behave like the on-disk scan,
+	// while the output caps stay shared.
+	var pendingArgs []string
+	if rgPath != "" {
+		pendingArgs = append(searchFlags(input), "--", input.Pattern, "-")
 	}
-	if scanErr != nil {
-		return tools.Errf("reading ripgrep output: %v", scanErr), nil
-	}
-
-	var exitErr *exec.ExitError
-	if waitErr != nil && !errors.As(waitErr, &exitErr) {
-		return tools.Errf("running ripgrep: %v", waitErr), nil
-	}
-	// Exit code 1 means "ran fine, found nothing" for rg - not a failure.
-	// Any other non-zero code only counts as a real failure if we didn't
-	// kill the process ourselves.
-	if exitErr != nil && exitErr.ExitCode() != 1 && !sink.matchLimitReached && !sink.bytesTruncated {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = fmt.Sprintf("ripgrep exited with code %d", exitErr.ExitCode())
-		}
-		return tools.Errf("%s", msg), nil
-	}
-
-	// Search the accepted view of every pending file. Each file goes through
-	// rg on stdin so matching, context and line numbers behave exactly like
-	// the on-disk scan, while the output caps stay shared.
-	pendingArgs := append(searchFlags(input), "--", input.Pattern, "-")
 	for _, relFile := range pending {
 		if sink.matchLimitReached || sink.bytesTruncated {
 			break
@@ -556,11 +790,15 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		if len(content) == 0 {
 			continue
 		}
-		if _, err := runRGOnAccepted(ctx, rgPath, pendingArgs, content, relFile, sink.add); err != nil {
-			if ctx.Err() != nil {
-				return tools.ToolResult{}, ctx.Err()
+		if rgPath != "" {
+			if _, err := runRGOnAccepted(ctx, rgPath, pendingArgs, content, relFile, sink.add); err != nil {
+				if ctx.Err() != nil {
+					return tools.ToolResult{}, ctx.Err()
+				}
+				return tools.Errf("%v", err), nil
 			}
-			return tools.Errf("%v", err), nil
+		} else {
+			searchAcceptedFallback(ctx, content, relFile, fallbackRe, input.ContextLines, sink)
 		}
 	}
 
