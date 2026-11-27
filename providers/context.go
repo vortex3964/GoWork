@@ -2,14 +2,64 @@
 
 package providers
 
-import "strings"
+import (
+	"strings"
+	"sync"
+	"sync/atomic"
+)
+
+// The fixed per-request overhead (system prompt plus tool schemas) only
+// changes when one of those inputs changes or when a tokenizer finishes
+// loading in the background. overheadVersion captures all of those events;
+// entries from older versions are treated as misses and recomputed lazily.
+var (
+	overheadCacheMu sync.Mutex
+	overheadCache   = map[string]overheadCacheEntry{}
+	overheadVersion atomic.Uint64
+)
+
+type overheadCacheEntry struct {
+	version uint64
+	tokens  int
+}
+
+// invalidateOverheadCache marks every memoized overhead estimate stale.
+// Callers bump it after mutating the system prompt, the tool definitions, or
+// the tokenizer vocabulary.
+func invalidateOverheadCache() {
+	overheadVersion.Add(1)
+}
 
 // EstimateOverheadTokensForModel estimates the fixed token cost every
 // Generate request carries on top of the message list: the system prompt plus
-// the registered tool schemas (both are re-sent each turn). Unknown models or
-// unavailable tokenizers degrade to a chars/4 estimate.
+// the registered tool schemas (both are re-sent each turn). The result is
+// memoized per model until the prompt, the tools, or the tokenizer vocabulary
+// changes, because tokenising every schema on every model round is expensive.
+// Unknown models or unavailable tokenizers degrade to a chars/4 estimate.
 func EstimateOverheadTokensForModel(model string) int {
-	tokens := countTokensForModel(model, system_prompt)
+	version := overheadVersion.Load()
+
+	overheadCacheMu.Lock()
+	if entry, ok := overheadCache[model]; ok && entry.version == version {
+		tokens := entry.tokens
+		overheadCacheMu.Unlock()
+		return tokens
+	}
+	overheadCacheMu.Unlock()
+
+	tokens := estimateOverheadTokens(model)
+
+	overheadCacheMu.Lock()
+	overheadCache[model] = overheadCacheEntry{version: version, tokens: tokens}
+	overheadCacheMu.Unlock()
+	return tokens
+}
+
+// estimateOverheadTokens does the uncached work for
+// EstimateOverheadTokensForModel. Message token counts are deliberately NOT
+// cached: the conversation changes every turn.
+func estimateOverheadTokens(model string) int {
+	tokens := countTokensForModel(model, currentSystemPrompt())
 	for _, td := range toolDefs() {
 		tokens += countTokensForModel(model, td.Name)
 		tokens += countTokensForModel(model, td.Description)

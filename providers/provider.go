@@ -166,8 +166,9 @@ var tools_def []ToolDef
 
 func InitToolsDef(t []ToolDef) {
 	toolsMu.Lock()
-	defer toolsMu.Unlock()
 	tools_def = t
+	toolsMu.Unlock()
+	invalidateOverheadCache()
 }
 
 // UpdateToolDef replaces a single tool's registration (name/description/
@@ -180,6 +181,7 @@ func UpdateToolDef(name string, td ToolDef) bool {
 	for i := range tools_def {
 		if tools_def[i].Name == name {
 			tools_def[i] = td
+			invalidateOverheadCache()
 			return true
 		}
 	}
@@ -210,18 +212,35 @@ func hasTools() bool {
 // openai-compatible providers).
 var system_prompt string
 
+// systemPromptMu guards the rendered prompt so overhead-cache snapshots never
+// observe a half-written string when the prompt is swapped at startup.
+var systemPromptMu sync.RWMutex
+
 func InitSystemPrompt(s string) {
+	systemPromptMu.Lock()
 	system_prompt = s
+	systemPromptMu.Unlock()
+	invalidateOverheadCache()
+}
+
+// currentSystemPrompt returns the rendered system prompt. Callers that cache
+// derived data must use this snapshot rather than reading system_prompt
+// directly.
+func currentSystemPrompt() string {
+	systemPromptMu.RLock()
+	defer systemPromptMu.RUnlock()
+	return system_prompt
 }
 
 // systemMessage returns the system prompt as a Message for providers whose
 // API expresses it as a leading role:system message. Nil when unset or when
 // the request opts out (context compaction).
 func systemMessage(ctx context.Context) *Message {
-	if system_prompt == "" || omitSystem(ctx) {
+	prompt := currentSystemPrompt()
+	if prompt == "" || omitSystem(ctx) {
 		return nil
 	}
-	return &Message{Role: "system", Content: system_prompt}
+	return &Message{Role: "system", Content: prompt}
 }
 
 // noSystemKey marks a request as an internal call (context compaction) where
