@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"GoWork/tools"
 	editfiletool "GoWork/tools/EditFileTool"
@@ -95,6 +97,104 @@ func TestRun_ReplaceSingleLine_Success(t *testing.T) {
 	want := "package main\n\nfunc main() {\n<<<<<<< old\n\tprintln(\"hi\")\n=======\n\tprintln(\"bye\")\n>>>>>>> Ai change\n}\n"
 	if got != want {
 		t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+func TestRun_NewContentSingleTrailingNewline_NoExtraBlankLine(t *testing.T) {
+	tool, dir := setupTool(t)
+
+	content, isErr := runEdit(t, tool, dir, "trailing.go", "one\ntwo\nthree\n", 2, 2, "TWO\n")
+	if isErr {
+		t.Fatalf("expected success, got tool error: %s", content)
+	}
+
+	got := readFile(t, filepath.Join(dir, "trailing.go"))
+	want := "one\n<<<<<<< old\ntwo\n=======\nTWO\n>>>>>>> Ai change\nthree\n"
+	if got != want {
+		t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+func TestRun_NewContentMultipleTrailingNewlines_PreservesBlankLines(t *testing.T) {
+	tool, dir := setupTool(t)
+
+	content, isErr := runEdit(t, tool, dir, "blank.go", "one\ntwo\nthree\n", 2, 2, "TWO\n\n")
+	if isErr {
+		t.Fatalf("expected success, got tool error: %s", content)
+	}
+
+	got := readFile(t, filepath.Join(dir, "blank.go"))
+	want := "one\n<<<<<<< old\ntwo\n=======\nTWO\n\n>>>>>>> Ai change\nthree\n"
+	if got != want {
+		t.Errorf("intentional blank line was not preserved:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+func TestRun_SequentialEditsWithoutReread_Succeed(t *testing.T) {
+	tool, dir := setupTool(t)
+	path := writeTestFile(t, dir, "sequential.go", "line1\nline2\nline3\n")
+
+	// Simulate read_file having recorded the mtime the agent last saw.
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("failed to stat seeded file: %v", err)
+	}
+	tool.args.ReadState.Record("sequential.go", info.ModTime())
+
+	result, err := tool.Run(context.Background(), mkInput(t, "sequential.go", 2, 2, "lineB"))
+	if err != nil {
+		t.Fatalf("unexpected code-level error on first edit: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected first edit to succeed, got tool error: %s", result.Content)
+	}
+
+	// No intervening read: edit_file must have refreshed ReadState itself.
+	result, err = tool.Run(context.Background(), mkInput(t, "sequential.go", 1, 1, "lineA"))
+	if err != nil {
+		t.Fatalf("unexpected code-level error on second edit: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("second sequential edit was rejected without a re-read: %s", result.Content)
+	}
+
+	got := readFile(t, path)
+	if !strings.Contains(got, "lineA") || !strings.Contains(got, "lineB") {
+		t.Errorf("both edits should be present in the file, got: %q", got)
+	}
+	if n := strings.Count(got, "<<<<<<< old"); n != 2 {
+		t.Errorf("expected 2 marker blocks (one per edit), got %d in: %q", n, got)
+	}
+}
+
+func TestRun_ExternalChangeAfterRecordedRead_Rejected(t *testing.T) {
+	tool, dir := setupTool(t)
+	path := writeTestFile(t, dir, "stale.go", "line1\nline2\n")
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("failed to stat seeded file: %v", err)
+	}
+	tool.args.ReadState.Record("stale.go", info.ModTime())
+
+	// Simulate an external writer touching the file after the last read.
+	newer := info.ModTime().Add(2 * time.Second)
+	if err := os.Chtimes(path, newer, newer); err != nil {
+		t.Fatalf("failed to simulate external modification: %v", err)
+	}
+
+	result, err := tool.Run(context.Background(), mkInput(t, "stale.go", 1, 1, "changed"))
+	if err != nil {
+		t.Fatalf("expected a model-visible failure, not a Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected the stale edit to be rejected, got success: %s", result.Content)
+	}
+	if !strings.Contains(strings.ToLower(result.Content), "re-read") {
+		t.Errorf("error should tell the model to re-read the file, got: %q", result.Content)
+	}
+	if got := readFile(t, path); got != "line1\nline2\n" {
+		t.Errorf("file should not have been modified on a rejected edit, got: %q", got)
 	}
 }
 
