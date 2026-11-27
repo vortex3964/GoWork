@@ -198,11 +198,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// and returned happily, we honour the interrupt and stop here rather
 		// than launching another model turn or more tools.
 		if m.stopRequested {
+			if m.liveMsgIdx >= 0 {
+				m.MessageArea.LiveAssistantFinish(m.liveMsgIdx, m.liveContent)
+			}
 			m.endTurn()
 			m.MessageArea.AppendMessage(">**INFO** Generation stopped.", false)
 			return m, nil
 		}
 		if msg.err != nil {
+			if m.liveMsgIdx >= 0 {
+				m.MessageArea.LiveAssistantFinish(m.liveMsgIdx, m.liveContent)
+			}
 			m.endTurn()
 			var perr *providers.ProviderError
 			if errors.As(msg.err, &perr) {
@@ -227,15 +233,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// The live assistant message already shows the streamed text; write
-		// the canonical final content once more (the trailing partial chunk
-		// only lands here).
+		// The stream is over: the live message still holds the plain-text
+		// streaming form. Render the canonical final content through glamour
+		// once here, after any text-embedded tool call has been stripped.
 		content := msg.result.Content
-		if m.liveMsgIdx >= 0 {
-			m.MessageArea.LiveAssistantUpdate(m.liveMsgIdx, content)
-		} else if content != "" {
-			m.MessageArea.AppendMessage(content, false)
-		}
 
 		// Some models (often small local ones) print a tool call as a JSON
 		// blob in their text instead of emitting a native tool_calls block.
@@ -246,10 +247,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if parsed, clean := providers.ParseTextToolCalls(content); len(parsed) > 0 {
 				toolCalls = parsed
 				content = clean
-				if m.liveMsgIdx >= 0 {
-					m.MessageArea.LiveAssistantUpdate(m.liveMsgIdx, content)
-				}
 			}
+		}
+
+		if m.liveMsgIdx >= 0 {
+			m.MessageArea.LiveAssistantFinish(m.liveMsgIdx, content)
+		} else if content != "" {
+			m.MessageArea.AppendMessage(content, false)
 		}
 
 		if len(toolCalls) > 0 {

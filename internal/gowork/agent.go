@@ -59,36 +59,34 @@ type pendingTool struct {
 	messageIdx int
 }
 
+// streamFlushInterval is how often accumulated assistant text is handed to
+// the update loop while a generation streams.
+const streamFlushInterval = 80 * time.Millisecond
+
 // startStreaming spawns a goroutine that runs a streaming generation on ctx
 // (which the caller owns so ctrl+i can cancel it) and forwards chunks into ch.
-// Deltas are throttled (at least every 80ms and at most ~64B accumulated) so
-// the update loop isn't flooded with per-token messages - a slow local model
-// at tens of tokens/sec still feels live, while a fast one doesn't drown
-// bubbletea in tiny messages. A single streamEndMsg is always sent last, then
-// ch is closed.
+// Deltas are coalesced on a real time interval (streamFlushInterval) rather
+// than a byte count, so a fast model can't flood bubbletea with one message
+// per token while a slow one still feels live. Whatever is still buffered,
+// including the final short chunk, is flushed once when the stream ends; then
+// a single streamEndMsg is sent and ch is closed.
 func startStreaming(ctx context.Context, p providers.Provider, messages []providers.Message, ch chan<- tea.Msg) {
 	go func() {
 		var buf strings.Builder
+		lastFlush := time.Now()
 		flush := func() {
 			if buf.Len() == 0 {
 				return
 			}
 			ch <- streamDeltaMsg{delta: buf.String()}
 			buf.Reset()
+			lastFlush = time.Now()
 		}
-
-		ticker := time.NewTicker(80 * time.Millisecond)
-		defer ticker.Stop()
 
 		res, err := p.GenerateStream(ctx, messages, func(delta string) {
 			buf.WriteString(delta)
-			if buf.Len() >= 64 {
+			if time.Since(lastFlush) >= streamFlushInterval {
 				flush()
-			}
-			select {
-			case <-ticker.C:
-				flush()
-			default:
 			}
 		})
 		flush() // any trailing partial chunk
