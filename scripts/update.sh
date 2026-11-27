@@ -6,7 +6,29 @@
 
 set -eu
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || {
+# resolve_script_dir follows symlinks so a launcher such as
+# ~/bin/gowork-update -> .../scripts/update.sh finds install.sh beside the
+# real script.
+resolve_script_dir() {
+	target="$1"
+	hops=0
+
+	while [ -L "$target" ]; do
+		hops=$((hops + 1))
+		[ "$hops" -le 40 ] || return 1
+
+		link_dir=$(CDPATH= cd -- "$(dirname -- "$target")" && pwd -P) || return 1
+		link_target=$(readlink "$target") || return 1
+		case "$link_target" in
+		/*) target="$link_target" ;;
+		*) target="$link_dir/$link_target" ;;
+		esac
+	done
+
+	CDPATH= cd -- "$(dirname -- "$target")" && pwd -P
+}
+
+script_dir=$(resolve_script_dir "$0") || {
 	printf 'error: could not resolve the GoWork scripts directory\n' >&2
 	exit 1
 }

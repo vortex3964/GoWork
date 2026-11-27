@@ -13,6 +13,26 @@ import (
 	"testing"
 )
 
+const posixWrapperStub = "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GOWORK_STUB_ARGS\"\nexit 42\n"
+
+const powershellWrapperStub = `param(
+    [switch]$Update,
+    [switch]$Uninstall,
+    [string]$Version = "",
+    [string]$Dir = "",
+    [switch]$NoModifyPath
+)
+$lines = @(
+    "Update=$($Update.IsPresent)"
+    "Uninstall=$($Uninstall.IsPresent)"
+    "Version=$Version"
+    "Dir=$Dir"
+    "NoModifyPath=$($NoModifyPath.IsPresent)"
+)
+[System.IO.File]::WriteAllLines($env:GOWORK_STUB_ARGS, [string[]]$lines)
+exit 42
+`
+
 // wrapperScriptPath returns the absolute path to a POSIX wrapper and skips
 // tests when the host cannot run it.
 func wrapperScriptPath(t *testing.T, name string) string {
@@ -160,8 +180,7 @@ func TestInstallerWrappersForwardArgumentsAndExitCodes(t *testing.T) {
 				t.Fatalf("write wrapper: %v", err)
 			}
 			argsPath := filepath.Join(t.TempDir(), "args.txt")
-			stub := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GOWORK_STUB_ARGS\"\nexit 42\n"
-			if err := os.WriteFile(filepath.Join(dir, "install.sh"), []byte(stub), 0o755); err != nil {
+			if err := os.WriteFile(filepath.Join(dir, "install.sh"), []byte(posixWrapperStub), 0o755); err != nil {
 				t.Fatalf("write stub installer: %v", err)
 			}
 
@@ -191,6 +210,85 @@ func TestInstallerWrappersForwardArgumentsAndExitCodes(t *testing.T) {
 			recorded, err := os.ReadFile(argsPath)
 			if err != nil {
 				t.Fatalf("stub did not run: %v", err)
+			}
+			got := strings.Split(strings.TrimSuffix(string(recorded), "\n"), "\n")
+			want := append([]string{tc.mode}, args...)
+			if !slices.Equal(got, want) {
+				t.Fatalf("install.sh arguments = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestInstallerWrappersResolveSymlinks(t *testing.T) {
+	cases := []struct {
+		name string
+		mode string
+	}{
+		{name: "update.sh", mode: "--update"},
+		{name: "uninstall.sh", mode: "--uninstall"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			source := wrapperScriptPath(t, tc.name)
+			data, err := os.ReadFile(source)
+			if err != nil {
+				t.Fatalf("read wrapper: %v", err)
+			}
+
+			root := t.TempDir()
+			realDir := filepath.Join(root, "real")
+			linkDir := filepath.Join(root, "bin")
+			runDir := filepath.Join(root, "elsewhere")
+			for _, dir := range []string{realDir, linkDir, runDir} {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatalf("mkdir %s: %v", dir, err)
+				}
+			}
+
+			realWrapper := filepath.Join(realDir, tc.name)
+			if err := os.WriteFile(realWrapper, data, 0o755); err != nil {
+				t.Fatalf("write wrapper: %v", err)
+			}
+			argsPath := filepath.Join(root, "args.txt")
+			if err := os.WriteFile(filepath.Join(realDir, "install.sh"), []byte(posixWrapperStub), 0o755); err != nil {
+				t.Fatalf("write stub installer: %v", err)
+			}
+
+			// A relative symlink in a different directory exercises both the
+			// readlink loop and resolution of a relative link target.
+			link := filepath.Join(linkDir, "gowork-"+strings.TrimSuffix(tc.name, ".sh"))
+			relativeTarget, err := filepath.Rel(linkDir, realWrapper)
+			if err != nil {
+				t.Fatalf("relative symlink target: %v", err)
+			}
+			if err := os.Symlink(relativeTarget, link); err != nil {
+				t.Skipf("symlink not supported: %v", err)
+			}
+
+			args := []string{
+				"--version", "v9.9.9",
+				"--dir", filepath.Join(root, "apps", "gowork"),
+				"--no-modify-path",
+			}
+			cmd := exec.Command("bash", append([]string{link}, args...)...)
+			cmd.Dir = runDir
+			cmd.Env = installerEnv(t.TempDir(), map[string]string{"GOWORK_STUB_ARGS": argsPath})
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+
+			err = cmd.Run()
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok {
+				t.Fatalf("symlinked wrapper exit = %v, want exit code 42; stderr=%q", err, stderr.String())
+			}
+			if exitErr.ExitCode() != 42 {
+				t.Fatalf("symlinked wrapper exit code = %d, want 42; stderr=%q", exitErr.ExitCode(), stderr.String())
+			}
+
+			recorded, err := os.ReadFile(argsPath)
+			if err != nil {
+				t.Fatalf("stub did not run through the symlink: %v", err)
 			}
 			got := strings.Split(strings.TrimSuffix(string(recorded), "\n"), "\n")
 			want := append([]string{tc.mode}, args...)
@@ -393,24 +491,7 @@ func TestPowerShellInstallerWrappersForwardArgumentsAndExitCodes(t *testing.T) {
 				t.Fatalf("write wrapper: %v", err)
 			}
 			argsPath := filepath.Join(t.TempDir(), "args.txt")
-			stub := `param(
-    [switch]$Update,
-    [switch]$Uninstall,
-    [string]$Version = "",
-    [string]$Dir = "",
-    [switch]$NoModifyPath
-)
-$lines = @(
-    "Update=$($Update.IsPresent)"
-    "Uninstall=$($Uninstall.IsPresent)"
-    "Version=$Version"
-    "Dir=$Dir"
-    "NoModifyPath=$($NoModifyPath.IsPresent)"
-)
-[System.IO.File]::WriteAllLines($env:GOWORK_STUB_ARGS, [string[]]$lines)
-exit 42
-`
-			if err := os.WriteFile(filepath.Join(dir, "install.ps1"), []byte(stub), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(dir, "install.ps1"), []byte(powershellWrapperStub), 0o644); err != nil {
 				t.Fatalf("write stub installer: %v", err)
 			}
 
@@ -431,6 +512,85 @@ exit 42
 			recorded, err := os.ReadFile(argsPath)
 			if err != nil {
 				t.Fatalf("stub did not run: %v", err)
+			}
+			text := strings.ReplaceAll(string(recorded), "\r\n", "\n")
+			for _, want := range []string{
+				"Update=" + boolLabel(tc.mode == "Update"),
+				"Uninstall=" + boolLabel(tc.mode == "Uninstall"),
+				"Version=v9.9.9",
+				"Dir=" + targetDir,
+				"NoModifyPath=True",
+			} {
+				if !strings.Contains(text, want) {
+					t.Fatalf("install.ps1 arguments = %q, want it to contain %q", text, want)
+				}
+			}
+		})
+	}
+}
+
+func TestPowerShellInstallerWrappersResolveSymlinks(t *testing.T) {
+	shell := powershellExecutable(t)
+	cases := []struct {
+		name string
+		mode string
+	}{
+		{name: "update.ps1", mode: "Update"},
+		{name: "uninstall.ps1", mode: "Uninstall"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := os.ReadFile(wrapperPowerShellPath(t, tc.name))
+			if err != nil {
+				t.Fatalf("read wrapper: %v", err)
+			}
+
+			root := t.TempDir()
+			realDir := filepath.Join(root, "real")
+			linkDir := filepath.Join(root, "bin")
+			runDir := filepath.Join(root, "elsewhere")
+			for _, dir := range []string{realDir, linkDir, runDir} {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatalf("mkdir %s: %v", dir, err)
+				}
+			}
+
+			realWrapper := filepath.Join(realDir, tc.name)
+			if err := os.WriteFile(realWrapper, data, 0o644); err != nil {
+				t.Fatalf("write wrapper: %v", err)
+			}
+			argsPath := filepath.Join(root, "args.txt")
+			if err := os.WriteFile(filepath.Join(realDir, "install.ps1"), []byte(powershellWrapperStub), 0o644); err != nil {
+				t.Fatalf("write stub installer: %v", err)
+			}
+
+			link := filepath.Join(linkDir, "gowork-"+strings.TrimSuffix(tc.name, ".ps1")+".ps1")
+			relativeTarget, err := filepath.Rel(linkDir, realWrapper)
+			if err != nil {
+				t.Fatalf("relative symlink target: %v", err)
+			}
+			if err := os.Symlink(relativeTarget, link); err != nil {
+				t.Skipf("symlink not supported: %v", err)
+			}
+
+			targetDir := filepath.Join(root, "apps", "gowork")
+			cmd := exec.Command(shell,
+				"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", link,
+				"-Version", "v9.9.9", "-Dir", targetDir, "-NoModifyPath")
+			cmd.Dir = runDir
+			cmd.Env = installerEnv(t.TempDir(), map[string]string{"GOWORK_STUB_ARGS": argsPath})
+			out, err := cmd.CombinedOutput()
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok {
+				t.Fatalf("symlinked wrapper exit = %v, want exit code 42; output=%q", err, out)
+			}
+			if exitErr.ExitCode() != 42 {
+				t.Fatalf("symlinked wrapper exit code = %d, want 42; output=%q", exitErr.ExitCode(), out)
+			}
+
+			recorded, err := os.ReadFile(argsPath)
+			if err != nil {
+				t.Fatalf("stub did not run through the symlink: %v", err)
 			}
 			text := strings.ReplaceAll(string(recorded), "\r\n", "\n")
 			for _, want := range []string{
