@@ -170,7 +170,7 @@ func argsAreEmpty(raw json.RawMessage) bool {
 }
 
 var (
-	nameRe        = regexp.MustCompile(`"name"\s*:\s*"([^"]+)"`)
+	nameRe         = regexp.MustCompile(`"name"\s*:\s*"([^"]+)"`)
 	argumentsKeyRe = regexp.MustCompile(`"(arguments|input)"\s*:`)
 )
 

@@ -37,12 +37,12 @@ var TabAccent = lipgloss.Color("#7010E3")
 // one color per slot, the first 5 mapped to the 5 most-used models and the
 // 6th ("others") for whatever's left.
 var GraphColors = []color.Color{
-	Primary,               // gold
+	Primary,                   // gold
 	lipgloss.Color("#7010E3"), // brand purple
-	Special,               // teal
-	Success,               // green
-	Warning,               // orange
-	Danger,                // red
+	Special,                   // teal
+	Success,                   // green
+	Warning,                   // orange
+	Danger,                    // red
 }
 
 // Tabs

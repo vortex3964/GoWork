@@ -1,4 +1,4 @@
-//DESC: file_search locates files by NAME or path pattern by shelling out to
+// DESC: file_search locates files by NAME or path pattern by shelling out to
 // ripgrep (rg --files) when available, with a portable Go walker fallback.
 package filesearchtool
 
@@ -36,7 +36,7 @@ type Input struct {
 
 type Tool struct{}
 
-//NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface
+// NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface
 func New() tools.AgentTool { return &Tool{} }
 
 func (t *Tool) Name() string { return "file_search" }
@@ -79,7 +79,7 @@ func (t *Tool) InputSchema() json.RawMessage {
 				"description": fmt.Sprintf("Maximum number of paths to return. Defaults to %d.", DEFAULT_LIMIT),
 			},
 		},
-		"required":               []string{"pattern"},
+		"required":             []string{"pattern"},
 		"additionalProperties": false,
 	}
 	b, _ := json.Marshal(schema)

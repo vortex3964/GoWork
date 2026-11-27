@@ -4,8 +4,9 @@
 //
 // Run:   go run coffee.go            (plays a 5 second animation)
 // Flags: -duration 5s   how long to play
-//        -fps 24        frames per second
-//        -loop          keep playing until Ctrl-C
+//
+//	-fps 24        frames per second
+//	-loop          keep playing until Ctrl-C
 //
 // Needs a terminal with ANSI color support (truecolor is used when the
 // terminal advertises it, otherwise it falls back to 256 colors).

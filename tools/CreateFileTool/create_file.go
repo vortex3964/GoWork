@@ -21,9 +21,9 @@ type Input struct {
 
 const existsHint = " - create_file only creates new files and will not overwrite an existing one. Use edit_file or write_file to change it."
 
-type Tool struct {}
+type Tool struct{}
 
-//NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface 
+// NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface
 func New() tools.AgentTool { return &Tool{} }
 
 func (t *Tool) Name() string { return "create_file_tool" }
@@ -45,7 +45,7 @@ func (t *Tool) InputSchema() json.RawMessage {
 				"description": "Content to write into the file. Required and must be non-empty — empty/placeholder files are refused. Ignored if path ends with \"/\".",
 			},
 		},
-		"required":               []string{"path", "content"},
+		"required":             []string{"path", "content"},
 		"additionalProperties": false,
 	}
 	b, _ := json.Marshal(schema)
@@ -65,7 +65,7 @@ func wrapInMarkers(content string) []byte {
 	b.WriteString(">>>>>>> Ai change\n")
 	return []byte(b.String())
 }
- 
+
 func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.RawMessage) (tools.ToolResult, error) {
 	var input Input
 	if err := json.Unmarshal(rawInput, &input); err != nil {
@@ -74,7 +74,7 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 	if input.Path == "" {
 		return tools.Errf("path is required"), nil
 	}
- 
+
 	if strings.HasSuffix(input.Path, "/") || strings.HasSuffix(input.Path, "\\") {
 		dir := filepath.Clean(input.Path)
 		if err := tools.MkdirAllInRoot(args.Root, dir); err != nil {
@@ -119,11 +119,11 @@ func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.R
 		return tools.Errf("error writing file: %s", err), nil
 	}
 	defer file.Close()
- 
+
 	if _, err := file.Write(marked); err != nil {
 		return tools.Errf("error writing file: %s", err), nil
 	}
- 
+
 	if args.WatchList != nil {
 		args.WatchList.Add(input.Path)
 	}

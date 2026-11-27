@@ -13,8 +13,10 @@ guarded tools, and keeps every change reviewable before it lands.
   continues until the task is finished. `MAX_AGENT_STEPS` caps a request at 40
   model turns by default, and one reply can request up to 10 tools.
 - **Project-confined tools.** File operations are rooted at the project you
-  open. Destructive file changes, every `bash` command, and web access require
-  approval in the permission box, with an optional note for the model.
+  open. `bash`, `edit_file`, `write_file`, `create_file_tool`, `move_file`,
+  `delete_file`, `web_fetch`, `web_search`, and the install/remove tools require
+  approval in the permission box, with an optional note for the model. Read-only
+  tools run without a prompt; see [Tool approval](#tool-approval).
 - **Reviewable changes.** Every edit is tracked as a diff. Accept or reject a
   single change, all changes in a file from its header row, or the whole batch.
 - **Skills.** Reusable instruction sets live as `SKILL.md` files in the durable
@@ -130,7 +132,9 @@ installing.
   `sha256sum` or `shasum`.
 - Installer on Windows: PowerShell 5 or newer.
 - Building from source: Go 1.25 or newer.
-- Runtime: `ripgrep` (`rg`) on PATH for `grep_search` and the project snapshot.
+- Runtime: `ripgrep` (`rg`) on PATH is preferred by `grep_search`,
+  `file_search`, and the project snapshot. A built-in Go fallback keeps them
+  working when it is not installed.
 - Optional: Python 3 and a virtual environment for PDF reading.
 
 ## Quick start
@@ -335,7 +339,17 @@ adds a known server found on `PATH`.
 | `ctrl+i` or `tab` while a turn is running | Interrupt the current generation or tool batch. |
 | `tab` / `shift+tab` while idle | Next / previous tab. |
 | `ctrl+l` | Open or close the changes list on the code tab. |
+| `ctrl+shift+p` | Toggle read-only plan mode. Press it again to leave, or press `esc` from the idle status line. |
 | `ctrl+c` | Quit. |
+
+### Plan mode
+
+Plan mode is a session-wide read-only switch. The status line shows its
+`PLAN` badge while it is active. It blocks every mutating tool, including
+`bash`, `edit_file`, and the create/write/move/delete tools, before the
+permission box is shown. Read-only tools and `todo_list`'s `list` action keep
+working, so the model can investigate and present a plan. Toggle it with
+`ctrl+shift+p`; `esc` also leaves it when the prompt is not focused.
 
 ### Provider picker
 
@@ -410,10 +424,12 @@ adds a known server found on `PATH`.
 
 ### Tools tab
 
-The Tools tab lists Skills, MCP servers, and LSP servers in three sections.
-Status lines report loaded/enabled counts, MCP connection state and discovered
-tool counts, and any startup or configuration error. Configuration changes are
-written immediately and the model-visible tool list is refreshed.
+Open the Tools tab with `ctrl+t` or `/tools`; `ctrl+t` toggles back to the code
+tab when the Tools tab is active. It lists Skills, MCP servers, and LSP servers
+in three sections. Status lines report loaded/enabled counts, MCP connection
+state and discovered tool counts, and any startup or configuration error.
+Configuration changes are written immediately and the model-visible tool list
+is refreshed.
 
 | Key | Action |
 | --- | --- |
@@ -465,17 +481,32 @@ and never sent to the model.
 
 These are the exact tool names the model can call:
 
+### Tool approval
+
+These run without a permission prompt: `read_file`, `grep_search`,
+`file_search`, `list_directory`, `todo_list`, `questions_tool`, `skill`,
+`skill_load`, `mcp_list`, and the LSP tools.
+
+These open the permission box before running: `bash`, `edit_file`,
+`write_file`, `create_file_tool`, `move_file`, `delete_file`, `web_fetch`,
+`web_search`, `skill_install`, `mcp_install`, and `mcp_remove`. MCP tools are
+prompted per call unless a user-scope server opts into `trusted`/`autoApprove`;
+project-scope servers are never auto-approved. Accept All in the permission box
+auto-approves the remaining calls in that turn only. Plan mode blocks mutating
+tools before this prompt, regardless of the decision. `questions_tool` pauses
+the turn for answers even though it needs no approval.
+
 | Tool | Purpose |
 | --- | --- |
 | `read_file` | Read a text file by line range. PDFs are converted to Markdown; images are refused because the provider layer is text-only. |
-| `write_file` | Replace an exact, unique text snippet in an existing file. |
-| `edit_file` | Replace an inclusive, 1-indexed line range in an existing file. |
-| `create_file_tool` | Create a new file with complete, non-empty content; a path ending in `/` creates a directory. |
-| `move_file` | Move or rename a file. |
-| `delete_file` | Delete a file and remove its parent directory if that directory becomes empty. |
+| `write_file` | Replace an exact, unique text snippet in an existing file. Requires approval. |
+| `edit_file` | Replace an inclusive, 1-indexed line range in an existing file. Requires approval. |
+| `create_file_tool` | Create a new file with complete, non-empty content; a path ending in `/` creates a directory. Requires approval. |
+| `move_file` | Move or rename a file. Requires approval. |
+| `delete_file` | Delete a file and remove its parent directory if that directory becomes empty. Requires approval. |
 | `file_search` | Find files by name or path pattern. |
 | `list_directory` | List a directory's immediate entries. |
-| `grep_search` | Search file contents with ripgrep, respecting `.gitignore` and `.agentignore`. |
+| `grep_search` | Search file contents with ripgrep when available, with an in-process fallback. Respects `.gitignore` and `.agentignore`. |
 | `bash` | Run a shell command after per-call approval. Only `working_dir` is confined; the command itself is not sandboxed, may touch other paths, and may use the network. A best-effort deny list blocks common download/admin/install commands. Long commands can move to the background. |
 | `todo_list` | Maintain the session's short task list. |
 | `questions_tool` | Ask up to 7 questions with up to 3 options each and pause the turn for the answer. |
@@ -485,7 +516,7 @@ These are the exact tool names the model can call:
 | `mcp_install` | Install MCP servers from a remote/local config or inline JSON. Requires approval; supports `dry_run` and optional immediate start. |
 | `mcp_list` | List configured MCP servers with sanitized status. Read-only and allowed in plan mode. |
 | `mcp_remove` | Remove a configured MCP server and stop its tools. Requires approval. |
-| `mcp_<server>_<tool>_<hash>` | Any tool exposed by a connected MCP server. The original tool name is used for the actual MCP request. |
+| `mcp_<server>_<tool>_<hash>` | Any tool exposed by a connected MCP server. Requires approval unless a trusted user-scope server opts into auto-approval. The original tool name is used for the actual MCP request. |
 | `lsp_diagnostics` | Return errors and warnings for a project file from the configured language server. |
 | `lsp_symbols` | List symbols in a project file. |
 | `lsp_definition` | Find the definition of a symbol at a file position. |
@@ -507,6 +538,7 @@ make clean      # remove out/ and the Python venv
 The equivalent direct checks are:
 
 ```sh
+gofmt -l .      # must print nothing
 go build ./...
 go vet ./...
 go test ./...
@@ -521,8 +553,9 @@ run it outside a checkout.
 - **Sessions and usage:** `Db/gowork.db` inside the project you open. The file
   is created on first run and is never removed by the installer.
 - **Skills:** `$GOWORK_CONFIG_DIR/skills/<name>/SKILL.md`. The default config
-  directory is the platform user-config directory plus `GoWork` (for example
-  `~/.config/GoWork` on Linux). Each installed skill also gets a
+  directory is the platform user-config directory plus `GoWork`:
+  `~/.config/GoWork` on Linux, `~/Library/Application Support/GoWork` on macOS,
+  and `%AppData%\GoWork` on Windows. Each installed skill also gets a
   `provenance.json` recording the sanitized source, ref, and content hash.
   Existing user-modified copies are never overwritten. The old
   `<exe>/.GoWork/skills` layout is copied into this directory on startup when
@@ -577,6 +610,5 @@ can still read files the user account can access, including a project `.env`.
 
 ## Roadmap
 
-- Slash commands and an in-app command palette.
 - Spreadsheet and document editing beyond plain text.
 - Image understanding for models that support it.

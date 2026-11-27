@@ -85,6 +85,15 @@ func runEdit(t *testing.T, tool testTool, dir, name, content string, startLine, 
 	return result.Content, result.IsError
 }
 
+func TestKindRequiresApproval(t *testing.T) {
+	if got := editfiletool.New().Kind(); got != tools.KindNotAllowed {
+		t.Fatalf("edit_file Kind() = %v, want KindNotAllowed so every edit is previewed in the permission box", got)
+	}
+	if tools.PlanModeAllows("edit_file", nil) {
+		t.Fatal("PlanModeAllows(edit_file) = true, want plan mode to keep blocking edits")
+	}
+}
+
 func TestRun_ReplaceSingleLine_Success(t *testing.T) {
 	tool, dir := setupTool(t)
 

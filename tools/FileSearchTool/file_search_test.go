@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	filesearchtool "GoWork/tools/FileSearchTool"
 	"GoWork/tools"
+	filesearchtool "GoWork/tools/FileSearchTool"
 )
 
 func requireRG(t *testing.T) {

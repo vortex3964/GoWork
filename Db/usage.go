@@ -21,24 +21,24 @@ type UsageRecord struct {
 // ModelStat is the per-model aggregate shown by the stats screen. Only usage
 // data lives here - no session-level rows are surfaced to the UI.
 type ModelStat struct {
-	Model             string
-	Provider          string
-	PromptTokens      int
-	CompletionTokens  int
-	TotalTokens       int
-	Calls             int
-	ToolCalls         int
-	FirstUsed         time.Time
-	LastUsed          time.Time
+	Model            string
+	Provider         string
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+	Calls            int
+	ToolCalls        int
+	FirstUsed        time.Time
+	LastUsed         time.Time
 }
 
 // DailyBucket is one calendar day's per-model token totals and tool-call
 // counts, used to build the stacked daily usage chart.
 type DailyBucket struct {
-	Day     string // "2006-01-02", in local time
-	Tokens  map[string]int
-	Tools   map[string]int
-	Total   int
+	Day       string // "2006-01-02", in local time
+	Tokens    map[string]int
+	Tools     map[string]int
+	Total     int
 	ToolCalls int
 }
 

@@ -1,4 +1,4 @@
-//DESC: grep_search searches file contents for a pattern by shelling out to
+// DESC: grep_search searches file contents for a pattern by shelling out to
 // ripgrep (rg) when available. If rg is missing, an in-process walker provides
 // the same output format, caps, ignore rules and matching semantics.
 package grepsearchtool
@@ -44,7 +44,7 @@ type Input struct {
 
 type Tool struct{}
 
-//NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface
+// NOTE: since were converting *tool to tools.AgentTool were forcing this to follow the interface
 func New() tools.AgentTool { return &Tool{} }
 
 func (t *Tool) Name() string { return "grep_search" }
@@ -91,7 +91,7 @@ func (t *Tool) InputSchema() json.RawMessage {
 				"description": fmt.Sprintf("Maximum number of matches to return. Defaults to %d.", DEFAULT_LIMIT),
 			},
 		},
-		"required":               []string{"pattern"},
+		"required":             []string{"pattern"},
 		"additionalProperties": false,
 	}
 	b, _ := json.Marshal(schema)
