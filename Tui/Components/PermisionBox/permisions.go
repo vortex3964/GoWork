@@ -39,6 +39,14 @@ type DecisionMsg struct {
 	Reason string
 }
 
+// Impact is the read-only explanation of what a tool call will actually do.
+// Summary is short prose about the concrete effect; Preview optionally holds
+// bounded, pre-formatted before/after or diff lines. Both are display-only.
+type Impact struct {
+	Summary string
+	Preview string
+}
+
 // PermissionBorder is the box-drawing border with string corners.
 var permissionBorder = lipgloss.Border{
 	Top:         "─",
@@ -57,6 +65,7 @@ type Model struct {
 	toolName    string
 	description string
 	action      string
+	impact      Impact
 
 	selected   int
 	focusInput bool
@@ -66,7 +75,7 @@ type Model struct {
 	termHeight int
 }
 
-func New(toolName, description, action string) Model {
+func New(toolName, description, action string, impact Impact) Model {
 	ti := textinput.New()
 	ti.Prompt = "Reason: "
 	ti.Placeholder = "write a note for the AI (optional)"
@@ -78,6 +87,7 @@ func New(toolName, description, action string) Model {
 		toolName:    toolName,
 		description: description,
 		action:      action,
+		impact:      impact,
 		reason:      ti,
 	}
 }
@@ -93,22 +103,35 @@ func (m Model) Visible() bool { return m.visible }
 func (m *Model) SetSize(width, height int) {
 	m.termWidth = width
 	m.termHeight = height
-	m.reason.SetWidth(max(10, m.innerWidth()-14))
+	m.reason.SetWidth(max(4, m.innerWidth()-10))
 }
 
 // dialogWidth / dialogHeight mirror the provider selector's float sizing.
 func (m Model) dialogWidth() int {
 	w := floatWidth
-	if m.termWidth > 0 && m.termWidth-4 < w {
-		w = max(24, m.termWidth-4)
+	if m.termWidth > 0 {
+		if maxW := m.termWidth - 2; maxW < w {
+			w = maxW
+		}
+		if w < 16 {
+			w = 16
+		}
 	}
 	return w
 }
 
 func (m Model) dialogHeight() int {
 	h := floatHeight
-	if m.termHeight > 0 && m.termHeight-2 < h {
-		h = max(13, m.termHeight-2)
+	if m.termHeight > 0 {
+		// The outer border (2 rows) and vertical padding (2 rows) sit outside
+		// the content box, so leave room for all four.
+		maxH := m.termHeight - 4
+		if maxH < 6 {
+			maxH = 6
+		}
+		if h > maxH {
+			h = maxH
+		}
 	}
 	return h
 }
@@ -190,18 +213,67 @@ func (m Model) renderDialog() string {
 	title := lipgloss.NewStyle().
 		Foreground(style.Success).
 		Bold(true).
-		Render("PERMISSION REQUESTED")
+		Render(truncateOneLine("PERMISSION REQUESTED", inner))
 
-	help := lipgloss.NewStyle().
-		Foreground(style.Muted).
-		Render("↔ choose · ↕/tab toggles reason · enter ok · esc reject")
+	helpText := "↔ choose · ↕/tab toggles reason · enter ok · esc reject"
+	if inner < 40 {
+		helpText = "↔ choose · enter ok · esc reject"
+	}
 
-	// Short terminals give description lines up first
-	info := m.renderInfo(max(1, m.dialogHeight()-16))
+	contentHeight := m.dialogHeight()
 
+	// Short terminals get fewer help/description rows so the impact preview
+	// and the decision controls stay visible. They also drop the decorative
+	// blank lines to reclaim vertical space.
+	compact := contentHeight < 14
+	maxHelpLines := 2
+	if compact {
+		maxHelpLines = 1
+	}
+	var helpLines []string
+	if contentHeight >= 8 {
+		helpLines = wrap(helpText, inner)
+		if len(helpLines) > maxHelpLines {
+			helpLines = helpLines[:maxHelpLines]
+			helpLines[len(helpLines)-1] = truncateOneLine(helpLines[len(helpLines)-1]+" …", inner)
+		}
+		helpStyle := lipgloss.NewStyle().Foreground(style.Muted)
+		for i := range helpLines {
+			helpLines[i] = helpStyle.Render(helpLines[i])
+		}
+	}
+
+	// Rows outside the info box: title, help, the separators, buttons and
+	// reason. Everything left belongs to the info block (including its own
+	// border).
+	separatorRows := 3
+	if compact {
+		separatorRows = 0
+	}
+	fixedRows := 1 + len(helpLines) + separatorRows + 1 + 1
+	maxInfoRows := contentHeight - fixedRows
+	if maxInfoRows < 3 {
+		maxInfoRows = 3
+	}
+
+	info := m.renderInfo(maxInfoRows)
 	buttons := m.renderButtons()
-
 	reasonRow := m.renderReason(inner)
+
+	rows := []string{title}
+	rows = append(rows, helpLines...)
+	if !compact {
+		rows = append(rows, "")
+	}
+	rows = append(rows, info)
+	if !compact {
+		rows = append(rows, "")
+	}
+	rows = append(rows, buttons)
+	if !compact {
+		rows = append(rows, "")
+	}
+	rows = append(rows, reasonRow)
 
 	return lipgloss.NewStyle().
 		Border(permissionBorder).
@@ -211,40 +283,114 @@ func (m Model) renderDialog() string {
 		Padding(1, 2).
 		Width(m.dialogWidth()).
 		Height(m.dialogHeight()).
-		Render(strings.Join([]string{title, help, "", info, "", buttons, "", reasonRow}, "\n"))
+		Render(strings.Join(rows, "\n"))
 }
 
-// renderInfo shows the tool name, what it runs and a description. maxDescLines
-// caps the description so the box shrinks on short terminals.
-func (m Model) renderInfo(maxDescLines int) string {
+// renderInfo renders the tool name, concrete impact (with an optional bounded
+// diff preview), the one-line argument summary and the generic description.
+// maxRows caps the whole box (including its border) so the dialog never grows
+// past the space budgeted by renderDialog.
+func (m Model) renderInfo(maxRows int) string {
 	inner := m.innerWidth()
+	// The rounded border (2 cols) and horizontal padding (2 cols) sit inside
+	// the info box, so text must wrap to the remaining width or lipgloss will
+	// wrap it a second time and blow the row budget.
+	textWidth := max(4, inner-4)
+	contentBudget := maxRows - 2 // rounded border top/bottom
+	if contentBudget < 1 {
+		contentBudget = 1
+	}
+
 	fill := func(label, val string) string {
-		maxVal := inner - lipgloss.Width(label) - 1
+		maxVal := textWidth - lipgloss.Width(label) - 1
 		if maxVal < 1 {
 			maxVal = 1
 		}
 		return lipgloss.NewStyle().
 			Foreground(style.Text).
-			Width(inner).
+			Width(textWidth).
 			Render(label + " " + truncateOneLine(val, maxVal))
 	}
 
+	action := strings.TrimSpace(m.action)
 	desc := strings.TrimSpace(m.description)
 	if desc == "" {
 		desc = "no description provided"
 	}
-	descLines := wrap(desc, inner-2)
-	if len(descLines) > maxDescLines {
-		descLines = append(descLines[:maxDescLines], "…")
+	summary := strings.TrimSpace(m.impact.Summary)
+
+	rows := []string{fill("Tool:", m.toolName)}
+
+	// Reserve one row for the concrete argument summary when there is one,
+	// so the command/path stays visible even on cramped terminals.
+	reserveAction := 0
+	if action != "" {
+		reserveAction = 1
+	}
+	bodyBudget := contentBudget - len(rows) - reserveAction
+	if bodyBudget < 1 {
+		bodyBudget = 1
 	}
 
-	rows := []string{
-		fill("Tool:", m.toolName),
-		"",
-		strings.Join(descLines, "\n"),
+	// Impact summary has priority over the generic description and preview.
+	if summary != "" && bodyBudget > 0 {
+		summaryLines := wrap(summary, max(2, textWidth-2))
+		summaryLines[0] = "Impact: " + summaryLines[0]
+		for i := 1; i < len(summaryLines); i++ {
+			summaryLines[i] = "  " + summaryLines[i]
+		}
+		summaryLines[0] = truncateOneLine(summaryLines[0], textWidth)
+		maxSummary := 3
+		if len(summaryLines) > maxSummary {
+			summaryLines = summaryLines[:maxSummary]
+			summaryLines[len(summaryLines)-1] = truncateOneLine(summaryLines[len(summaryLines)-1]+" …", textWidth)
+		}
+		if len(summaryLines) > bodyBudget {
+			summaryLines = summaryLines[:bodyBudget]
+			summaryLines[len(summaryLines)-1] = truncateOneLine(summaryLines[len(summaryLines)-1]+" …", textWidth)
+		}
+		rows = append(rows, summaryLines...)
+		bodyBudget -= len(summaryLines)
 	}
-	if a := strings.TrimSpace(m.action); a != "" {
-		rows = append(rows, "", fill("Runs:", a))
+
+	// Bounded diff/before-after preview, one line each.
+	if preview := strings.TrimSpace(m.impact.Preview); preview != "" && bodyBudget > 0 {
+		previewLines := strings.Split(preview, "\n")
+		maxPreview := 6
+		if len(previewLines) > maxPreview {
+			previewLines = previewLines[:maxPreview]
+			previewLines = append(previewLines, "…")
+		}
+		if len(previewLines) > bodyBudget {
+			previewLines = previewLines[:bodyBudget]
+			previewLines[len(previewLines)-1] = truncateOneLine(previewLines[len(previewLines)-1]+" …", textWidth)
+		}
+		for _, line := range previewLines {
+			rows = append(rows, lipgloss.NewStyle().
+				Foreground(style.Muted).
+				Width(textWidth).
+				Render(truncateOneLine(strings.ReplaceAll(line, "\t", "    "), textWidth)))
+		}
+		bodyBudget -= len(previewLines)
+	}
+
+	if action != "" {
+		rows = append(rows, fill("Runs:", action))
+	}
+	if bodyBudget > 0 && contentBudget > len(rows) {
+		descLines := wrap(desc, textWidth)
+		remaining := contentBudget - len(rows)
+		if len(descLines) > remaining {
+			descLines = descLines[:remaining]
+			if len(descLines) > 0 {
+				descLines[len(descLines)-1] = truncateOneLine(descLines[len(descLines)-1]+" …", textWidth)
+			}
+		}
+		rows = append(rows, descLines...)
+	}
+
+	if len(rows) > contentBudget {
+		rows = rows[:contentBudget]
 	}
 
 	return lipgloss.NewStyle().
@@ -270,20 +416,63 @@ func (m Model) renderButton(label string, color string, selected bool) string {
 }
 
 func (m Model) renderButtons() string {
-	row := strings.Join([]string{
-		m.renderButton("Accept", acceptColor, m.selected == 0),
-		m.renderButton("Reject", rejectColor, m.selected == 1),
-		m.renderButton("Accept All", acceptAllColor, m.selected == 2),
-	}, "  ")
+	inner := m.innerWidth()
+	render := func(label, color string, selected bool) string {
+		return m.renderButton(label, color, selected)
+	}
+	renderTight := func(label, color string, selected bool) string {
+		st := lipgloss.NewStyle().Foreground(lipgloss.Color(color))
+		if selected {
+			st = st.Background(lipgloss.Color(color)).
+				Foreground(lipgloss.Color("#000000")).
+				Bold(true)
+		}
+		return st.Render(label)
+	}
+	build := func(accept, reject, all, gap string) string {
+		return strings.Join([]string{
+			render(accept, acceptColor, m.selected == 0),
+			render(reject, rejectColor, m.selected == 1),
+			render(all, acceptAllColor, m.selected == 2),
+		}, gap)
+	}
+
+	// Shrink the row on narrow terminals (never its choices, just spacing,
+	// padding and, when truly cramped, the labels).
+	candidates := []struct {
+		accept, reject, all, gap string
+	}{
+		{"Accept", "Reject", "Accept All", "  "},
+		{"Accept", "Reject", "All", " "},
+		{"OK", "No", "All", " "},
+	}
+	row := build(candidates[len(candidates)-1].accept, candidates[len(candidates)-1].reject, candidates[len(candidates)-1].all, candidates[len(candidates)-1].gap)
+	for _, c := range candidates {
+		if r := build(c.accept, c.reject, c.all, c.gap); lipgloss.Width(r) <= inner {
+			row = r
+			break
+		}
+	}
+	if lipgloss.Width(row) > inner {
+		row = strings.Join([]string{
+			renderTight("OK", acceptColor, m.selected == 0),
+			renderTight("No", rejectColor, m.selected == 1),
+			renderTight("All", acceptAllColor, m.selected == 2),
+		}, " ")
+	}
 
 	return lipgloss.NewStyle().
-		Width(m.dialogWidth()).
+		Width(inner).
 		Align(lipgloss.Center).
 		Render(row)
 }
 
 func (m Model) renderReason(inner int) string {
 	row := m.reason.View()
+	if idx := strings.IndexByte(row, '\n'); idx >= 0 {
+		row = row[:idx]
+	}
+	row = truncateOneLine(row, inner)
 	if m.focusInput {
 		rowstyle := lipgloss.NewStyle().
 			Foreground(style.Text).

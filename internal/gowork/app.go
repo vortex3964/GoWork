@@ -321,7 +321,7 @@ func initialModel(root string, provider providers.Provider, modelID string, prov
 		tool_dispatcher:   dispatcher,
 		questionnaire:     questionnaire.New(nil),
 		questionnaireSlot: -1,
-		permissionBox:     permisionbox.New("", "", ""),
+		permissionBox:     permisionbox.New("", "", "", permisionbox.Impact{}),
 		permissionSlot:    -1,
 		Db:                store,
 		root:              root,

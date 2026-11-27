@@ -166,7 +166,7 @@ func (m *model) openPermissionBox(slot int) tea.Cmd {
 	}
 	m.permissionSlot = slot
 	m.Mode = modePermission
-	m.permissionBox = permisionbox.New(name, desc, action)
+	m.permissionBox = permisionbox.New(name, desc, action, explainToolImpact(name, pt.call.Input, m.root))
 	m.permissionBox.SetSize(m.winWidth, m.winHeight)
 	return nil
 }
