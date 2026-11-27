@@ -412,7 +412,9 @@ func (m *model) submitPrompt() []tea.Cmd {
 		return cmds
 	}
 	*m.AiThink = true
-	m.ChangesList.PauseWatching()
+	if m.ChangesList.Open() {
+		m.ChangesList.PauseWatching()
+	}
 	// Each new task starts with a fresh todo list. The model lays down its
 	// own baseline with the todo_list tool from the system prompt.
 	todo.GetTodoList().Clear()

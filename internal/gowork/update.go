@@ -164,7 +164,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case streamEndMsg:
 		m.liveActive = false
-		m.ChangesList.RefreshDiffs()
+		if m.ChangesList.Open() {
+			m.ChangesList.RefreshDiffs()
+		}
 
 		// Token accounting. Exact usage arrives in the stream's final chunk;
 		// an interrupted stream (ctrl+i) never receives it, and a few older
@@ -409,7 +411,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.index < len(m.pendingResults) {
 			m.pendingResults[msg.index] = &res
 		}
-		m.ChangesList.RefreshDiffs()
+		if m.ChangesList.Open() {
+			m.ChangesList.RefreshDiffs()
+		}
 
 		// Still waiting on other calls in the batch.
 		for _, r := range m.pendingResults {

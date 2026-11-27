@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
@@ -84,6 +85,35 @@ type Model struct {
 
 	lastWatcherPath string
 	lastWatcherData []byte
+
+	// fileStamps records the mtime+size of every watched file at its last
+	// successful scan, so RefreshDiffs can skip files nothing touched.
+	fileStamps map[string]fileStamp
+}
+
+// fileStamp is the cheap on-disk fingerprint used to decide whether a watched
+// file needs re-reading. Missing/unreadable files yield an error instead of a
+// zero stamp so transient failures never look like "unchanged cached" state.
+type fileStamp struct {
+	modTime time.Time
+	size    int64
+}
+
+func statFileStamp(path string) (fileStamp, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fileStamp{}, err
+	}
+	return fileStamp{modTime: info.ModTime(), size: info.Size()}, nil
+}
+
+// watchedPath resolves a canonical watch-list key (root-relative) to the path
+// used for disk I/O.
+func (m *Model) watchedPath(key string) string {
+	if filepath.IsAbs(key) || m.root == "" {
+		return key
+	}
+	return filepath.Join(m.root, key)
 }
 
 func New(watch *WatchList) Model {
@@ -157,21 +187,75 @@ func (m *Model) TrackFile(path string) bool {
 	return true
 }
 
+// RefreshDiffs rescans watched files that changed on disk and updates their
+// diff lists. It is a no-op while the changes pane is closed: nothing renders
+// the result, and opening the pane triggers a fresh scan.
+//
+// Disk I/O happens outside the watch mutex: a short snapshot of watched keys
+// is taken first, files are stat'ed/read without the lock, and only the final
+// map updates re-acquire it. Files whose mtime and size are unchanged since
+// the last successful scan are not read again. Read errors are treated as
+// transient and leave the existing watched entry and changes in place.
 func (m *Model) RefreshDiffs() {
-	if m.Watch == nil {
+	if m.Watch == nil || !m.open {
 		return
 	}
-	m.Watch.mu.Lock()
-	defer m.Watch.mu.Unlock()
-	for file := range m.Watch.WatchedFiles {
-		difs, err := GetDiffs(file)
+
+	watched := m.Watch.Files()
+
+	type refresh struct {
+		key     string
+		changes []Change
+		stamp   fileStamp
+	}
+	var refreshed []refresh
+
+	for _, key := range watched {
+		path := m.watchedPath(key)
+
+		before, err := statFileStamp(path)
 		if err != nil {
-			m.Watch.removeLocked(file)
-			delete(m.Watch.Changeslist, file)
+			// Transient error (or a file briefly gone): keep watching it
+			// and keep the last known changes.
 			continue
 		}
-		m.Watch.Changeslist[file] = ChangeList{difs}
-		m.Watch.addDirToWatcherLocked(file)
+		if m.fileStamps != nil {
+			if prev, ok := m.fileStamps[key]; ok && prev == before {
+				continue // unchanged since the last successful scan
+			}
+		}
+
+		difs, err := GetDiffs(path)
+		if err != nil {
+			continue
+		}
+		after, err := statFileStamp(path)
+		if err != nil || after != before {
+			// The file changed while being read. Leave its stamp stale so
+			// the next refresh retries instead of trusting a torn scan.
+			continue
+		}
+		refreshed = append(refreshed, refresh{key: key, changes: difs, stamp: after})
+	}
+
+	m.Watch.mu.Lock()
+	defer m.Watch.mu.Unlock()
+	if m.fileStamps == nil {
+		m.fileStamps = make(map[string]fileStamp, len(watched))
+	}
+	for _, r := range refreshed {
+		if _, ok := m.Watch.WatchedFiles[r.key]; !ok {
+			continue // unwatched while we were scanning
+		}
+		m.Watch.Changeslist[r.key] = ChangeList{Changes: r.changes}
+		m.Watch.addDirToWatcherLocked(r.key)
+		m.fileStamps[r.key] = r.stamp
+	}
+	// Drop stamps for files that are no longer watched.
+	for key := range m.fileStamps {
+		if _, ok := m.Watch.WatchedFiles[key]; !ok {
+			delete(m.fileStamps, key)
+		}
 	}
 }
 
@@ -218,13 +302,25 @@ func (m *Model) HandleWatcherEvent(eventPath string) bool {
 	if !ok {
 		return false
 	}
-	data, err := os.ReadFile(path)
+	fullPath := m.watchedPath(path)
+	before, err := statFileStamp(fullPath)
+	if err != nil {
+		return true // transient: keep the watched entry as-is
+	}
+	data, err := os.ReadFile(fullPath)
 	if err != nil {
 		return true
 	}
 	difs := GetDiffsBytes(data, filepath.Base(path))
+	after, stampErr := statFileStamp(fullPath)
 	m.Watch.mu.Lock()
 	m.Watch.Changeslist[path] = ChangeList{Changes: difs}
+	if stampErr == nil && after == before {
+		if m.fileStamps == nil {
+			m.fileStamps = make(map[string]fileStamp)
+		}
+		m.fileStamps[path] = after
+	}
 	m.Watch.mu.Unlock()
 	m.lastWatcherPath = path
 	m.lastWatcherData = data
