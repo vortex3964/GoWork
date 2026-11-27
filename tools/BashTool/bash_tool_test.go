@@ -50,8 +50,8 @@ func TestInterfaceConformance(t *testing.T) {
 	if tool.Description() == "" {
 		t.Error("Description() is empty")
 	}
-	if tool.Kind() != tools.KindAllowed {
-		t.Errorf("Kind() = %v, want KindAllowed (bash runs code, it must be explicitly allowed)", tool.Kind())
+	if tool.Kind() != tools.KindNotAllowed {
+		t.Errorf("Kind() = %v, want KindNotAllowed (every bash call must be approved)", tool.Kind())
 	}
 
 	var m map[string]any
@@ -405,6 +405,135 @@ func TestReadableJobMessage(t *testing.T) {
 	if !strings.Contains(res.Content, "Background job") {
 		t.Errorf("background message should be self-describing, got %q", res.Content)
 	}
+}
+
+func TestBashRequiresPerCallApproval(t *testing.T) {
+	if got := New().Kind(); got != tools.KindNotAllowed {
+		t.Fatalf("bash Kind() = %v, want KindNotAllowed so the permission box previews every command", got)
+	}
+	if !tools.PlanModeAllows("read_file", nil) {
+		t.Fatal("sanity check failed: read_file should stay allowed in plan mode")
+	}
+	if tools.PlanModeAllows(ToolName, []byte(`{"command":"touch x"}`)) {
+		t.Fatal("bash must stay blocked in plan mode")
+	}
+}
+
+func TestChildEnvScrubsCredentials(t *testing.T) {
+	secrets := map[string]string{
+		"API_KEY":               "unique-api-key-value",
+		"ANTHROPIC_API_KEY":     "unique-anthropic-value",
+		"OPENAI_API_KEY":        "unique-openai-value",
+		"GITHUB_TOKEN":          "unique-github-token",
+		"DB_PASSWORD":           "unique-db-password",
+		"MY_SECRET":             "unique-secret-value",
+		"AWS_ACCESS_KEY_ID":     "unique-aws-key",
+		"GOOGLE_CLIENT_SECRET":  "unique-google-secret",
+		"PGPASSWORD":            "unique-pg-password",
+		"SOME_CREDENTIALS_FILE": "unique-credential-path",
+	}
+	for name, value := range secrets {
+		t.Setenv(name, value)
+	}
+	t.Setenv("GOWORK_TEST_KEEP", "keep-me")
+
+	res := runBash(t, newArgs(t, t.TempDir()), Input{Command: "env"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "GOWORK_TEST_KEEP=keep-me") {
+		t.Errorf("ordinary variables should survive scrubbing, got:\n%s", res.Content)
+	}
+	if !strings.Contains(res.Content, "PATH=") {
+		t.Errorf("PATH should survive scrubbing, got:\n%s", res.Content)
+	}
+	for name, value := range secrets {
+		if strings.Contains(res.Content, name+"=") {
+			t.Errorf("env leaked credential variable %s", name)
+		}
+		if strings.Contains(res.Content, value) {
+			t.Errorf("env leaked credential value for %s", name)
+		}
+	}
+}
+
+func TestIsSensitiveEnvName(t *testing.T) {
+	sensitive := []string{
+		"API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GITHUB_TOKEN",
+		"DB_PASSWORD", "MY_SECRET", "AWS_SECRET_ACCESS_KEY", "PGPASSWORD",
+		"GOOGLE_APPLICATION_CREDENTIALS", "SIGNING_PRIVATEKEY", "PASSWD",
+	}
+	for _, name := range sensitive {
+		if !isSensitiveEnvName(name) {
+			t.Errorf("isSensitiveEnvName(%q) = false, want true", name)
+		}
+	}
+	harmless := []string{
+		"PATH", "HOME", "TERM", "LANG", "USER", "SHELL", "PWD", "OLDPWD",
+		"MONKEY", "COMPASS", "KEYBOARD_LAYOUT", "XDG_RUNTIME_DIR",
+	}
+	for _, name := range harmless {
+		if isSensitiveEnvName(name) {
+			t.Errorf("isSensitiveEnvName(%q) = true, want false", name)
+		}
+	}
+}
+
+func TestDocsDescribeBashBoundaryHonestly(t *testing.T) {
+	docs := map[string]string{
+		"bash description": New().Description(),
+		"system prompt":    readTestFile(t, filepath.Join("..", "..", "prompts", "system_prompt.md")),
+		"README":           readTestFile(t, filepath.Join("..", "..", "README.md")),
+	}
+	falseClaims := []string{
+		"It can never leave the project",
+		"cannot leave the project",
+		"network, download, admin, and global-install commands are blocked",
+	}
+	for name, text := range docs {
+		lower := strings.ToLower(text)
+		for _, claim := range falseClaims {
+			if strings.Contains(lower, strings.ToLower(claim)) {
+				t.Errorf("%s still contains the false claim %q", name, claim)
+			}
+		}
+	}
+
+	desc := strings.ToLower(docs["bash description"])
+	if !strings.Contains(desc, "not sandboxed") {
+		t.Error("bash description should say the command is not sandboxed")
+	}
+	if !strings.Contains(desc, "approves") {
+		t.Error("bash description should say calls require approval")
+	}
+	if !strings.Contains(desc, "`env` does not expose them") {
+		t.Error("bash description should document that env no longer leaks credentials")
+	}
+
+	prompt := strings.ToLower(docs["system prompt"])
+	if !strings.Contains(prompt, "per-call approval") {
+		t.Error("system prompt should say bash is approved per call")
+	}
+	if !strings.Contains(prompt, "not sandboxed") {
+		t.Error("system prompt should not imply a bash sandbox")
+	}
+
+	readme := strings.ToLower(docs["README"])
+	if !strings.Contains(readme, "gowork_allow_project_pdf_scripts") {
+		t.Error("README should document the project PDF parser opt-in")
+	}
+	if !strings.Contains(readme, "does not print the agent's provider keys") {
+		t.Error("README should document that env no longer leaks provider keys")
+	}
+}
+
+func readTestFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	return string(data)
 }
 
 func BenchmarkBlockedIn(b *testing.B) {

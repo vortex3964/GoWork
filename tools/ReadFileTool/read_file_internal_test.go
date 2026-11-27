@@ -3,6 +3,8 @@ package readfiletool
 import (
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -103,5 +105,123 @@ func TestScanLineRangePastEOFReportsLineCount(t *testing.T) {
 	}
 	if lastLine != 3 {
 		t.Errorf("lastLine = %d, want 3", lastLine)
+	}
+}
+
+func writeExecutable(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func TestFindPDFPythonRefusesProjectVenvByDefault(t *testing.T) {
+	appRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	projectVenv := filepath.Join(projectRoot, "tools", "Scripts", "venv", "bin", "python")
+	writeExecutable(t, projectVenv)
+
+	// No system Python either, so the only candidate would be the project venv.
+	t.Setenv("PATH", t.TempDir())
+
+	if got := findPDFPython(appRoot, projectRoot, false); got != "" {
+		t.Fatalf("findPDFPython used project venv %q without opt-in", got)
+	}
+	if got := findPDFPython(appRoot, projectRoot, true); got != projectVenv {
+		t.Fatalf("findPDFPython = %q, want opted-in project venv %q", got, projectVenv)
+	}
+}
+
+func TestFindPDFPythonPrefersAppVenvAndSystem(t *testing.T) {
+	appRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	appVenv := filepath.Join(appRoot, "tools", "Scripts", "venv", "bin", "python")
+	projectVenv := filepath.Join(projectRoot, "tools", "Scripts", "venv", "bin", "python")
+	writeExecutable(t, appVenv)
+	writeExecutable(t, projectVenv)
+
+	t.Setenv("PATH", t.TempDir())
+	if got := findPDFPython(appRoot, projectRoot, true); got != appVenv {
+		t.Fatalf("findPDFPython = %q, want app venv %q", got, appVenv)
+	}
+
+	// Without an app venv, an opted-in project venv still loses to system Python.
+	noAppRoot := t.TempDir()
+	bin := t.TempDir()
+	systemPython := filepath.Join(bin, "python3")
+	writeExecutable(t, systemPython)
+	t.Setenv("PATH", bin)
+	if got := findPDFPython(noAppRoot, projectRoot, true); got != systemPython {
+		t.Fatalf("findPDFPython = %q, want system Python %q", got, systemPython)
+	}
+}
+
+func TestFindPDFScriptRequiresOptInForProject(t *testing.T) {
+	appRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	projectScript := filepath.Join(projectRoot, "tools", "Scripts", "read_pdf.py")
+	if err := os.MkdirAll(filepath.Dir(projectScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(projectScript, []byte("# project parser\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, ok := findPDFScript(appRoot, projectRoot, false); ok {
+		t.Fatalf("findPDFScript used project script %q without opt-in", got)
+	}
+	if got, ok := findPDFScript(appRoot, projectRoot, true); !ok || got != projectScript {
+		t.Fatalf("findPDFScript = %q, %v; want opted-in project script %q", got, ok, projectScript)
+	}
+
+	appScript := filepath.Join(appRoot, "tools", "Scripts", "read_pdf.py")
+	if err := os.MkdirAll(filepath.Dir(appScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(appScript, []byte("# app parser\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := findPDFScript(appRoot, projectRoot, true); !ok || got != appScript {
+		t.Fatalf("findPDFScript = %q, %v; want app-root script %q", got, ok, appScript)
+	}
+}
+
+func TestPDFProjectScriptsOptInValues(t *testing.T) {
+	for _, value := range []string{"1", "true", "TRUE", "yes", "on"} {
+		t.Setenv(pdfProjectScriptsEnv, value)
+		if !pdfProjectScriptsAllowed() {
+			t.Errorf("pdfProjectScriptsAllowed() = false for %q, want true", value)
+		}
+	}
+	for _, value := range []string{"", "0", "false", "no", "off", "enabled"} {
+		t.Setenv(pdfProjectScriptsEnv, value)
+		if pdfProjectScriptsAllowed() {
+			t.Errorf("pdfProjectScriptsAllowed() = true for %q, want false", value)
+		}
+	}
+}
+
+func TestCappedBufferBoundsOutput(t *testing.T) {
+	b := newCappedBuffer(8)
+	if _, err := b.Write([]byte("0123456789abcdef")); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.String(); got != "01234567" {
+		t.Fatalf("String() = %q, want first 8 bytes", got)
+	}
+	if !b.Truncated() {
+		t.Fatal("expected truncated=true after overflow")
+	}
+	if _, err := b.Write([]byte("more")); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.String(); got != "01234567" {
+		t.Fatalf("String() = %q after more writes, want the cap preserved", got)
+	}
+	if b.Len() != 8 {
+		t.Fatalf("Len() = %d, want 8", b.Len())
 	}
 }

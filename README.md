@@ -13,8 +13,8 @@ guarded tools, and keeps every change reviewable before it lands.
   continues until the task is finished. `MAX_AGENT_STEPS` caps a request at 40
   model turns by default, and one reply can request up to 10 tools.
 - **Project-confined tools.** File operations are rooted at the project you
-  open. Destructive file changes and web access require approval in the
-  permission box, with an optional note for the model.
+  open. Destructive file changes, every `bash` command, and web access require
+  approval in the permission box, with an optional note for the model.
 - **Reviewable changes.** Every edit is tracked as a diff. Accept or reject a
   single change, all changes in a file from its header row, or the whole batch.
 - **Skills.** Reusable instruction sets live as `SKILL.md` files. Load the ones
@@ -199,6 +199,7 @@ GoWork reads environment variables and an optional `.env` file:
 | `LMSTUDIO_COMMAND` | LM Studio `lms` executable used by the picker's `s` launch control. | detected on `PATH` |
 | `LMSTUDIO_ARGS` | Arguments for `lms`; JSON array or whitespace-separated. | `server start` |
 | `LOCAL_SERVER_START_TIMEOUT` | How long the launch control waits for a local server to become ready (`3m`, `45s`, or seconds). | `2m` |
+| `GOWORK_ALLOW_PROJECT_PDF_SCRIPTS` | Trust the PDF parser script and venv inside the project being read. Off by default because that is project-controlled code. | off |
 | `MAX_AGENT_STEPS` | Maximum model turns per request before the agent loop stops. | `40` |
 
 `.env` is ignored by git, so keys stay out of the repository.
@@ -413,7 +414,7 @@ These are the exact tool names the model can call:
 | `file_search` | Find files by name or path pattern. |
 | `list_directory` | List a directory's immediate entries. |
 | `grep_search` | Search file contents with ripgrep, respecting `.gitignore` and `.agentignore`. |
-| `bash` | Run a shell command inside the project. Network, download, admin, and global-install commands are blocked. Long commands can move to the background. |
+| `bash` | Run a shell command after per-call approval. Only `working_dir` is confined; the command itself is not sandboxed, may touch other paths, and may use the network. A best-effort deny list blocks common download/admin/install commands. Long commands can move to the background. |
 | `todo_list` | Maintain the session's short task list. |
 | `questions_tool` | Ask up to 7 questions with up to 3 options each and pause the turn for the answer. |
 | `skill` | Load one of the session's loaded skills. |
@@ -463,8 +464,9 @@ outside a checkout.
 - **Fetched pages:** `.agent-cache/fetch/` in the project root when a long web
   page is saved for later reading.
 - **PDF parser:** `tools/Scripts/read_pdf.py` and its optional
-  `tools/Scripts/venv` are resolved next to the executable first, then in the
-  project, then in the current directory.
+  `tools/Scripts/venv` are resolved from the app directory next to the
+  executable, then from the system Python. The project's own parser script and
+  venv are only used when `GOWORK_ALLOW_PROJECT_PDF_SCRIPTS=1` is set.
 
 ### PDF support
 
@@ -484,6 +486,19 @@ For a source checkout, `make venv` creates `tools/Scripts/venv` and installs
 the lightweight backend from `tools/Scripts/requirements.txt`. For an
 installed copy, create a venv at `<install directory>/tools/Scripts/venv` or
 install the package into the system Python that GoWork finds on PATH.
+
+The parser script and venv inside the project being read are not used by
+default: they are code controlled by that project. To trust them anyway, set
+`GOWORK_ALLOW_PROJECT_PDF_SCRIPTS=1`.
+
+### Bash environment
+
+Every `bash` call is shown in the permission box with its command preview
+before it runs. The child shell receives a scrubbed environment: variables
+whose names look like credentials (API keys, tokens, passwords, secrets) are
+removed, so running `env` does not print the agent's provider keys. The
+scrubbing is name-based and is not a security boundary; the approved command
+can still read files the user account can access, including a project `.env`.
 
 ## Roadmap
 

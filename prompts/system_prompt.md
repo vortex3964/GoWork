@@ -29,7 +29,7 @@ Use the exact tool names below and paths relative to the project root. Batch ind
 - `write_file`: replace an exact, unique text snippet in an existing file; use `replace_all_mentions` when it appears multiple times. It does not detect external changes, so re-read when freshness matters.
 - `create_file_tool`: create a new file with complete, non-empty content. It refuses to overwrite an existing file. A path ending in `/` creates only a directory.
 - `move_file`, `delete_file`: move or delete files. `move_file` overwrites an existing destination.
-- `bash`: run a shell command in the project root. It cannot leave the project; network, download, admin, and global-install commands are blocked. Long commands may be backgrounded.
+- `bash`: run a shell command after per-call approval. Only `working_dir` is confined; the approved command itself is not sandboxed and may read or write other paths and use the network, so keep it focused and non-destructive. A best-effort deny list rejects common download/admin/install commands, and credential-looking environment variables are scrubbed before the shell starts. Long commands may be backgrounded.
 - `skill`: load a skill from the session's available skills when its instructions apply.
 - `web_fetch`, `web_search`: consult external sources when the task needs them.
 - `todo_list`: maintain a short session plan with baseline, push, mark, clear, and list actions.

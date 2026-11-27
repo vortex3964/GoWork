@@ -18,11 +18,24 @@ import (
 	"GoWork/tools"
 )
 
-const DEFAULT_MAX_BYTES int = 50 * 1024
-const DEFAULT_MAX_LINES int = 1800
+const (
+	DEFAULT_MAX_BYTES int = 50 * 1024
+	DEFAULT_MAX_LINES int = 1800
 
-// pdfScriptRel is the pdf parser subprocess, relative to the project root.
-const pdfScriptRel = "tools/Scripts/read_pdf.py"
+	// pdfScriptRel is the pdf parser subprocess, relative to the app root.
+	pdfScriptRel = "tools/Scripts/read_pdf.py"
+
+	// pdfProjectScriptsEnv opts in to running PDF parser code from the
+	// project being read. Project scripts and venvs are arbitrary code, so
+	// they stay disabled unless the user explicitly trusts them.
+	pdfProjectScriptsEnv = "GOWORK_ALLOW_PROJECT_PDF_SCRIPTS"
+
+	// maxPDFStdoutBytes and maxPDFStderrBytes bound the memory a parser run
+	// can hold. A hostile or buggy script must not be able to grow the
+	// process without bound; excess output is discarded.
+	maxPDFStdoutBytes = 4 << 20
+	maxPDFStderrBytes = 64 << 10
+)
 
 // imageExtensions are refused with an error: the provider layer is text-only,
 // so the model can never actually see an image, and dumping base64 into the
@@ -153,51 +166,144 @@ func scanLineRange(r io.Reader, relPath string, start, offset int) (content stri
 	return sb.String(), truncated, true, lineNo, nil
 }
 
-// findPDFPython returns the venv interpreter for the pdf parser, preferring
-// a venv next to the installed app, then the project's own venv (unix and
-// windows layouts), and finally the system PATH. It returns "" when nothing
-// usable exists.
-func findPDFPython(roots []string) string {
-	for _, c := range []string{
+// pdfProjectScriptsAllowed reports whether the user opted in to running the
+// PDF parser script and venv from the project being read.
+func pdfProjectScriptsAllowed() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(pdfProjectScriptsEnv))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// venvPython returns the interpreter inside root/tools/Scripts/venv for the
+// unix and windows layouts, or "" when no regular file exists there.
+func venvPython(root string) (string, bool) {
+	if root == "" {
+		return "", false
+	}
+	for _, rel := range []string{
 		"tools/Scripts/venv/bin/python",
 		"tools/Scripts/venv/Scripts/python.exe",
 	} {
-		if p, ok := approot.FindFile(c, roots...); ok {
-			return p
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		info, err := os.Stat(p)
+		if err == nil && !info.IsDir() {
+			return p, true
 		}
+	}
+	return "", false
+}
+
+// findPDFScript locates the parser script. The app-root copy is trusted;
+// a project-local script is only used when the user opted in, because it is
+// code controlled by the project being read.
+func findPDFScript(appRoot, projectRoot string, allowProject bool) (string, bool) {
+	if appRoot != "" {
+		if p, ok := approot.FindFile(pdfScriptRel, appRoot); ok {
+			return p, true
+		}
+	}
+	if allowProject && projectRoot != "" {
+		if p, ok := approot.FindFile(pdfScriptRel, projectRoot); ok {
+			return p, true
+		}
+	}
+	return "", false
+}
+
+// findPDFPython returns the interpreter for the pdf parser. Trusted choices
+// win: the app-root venv first, then system python3/python. A project venv is
+// only considered when the user opted in, and even then it comes last.
+func findPDFPython(appRoot, projectRoot string, allowProject bool) string {
+	if p, ok := venvPython(appRoot); ok {
+		return p
 	}
 	for _, c := range []string{"python3", "python"} {
 		if p, err := exec.LookPath(c); err == nil {
 			return p
 		}
 	}
+	if allowProject {
+		if p, ok := venvPython(projectRoot); ok {
+			return p
+		}
+	}
 	return ""
 }
 
+// cappedBuffer keeps at most max bytes and silently discards the rest, so a
+// chatty subprocess can never grow our memory without bound. Each stream gets
+// its own instance and os/exec writes to it from one goroutine.
+type cappedBuffer struct {
+	buf       bytes.Buffer
+	max       int
+	truncated bool
+}
+
+func newCappedBuffer(max int) *cappedBuffer {
+	return &cappedBuffer{max: max}
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	remaining := c.max - c.buf.Len()
+	if remaining <= 0 {
+		if n > 0 {
+			c.truncated = true
+		}
+		return n, nil
+	}
+	if n > remaining {
+		c.buf.Write(p[:remaining])
+		c.truncated = true
+		return n, nil
+	}
+	c.buf.Write(p)
+	return n, nil
+}
+
+func (c *cappedBuffer) String() string { return c.buf.String() }
+
+func (c *cappedBuffer) Len() int { return c.buf.Len() }
+
+func (c *cappedBuffer) Truncated() bool { return c.truncated }
+
 // readPDFViaScript runs the read_pdf.py parser over absPDF and returns its
-// stdout verbatim. The helper script and its optional venv are resolved next
-// to the installed executable first, then in the project, then in the working
-// directory. There is no timeout: a conversion may legitimately take a long
-// time (marker's first run downloads its models), so it runs until it
-// finishes or the caller's context is cancelled (ctrl+i). Errors (missing
-// venv, backend not installed, conversion failure) come back wrapped with
-// the script's stderr so the model can act on them.
+// stdout. The parser script and optional venv are resolved from the installed
+// app root and the system Python first; project-local parser code is only
+// used when GOWORK_ALLOW_PROJECT_PDF_SCRIPTS enables it. There is no timeout:
+// a conversion may legitimately take a long time (marker's first run downloads
+// its models), so it runs until it finishes or the caller's context is
+// cancelled (ctrl+i). Errors (missing parser, backend not installed,
+// conversion failure) come back wrapped with the script's stderr so the model
+// can act on them.
 func readPDFViaScript(ctx context.Context, root, absPDF string) (string, error) {
-	roots := approot.Roots(root)
-	script, ok := approot.FindFile(pdfScriptRel, roots...)
+	appRoot, err := approot.ExecutableDir()
+	if err != nil {
+		appRoot = ""
+	}
+	allowProject := pdfProjectScriptsAllowed()
+
+	script, ok := findPDFScript(appRoot, root, allowProject)
 	if !ok {
-		return "", fmt.Errorf("pdf parser script %s not found next to the executable, in the project, or in the working directory", pdfScriptRel)
+		if allowProject {
+			return "", fmt.Errorf("pdf parser script %s not found next to the executable or in the project", pdfScriptRel)
+		}
+		return "", fmt.Errorf("pdf parser script %s is not installed next to the GoWork executable; project-local PDF parsers are disabled because they are project-controlled code. Install the parser in the app directory, or set %s=1 to explicitly trust this project's parser", pdfScriptRel, pdfProjectScriptsEnv)
 	}
 
-	python := findPDFPython(roots)
+	python := findPDFPython(appRoot, root, allowProject)
 	if python == "" {
 		return "", fmt.Errorf("pdf parser not installed: initialize the venv in tools/Scripts (pip install pymupdf4llm, or marker-pdf for better accuracy)")
 	}
 
 	cmd := exec.CommandContext(ctx, python, script, absPDF)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := newCappedBuffer(maxPDFStdoutBytes)
+	stderr := newCappedBuffer(maxPDFStderrBytes)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
@@ -216,7 +322,11 @@ func readPDFViaScript(ctx context.Context, root, absPDF string) (string, error) 
 		}
 		return "", fmt.Errorf("pdf parser failed: %s", msg)
 	}
-	return stdout.String(), nil
+	output := stdout.String()
+	if stdout.Truncated() {
+		output += fmt.Sprintf("\n\n...[pdf output truncated at %d bytes]...\n", maxPDFStdoutBytes)
+	}
+	return output, nil
 }
 
 func (t *Tool) Run(ctx context.Context, args tools.DispatchArgs, rawInput json.RawMessage) (tools.ToolResult, error) {
